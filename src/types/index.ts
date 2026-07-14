@@ -54,6 +54,16 @@ export const TIPO_TRANSPORTE = {
 
 export type TipoTransporte = (typeof TIPO_TRANSPORTE)[keyof typeof TIPO_TRANSPORTE];
 
+// ─── TYPE GUARDS ───────────────────────────────────────────────────────────
+
+export function isTipoMensaje(valor: unknown): valor is TipoMensaje {
+  return typeof valor === "string" && Object.values(TIPO_MENSAJE).includes(valor as TipoMensaje);
+}
+
+export function isEstadoNodo(valor: unknown): valor is EstadoNodo {
+  return typeof valor === "string" && Object.values(ESTADO_NODO).includes(valor as EstadoNodo);
+}
+
 // ─── NODE IDENTIFIER ───────────────────────────────────────────────────────
 
 export type NodoId = string & { readonly __brand: "NodoId" };
