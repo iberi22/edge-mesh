@@ -241,6 +241,7 @@ export interface EdgeMeshConfig {
   readonly heartbeatTimeoutMs?: number;
   readonly snapshotInterval?: number;
   readonly storagePrefix?: string;
+  readonly storageBackend?: "mem" | "idb";
   readonly governancePolicy?: GovernancePolicy;
   readonly transportConfig?: Record<string, unknown>;
   readonly maxReconnectAttempts?: number;
