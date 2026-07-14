@@ -1,0 +1,56 @@
+{
+  "name": "edge-mesh",
+  "version": "1.0.0",
+  "description": "Mesh networking library with CRDT sync, post-quantum identity, and peer-to-peer transport",
+  "license": "GPL-2.0-only",
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc -w",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "biome check src/",
+    "format": "biome format --write src/",
+    "check": "npx tsc --noEmit"
+  },
+  "dependencies": {
+    "@noble/post-quantum": "^0.6.1",
+    "idb": "^8.0.3",
+    "peerjs": "^1.5.5",
+    "y-protocols": "^1.0.7",
+    "yjs": "^13.6.31"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.3",
+    "@types/node": "^26.1.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.9"
+  },
+  "keywords": [
+    "mesh",
+    "p2p",
+    "crdt",
+    "yjs",
+    "peerjs",
+    "post-quantum",
+    "webrtc"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

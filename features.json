@@ -1,0 +1,23 @@
+﻿{
+  "version": "1.0.0",
+  "features": [
+    { "id": "F-001", "name": "P2P Node Lifecycle", "module": "core", "status": "implemented" },
+    { "id": "F-002", "name": "PeerJS Transport", "module": "transport", "status": "implemented" },
+    { "id": "F-003", "name": "CRDT Sync (Yjs)", "module": "sync", "status": "implemented" },
+    { "id": "F-004", "name": "Post-Quantum Identity", "module": "identity", "status": "implemented" },
+    { "id": "F-005", "name": "Operation Log", "module": "op-log", "status": "implemented" },
+    { "id": "F-006", "name": "Snapshot Manager", "module": "snapshot", "status": "implemented" },
+    { "id": "F-007", "name": "IndexedDB Storage", "module": "storage", "status": "implemented" },
+    { "id": "F-008", "name": "Presence & Heartbeat", "module": "presence", "status": "implemented" },
+    { "id": "F-009", "name": "Decentralized Governance", "module": "governance", "status": "implemented" },
+    { "id": "F-010", "name": "P2P Chat Channels", "module": "chat", "status": "implemented" },
+    { "id": "F-011", "name": "Virtual Rooms", "module": "salones", "status": "implemented" },
+    { "id": "F-012", "name": "Scalable Mesh Gossip", "module": "mesh", "status": "implemented" },
+    { "id": "F-013", "name": "Protocol Envelope", "module": "protocol", "status": "implemented" },
+    { "id": "F-014", "name": "Namespace Authorization", "module": "authz", "status": "implemented" },
+    { "id": "F-015", "name": "Namespace Manager", "module": "namespaces", "status": "implemented" },
+    { "id": "F-016", "name": "Unit Tests", "module": "tests", "status": "pending" },
+    { "id": "F-017", "name": "Documentation", "module": "docs", "status": "pending" },
+    { "id": "F-018", "name": "CI Pipeline", "module": "ci", "status": "pending" }
+  ]
+}
