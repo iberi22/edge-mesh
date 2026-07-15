@@ -105,9 +105,11 @@ export class EdgeMesh {
     this.deduplicator = new MessageDeduplicator();
 
     // Storage
-    this.storage = new StorageManager({
-      dbName: `edge-mesh-${config.nodoId}`,
-    });
+    this.storage = typeof indexedDB !== "undefined"
+      ? new StorageManager({
+          dbName: `edge-mesh-${config.nodoId}`,
+        })
+      : new InMemoryStorage();
 
     // Identity
     const keypair: PostQuantumKeypair = config.identitySecret
