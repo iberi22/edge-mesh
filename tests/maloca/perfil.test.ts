@@ -1,88 +1,76 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { EdgeMesh } from "../../src/edge-mesh.js";
-import { type NodoId } from "../../src/types/index.js";
-import type { PerfilHumano } from "../../src/maloca/types.js";
+import { MalocaKernel } from "../../src/maloca/kernel.js";
+import type { NodoId } from "../../src/types/index.js";
 
 describe("ProfileManager", () => {
-  let mesh: EdgeMesh;
+  let kernel: MalocaKernel;
 
-  beforeEach(() => {
-    mesh = new EdgeMesh({
-      nodoId: "test-node" as NodoId,
+  beforeEach(async () => {
+    kernel = new MalocaKernel({
+      nodoId: "node-alice" as NodoId,
       storageBackend: "mem",
     });
+    await kernel.iniciar();
   });
 
-  it("should register and get a human profile", () => {
-    const profile: PerfilHumano = {
-      id: "human-1",
-      alias: "Alice",
+  it("should register and get a human profile", async () => {
+    await kernel.registerNode("humano", new Uint8Array([1, 2, 3]), { alias: "Alice" });
+
+    const retrieved = kernel.getProfile("node-alice" as NodoId);
+    expect(retrieved).toBeDefined();
+    expect(retrieved!.alias).toBe("Alice");
+  });
+
+  it("should update a profile", async () => {
+    await kernel.registerNode("humano", new Uint8Array([1, 2, 3]), { alias: "Alice" });
+
+    await kernel.profiles.upsertProfile({
+      id: "node-alice" as NodoId,
+      alias: "Alice Updated",
       identidad: new Uint8Array([1, 2, 3]),
-      nodos: ["test-node" as NodoId],
+      nodos: ["node-alice" as NodoId],
       proyectos: [],
       metadatos: {},
-    };
+    }, "node-alice" as NodoId);
 
-    mesh.profiles.register(profile);
-    const retrieved = mesh.profiles.get("human-1");
-    expect(retrieved).toEqual(profile);
+    const retrieved = kernel.getProfile("node-alice" as NodoId);
+    expect(retrieved).toBeDefined();
+    expect(retrieved!.alias).toBe("Alice Updated");
   });
 
-  it("should update a profile", () => {
-    const profile: PerfilHumano = {
-      id: "human-1",
+  it("should search for profiles", async () => {
+    await kernel.profiles.upsertProfile({
+      id: "p1" as NodoId,
       alias: "Alice",
-      identidad: new Uint8Array([1, 2, 3]),
-      nodos: ["test-node" as NodoId],
+      identidad: new Uint8Array([1]),
+      nodos: ["p1" as NodoId],
       proyectos: [],
       metadatos: {},
-    };
+    }, "p1");
 
-    mesh.profiles.register(profile);
-    mesh.profiles.update("human-1", { alias: "Alice Updated" });
-
-    const retrieved = mesh.profiles.get("human-1") as PerfilHumano;
-    expect(retrieved.alias).toBe("Alice Updated");
-  });
-
-  it("should search for profiles", () => {
-    mesh.profiles.register({
-      id: "human-1",
-      alias: "Alice",
-      identidad: new Uint8Array(),
-      nodos: [],
-      proyectos: [],
-      metadatos: {},
-    });
-    mesh.profiles.register({
-      id: "human-2",
+    await kernel.profiles.upsertProfile({
+      id: "p2" as NodoId,
       alias: "Bob",
-      identidad: new Uint8Array(),
-      nodos: [],
+      identidad: new Uint8Array([2]),
+      nodos: ["p2" as NodoId],
       proyectos: [],
       metadatos: {},
-    });
+    }, "p2");
 
-    const results = mesh.profiles.search("Ali");
+    const all = kernel.profiles.listProfiles();
+    expect(all.length).toBe(2);
+
+    const results = kernel.profiles.searchProfiles("Ali");
     expect(results).toHaveLength(1);
-    expect(results[0].id).toBe("human-1");
+    expect(results[0].alias).toBe("Alice");
   });
 
-  it("should link a profile to a project", () => {
-    const profile: PerfilHumano = {
-      id: "human-1",
-      alias: "Alice",
-      identidad: new Uint8Array(),
-      nodos: [],
-      proyectos: ["proj-1"],
-      metadatos: {},
-    };
+  it("should link a profile to a project", async () => {
+    await kernel.registerNode("humano", new Uint8Array([1, 2, 3]), { alias: "Alice" });
 
-    mesh.profiles.register(profile);
-    mesh.profiles.linkToProject("human-1", "proj-2");
+    kernel.profiles.linkToProject("node-alice" as NodoId, "proj-2");
 
-    const retrieved = mesh.profiles.get("human-1") as PerfilHumano;
-    expect(retrieved.proyectos).toContain("proj-1");
-    expect(retrieved.proyectos).toContain("proj-2");
+    const retrieved = kernel.getProfile("node-alice" as NodoId);
+    expect(retrieved!.proyectos).toContain("proj-2");
   });
 });

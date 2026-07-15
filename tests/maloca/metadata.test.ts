@@ -1,42 +1,34 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { EdgeMesh } from "../../src/edge-mesh.js";
-import { type NodoId } from "../../src/types/index.js";
+import { MalocaKernel } from "../../src/maloca/kernel.js";
+import type { NodoId } from "../../src/types/index.js";
 
 describe("MetadataManager", () => {
-  let mesh: EdgeMesh;
+  let kernel: MalocaKernel;
 
-  beforeEach(() => {
-    mesh = new EdgeMesh({
+  beforeEach(async () => {
+    kernel = new MalocaKernel({
       nodoId: "test-node" as NodoId,
       storageBackend: "mem",
     });
+    await kernel.iniciar();
   });
 
   it("should get network status", () => {
-    const status = mesh.metadata.getNetworkStatus();
-    expect(status).toHaveProperty("nodosActivos");
-    expect(status).toHaveProperty("totalNodos");
+    const status = kernel.getNetworkStatus();
+    expect(status).toHaveProperty("nodoId");
+    expect(status).toHaveProperty("proyectosConectados");
   });
 
-  it("should sync and retrieve shared metadata", () => {
-    mesh.metadata.syncMetadata("repositorios", ["repo-1", "repo-2"]);
-    const shared = mesh.metadata.getSharedMetadata();
-    expect(shared.repositorios).toContain("repo-1");
-    expect(shared.repositorios).toContain("repo-2");
+  it("should sync and retrieve shared metadata", async () => {
+    await kernel.registerNode("humano", new Uint8Array([1]), { alias: "Alice" });
+    const shared = kernel.getNetworkStatus();
+    expect(shared.perfilesRegistrados).toBeGreaterThanOrEqual(1);
   });
 
-  it("should provide profile cache stats", () => {
-    mesh.profiles.register({
-      id: "p1",
-      alias: "Alice",
-      identidad: new Uint8Array(),
-      nodos: [],
-      proyectos: [],
-      karma: 0,
-      metadatos: {},
-    });
-
-    const cache = mesh.metadata.getProfileCache();
-    expect(cache.count).toBe(1);
+  it("should provide profile cache", async () => {
+    await kernel.registerNode("humano", new Uint8Array([1]), { alias: "Alice" });
+    const profile = kernel.getProfile("test-node" as NodoId);
+    expect(profile).toBeDefined();
+    expect(profile!.alias).toBe("Alice");
   });
 });

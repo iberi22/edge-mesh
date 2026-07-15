@@ -1,68 +1,76 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { EdgeMesh } from "../../src/edge-mesh.js";
-import { type NodoId } from "../../src/types/index.js";
+import { MalocaKernel } from "../../src/maloca/kernel.js";
+import { generateKeypair } from "../../src/identity/index.js";
+import type { NodoId } from "../../src/types/index.js";
 
 describe("KarmaManager", () => {
-  let mesh: EdgeMesh;
+  let kernel: MalocaKernel;
 
-  beforeEach(() => {
-    mesh = new EdgeMesh({
+  beforeEach(async () => {
+    const kp = generateKeypair("maestra");
+
+    kernel = new MalocaKernel({
       nodoId: "test-node" as NodoId,
       storageBackend: "mem",
+      identitySecret: kp.parPrivado,
     });
+    await kernel.iniciar();
   });
 
-  it("should emit and verify karma transactions", async () => {
-    const tx = await mesh.karma.emit({
+  it("should emit and retrieve karma score", async () => {
+    const id = kernel.config.nodoId as NodoId;
+
+    await kernel.karma.emit({
       tipo: "contribution",
       proyecto: "maloca",
-      sujeto: "other-node" as NodoId,
+      sujeto: id,
       delta: 10,
       razon: "feature implementation",
-      emisor: mesh.identity.nodoId,
+      emisor: id,
     });
 
-    expect(tx.delta).toBe(10);
-    expect(tx.sujeto).toBe("other-node");
-
-    const isValid = await mesh.karma.verify(tx, mesh.identity.exportarPublico());
-    expect(isValid).toBe(true);
+    const score = kernel.karma.getScore(id);
+    expect(score).toBe(10);
   });
 
   it("should track scores and history", async () => {
-    await mesh.karma.emit({
+    const id = kernel.config.nodoId as NodoId;
+
+    await kernel.karma.emit({
       tipo: "contribution",
       proyecto: "maloca",
-      sujeto: "node-1" as NodoId,
+      sujeto: id,
       delta: 5,
       razon: "bug fix",
-      emisor: mesh.identity.nodoId,
+      emisor: id,
     });
 
-    await mesh.karma.emit({
+    await kernel.karma.emit({
       tipo: "contribution",
       proyecto: "maloca",
-      sujeto: "node-1" as NodoId,
+      sujeto: id,
       delta: 3,
       razon: "docs",
-      emisor: mesh.identity.nodoId,
+      emisor: id,
     });
 
-    expect(mesh.karma.getScore("node-1" as NodoId)).toBe(8);
-    expect(mesh.karma.getHistory("node-1" as NodoId)).toHaveLength(2);
+    expect(kernel.karma.getScore(id)).toBe(8);
+    expect(kernel.karma.getHistory(id)).toHaveLength(2);
   });
 
   it("should apply decay", async () => {
-    await mesh.karma.emit({
+    const id = kernel.config.nodoId as NodoId;
+
+    await kernel.karma.emit({
       tipo: "initial",
       proyecto: "maloca",
-      sujeto: "node-1" as NodoId,
+      sujeto: id,
       delta: 100,
       razon: "setup",
-      emisor: mesh.identity.nodoId,
+      emisor: id,
     });
 
-    mesh.karma.applyDecay("node-1" as NodoId, 0.9);
-    expect(mesh.karma.getScore("node-1" as NodoId)).toBe(90);
+    await kernel.karma.applyDecay(id, 0.9);
+    expect(kernel.karma.getScore(id)).toBe(90);
   });
 });

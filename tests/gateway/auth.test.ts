@@ -3,16 +3,16 @@ import { loginWithPQC, generateJWT, verifyToken, getProfileFromToken } from "../
 import { ml_dsa65 } from "@noble/post-quantum/ml-dsa.js";
 
 describe("MalocaGatewayAuth", () => {
-  it("should generate and verify JWT", () => {
+  it("should generate and verify JWT", async () => {
     const profileId = "test-profile";
-    const token = generateJWT(profileId);
+    const token = await generateJWT(profileId);
     expect(token).toBeDefined();
-    expect(verifyToken(token)).toBe(true);
-    expect(getProfileFromToken(token)).toBe(profileId);
+    expect(await verifyToken(token)).toBe(true);
+    expect(await getProfileFromToken(token)).toBe(profileId);
   });
 
-  it("should reject invalid JWT", () => {
-    expect(verifyToken("invalid.token.here")).toBe(false);
+  it("should reject invalid JWT", async () => {
+    expect(await verifyToken("invalid.token.here")).toBe(false);
   });
 
   it("should login with PQC", async () => {
@@ -23,7 +23,7 @@ describe("MalocaGatewayAuth", () => {
 
     const token = await loginWithPQC(firma, publicKey);
     expect(token).not.toBeNull();
-    expect(verifyToken(token!)).toBe(true);
+    expect(await verifyToken(token!)).toBe(true);
   });
 
   it("should reject invalid PQC signature", async () => {

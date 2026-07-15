@@ -32,7 +32,6 @@ export class MalocaKernel extends EdgeMesh {
         alias: metadatos.alias || "Anónimo",
         nodos: [this.config.nodoId],
         proyectos: [],
-        karma: 0,
         metadatos,
       };
       await this.profiles.upsertProfile(perfil, this.config.nodoId);
@@ -41,8 +40,7 @@ export class MalocaKernel extends EdgeMesh {
         id: this.config.nodoId,
         tipo: metadatos.tipo || "servicio",
         version: metadatos.version || "1.0.0",
-        endpoint: metadatos.endpoint || "",
-        capabilidades: metadatos.capabilidades || [],
+        capacidades: metadatos.capacidades || [],
       };
       await this.profiles.upsertProfile(perfil, this.config.nodoId);
     }
