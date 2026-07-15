@@ -61,7 +61,8 @@ class PostQuantumIdentityImpl implements PostQuantumIdentity {
   }
 
   async firmar(datos: Uint8Array): Promise<Uint8Array> {
-    return ml_dsa65.sign(this.keypair.parPrivado, datos);
+    // Note: ml_dsa65.sign signature is sign(message, secretKey) in current version
+    return ml_dsa65.sign(datos, this.keypair.parPrivado);
   }
 
   async verificar(
@@ -70,7 +71,8 @@ class PostQuantumIdentityImpl implements PostQuantumIdentity {
     parPublico: ParPublico,
   ): Promise<boolean> {
     try {
-      return ml_dsa65.verify(parPublico, datos, firma);
+      // Note: ml_dsa65.verify signature is verify(signature, message, publicKey)
+      return ml_dsa65.verify(firma, datos, parPublico);
     } catch {
       return false;
     }
@@ -102,10 +104,13 @@ export function identityFromSecret(
   semilla: Uint8Array,
   tipo: TipoIdentidad = TIPO_IDENTIDAD.EPHEMERA,
 ): PostQuantumIdentity {
-  // Usar la semilla como seed criptografico
+  const { secretKey, publicKey } = ml_dsa65.keygen(semilla);
   const keypair: PostQuantumKeypair = {
-    ...generateKeypair(tipo),
-    parPrivado: semilla,
+    parPrivado: secretKey,
+    parPublico: publicKey,
+    algoritmo: ALGORITMO,
+    tipo,
+    fechaCreacion: Date.now(),
   };
   return createPostQuantumIdentity(nodoId, keypair);
 }

@@ -13,6 +13,9 @@ import { NamespaceManager } from "./namespaces/index.js";
 import { OpLog } from "./op-log/index.js";
 import { SyncEngine } from "./sync/engine.js";
 import { SnapshotManager, createSnapshotManager } from "./snapshot/index.js";
+import { ProfileManager } from "./maloca/perfil.js";
+import { KarmaManager } from "./maloca/karma.js";
+import { MetadataManager } from "./maloca/metadata.js";
 
 // ─── YJS ADAPTER ───────────────────────────────────────────────────────────
 
@@ -87,6 +90,9 @@ export class EdgeMesh {
   readonly authorizer: NamespaceAuthorizer;
   readonly namespaces: NamespaceManager;
   readonly yjsAdapter: YjsAdapter;
+  readonly profiles: ProfileManager;
+  readonly karma: KarmaManager;
+  readonly metadata: MetadataManager;
 
   private transport: PeerJSTransport | null = null;
   private readonly logsDoc: Map<string, OpLog>;
@@ -112,16 +118,18 @@ export class EdgeMesh {
         });
 
     // Identity
-    const keypair: PostQuantumKeypair = config.identitySecret
-      ? {
-          parPrivado: config.identitySecret,
-          parPublico: new Uint8Array(0),
-          algoritmo: "ML-DSA-65",
-          tipo: "maestra",
-          fechaCreacion: Date.now(),
-        }
-      : generateKeypair("maestra");
-    this.identity = createPostQuantumIdentity(config.nodoId, keypair);
+    if (config.identitySecret) {
+      this.identity = identityFromSecret(
+        config.nodoId,
+        config.identitySecret,
+        "maestra",
+      );
+    } else {
+      this.identity = createPostQuantumIdentity(
+        config.nodoId,
+        generateKeypair("maestra"),
+      );
+    }
 
     // Yjs
     this.yjsAdapter = new YjsAdapter();
@@ -140,6 +148,11 @@ export class EdgeMesh {
 
     // Namespaces
     this.namespaces = new NamespaceManager();
+
+    // Maloca
+    this.profiles = new ProfileManager(this.yjsAdapter);
+    this.karma = new KarmaManager(this.yjsAdapter, this.identity);
+    this.metadata = new MetadataManager(this.yjsAdapter, this.presence);
 
     // Re-encolar eventos del nodo
     this.nodo.on("nodoConectado", (ev) => {
