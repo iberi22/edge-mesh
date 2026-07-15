@@ -102,10 +102,16 @@ export function identityFromSecret(
   semilla: Uint8Array,
   tipo: TipoIdentidad = TIPO_IDENTIDAD.EPHEMERA,
 ): PostQuantumIdentity {
-  // Usar la semilla como seed criptografico
+  // Usar la semilla como seed criptografico para generar el par de llaves
+  // @noble/post-quantum ml_dsa65.keygen(seed) acepta una semilla de 32 bytes
+  const { secretKey, publicKey } = ml_dsa65.keygen(semilla);
+
   const keypair: PostQuantumKeypair = {
-    ...generateKeypair(tipo),
-    parPrivado: semilla,
+    parPrivado: secretKey,
+    parPublico: publicKey,
+    algoritmo: ALGORITMO,
+    tipo,
+    fechaCreacion: Date.now(),
   };
   return createPostQuantumIdentity(nodoId, keypair);
 }

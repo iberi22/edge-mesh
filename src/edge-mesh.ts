@@ -112,15 +112,20 @@ export class EdgeMesh {
         });
 
     // Identity
-    const keypair: PostQuantumKeypair = config.identitySecret
-      ? {
-          parPrivado: config.identitySecret,
-          parPublico: new Uint8Array(0),
-          algoritmo: "ML-DSA-65",
-          tipo: "maestra",
-          fechaCreacion: Date.now(),
-        }
-      : generateKeypair("maestra");
+    let keypair: PostQuantumKeypair;
+    if (config.identitySecret) {
+      // Derivar par de llaves a partir del secreto (semilla de 32 bytes)
+      const { secretKey, publicKey } = ml_dsa65.keygen(config.identitySecret);
+      keypair = {
+        parPrivado: secretKey,
+        parPublico: publicKey,
+        algoritmo: "ML-DSA-65",
+        tipo: "maestra",
+        fechaCreacion: Date.now(),
+      };
+    } else {
+      keypair = generateKeypair("maestra");
+    }
     this.identity = createPostQuantumIdentity(config.nodoId, keypair);
 
     // Yjs
