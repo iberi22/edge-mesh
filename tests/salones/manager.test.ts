@@ -8,7 +8,7 @@ describe('SalonVirtual', () => {
   const creatorId = 'peer1' as NodoId;
 
   beforeEach(() => {
-    edgeMesh = new EdgeMesh({ nodoId: creatorId });
+    edgeMesh = new EdgeMesh({ nodoId: creatorId, storageBackend: "mem" });
   });
 
   it('debería crear un salón correctamente', () => {
@@ -105,7 +105,7 @@ describe('SalonesManager', () => {
   const creatorId = 'peer1' as NodoId;
 
   beforeEach(() => {
-    edgeMesh = new EdgeMesh({ nodoId: creatorId });
+    edgeMesh = new EdgeMesh({ nodoId: creatorId, storageBackend: "mem" });
   });
 
   it('debería orquestar salones', async () => {
@@ -137,7 +137,7 @@ describe('SalonesManager', () => {
     const salon = await manager.crearSalon('Salon 1');
 
     // Intentar cerrar con otro peer (simulando cambio de identidad en edgeMesh)
-    const otherPeerEdgeMesh = new EdgeMesh({ nodoId: 'peer2' as NodoId });
+    const otherPeerEdgeMesh = new EdgeMesh({ nodoId: 'peer2' as NodoId, storageBackend: "mem" });
     const otherManager = new SalonesManager(otherPeerEdgeMesh);
 
     // Hack: forzar al otherManager a conocer el salón
