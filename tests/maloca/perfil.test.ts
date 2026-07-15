@@ -1,51 +1,88 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { ProfileManager } from "../../src/maloca/perfil.js";
-import { OpLog } from "../../src/op-log/index.js";
-import { InMemoryStorage } from "../../src/storage/index.js";
-import type { NodoId } from "../../src/types/index.js";
+import { describe, it, expect, beforeEach } from "vitest";
+import { EdgeMesh } from "../../src/edge-mesh.js";
+import { type NodoId } from "../../src/types/index.js";
+import type { PerfilHumano } from "../../src/maloca/types.js";
 
 describe("ProfileManager", () => {
-  let profileManager: ProfileManager;
-  let opLog: OpLog;
+  let mesh: EdgeMesh;
 
   beforeEach(() => {
-    opLog = new OpLog({ docId: "test_profiles", storage: new InMemoryStorage() });
-    profileManager = new ProfileManager(opLog);
+    mesh = new EdgeMesh({
+      nodoId: "test-node" as NodoId,
+      storageBackend: "mem",
+    });
   });
 
-  it("should upsert and get a human profile", async () => {
-    const perfil = {
-      id: "node1",
+  it("should register and get a human profile", () => {
+    const profile: PerfilHumano = {
+      id: "human-1",
+      alias: "Alice",
       identidad: new Uint8Array([1, 2, 3]),
-      alias: "Test User",
-      nodos: ["node1" as NodoId],
+      nodos: ["test-node" as NodoId],
       proyectos: [],
-      karma: 0,
       metadatos: {},
     };
 
-    await profileManager.upsertProfile(perfil, "node1" as NodoId);
-    const retrieved = profileManager.getProfile("node1");
-    expect(retrieved).toEqual(perfil);
+    mesh.profiles.register(profile);
+    const retrieved = mesh.profiles.get("human-1");
+    expect(retrieved).toEqual(profile);
   });
 
-  it("should list profiles", async () => {
-    const p1 = { id: "n1", alias: "u1" } as any;
-    const p2 = { id: "n2", alias: "u2" } as any;
+  it("should update a profile", () => {
+    const profile: PerfilHumano = {
+      id: "human-1",
+      alias: "Alice",
+      identidad: new Uint8Array([1, 2, 3]),
+      nodos: ["test-node" as NodoId],
+      proyectos: [],
+      metadatos: {},
+    };
 
-    await profileManager.upsertProfile(p1, "n1" as NodoId);
-    await profileManager.upsertProfile(p2, "n1" as NodoId);
+    mesh.profiles.register(profile);
+    mesh.profiles.update("human-1", { alias: "Alice Updated" });
 
-    expect(profileManager.listProfiles()).toHaveLength(2);
+    const retrieved = mesh.profiles.get("human-1") as PerfilHumano;
+    expect(retrieved.alias).toBe("Alice Updated");
   });
 
-  it("should sync with OpLog events", async () => {
-    const p1 = { id: "n1", alias: "u1" } as any;
+  it("should search for profiles", () => {
+    mesh.profiles.register({
+      id: "human-1",
+      alias: "Alice",
+      identidad: new Uint8Array(),
+      nodos: [],
+      proyectos: [],
+      metadatos: {},
+    });
+    mesh.profiles.register({
+      id: "human-2",
+      alias: "Bob",
+      identidad: new Uint8Array(),
+      nodos: [],
+      proyectos: [],
+      metadatos: {},
+    });
 
-    // Simulate remote update via OpLog
-    await opLog.append("perfil_update", p1, "n2" as NodoId);
+    const results = mesh.profiles.search("Ali");
+    expect(results).toHaveLength(1);
+    expect(results[0].id).toBe("human-1");
+  });
 
-    // ProfileManager should have updated via event listener
-    expect(profileManager.getProfile("n1")).toEqual(p1);
+  it("should link a profile to a project", () => {
+    const profile: PerfilHumano = {
+      id: "human-1",
+      alias: "Alice",
+      identidad: new Uint8Array(),
+      nodos: [],
+      proyectos: ["proj-1"],
+      metadatos: {},
+    };
+
+    mesh.profiles.register(profile);
+    mesh.profiles.linkToProject("human-1", "proj-2");
+
+    const retrieved = mesh.profiles.get("human-1") as PerfilHumano;
+    expect(retrieved.proyectos).toContain("proj-1");
+    expect(retrieved.proyectos).toContain("proj-2");
   });
 });

@@ -1,122 +1,99 @@
-import type { NodoId } from "../types/index.js";
-import type { OpLog } from "../op-log/index.js";
+import type { YjsAdapter } from "../edge-mesh.js";
 import type { PostQuantumIdentity } from "../identity/index.js";
+import type { NodoId, ParPublico } from "../types/index.js";
+import type { Karma, TransaccionKarma } from "./types.js";
+import type * as Y from "yjs";
 
-export interface Karma {
-  total: number;
-  historial: TransaccionKarma[];
-  pesos: Record<string, number>;
-  ultimaActualizacion: number;
-  decay: number;
-}
-
-export interface TransaccionKarma {
-  id: string;
-  tipo: string;
-  proyecto: string;
-  delta: number;
-  razon: string;
-  emitidoPor: NodoId;
-  firma: Uint8Array;
-  timestamp: number;
-  nodeId: NodoId;
+/**
+ * Deterministically stringifies an object for signing.
+ */
+function canonicalStringify(obj: any): string {
+  if (obj === null || typeof obj !== "object") {
+    return JSON.stringify(obj);
+  }
+  if (Array.isArray(obj)) {
+    return "[" + obj.map(canonicalStringify).join(",") + "]";
+  }
+  const keys = Object.keys(obj).sort();
+  return "{" + keys.map(k => `${JSON.stringify(k)}:${canonicalStringify(obj[k])}`).join(",") + "}";
 }
 
 export class KarmaManager {
-  private histories: Map<string, TransaccionKarma[]> = new Map();
-  private opLog: OpLog;
-  private identity: PostQuantumIdentity;
-  private decayRate: number = 0; // Decay rate per day, for example
+  private readonly yjs: YjsAdapter;
+  private readonly identity: PostQuantumIdentity;
+  private readonly karmaMap: Y.Map<Karma>;
 
-  constructor(opLog: OpLog, identity: PostQuantumIdentity) {
-    this.opLog = opLog;
+  constructor(yjs: YjsAdapter, identity: PostQuantumIdentity) {
+    this.yjs = yjs;
     this.identity = identity;
-
-    this.opLog.on("operacionAgregada", (ev) => {
-      const { operacion } = ev.detail;
-      if (operacion.tipo === "karma_tx") {
-        const tx = operacion.datos as TransaccionKarma;
-        this.applyTransaction(tx);
-      }
-    });
+    this.karmaMap = this.yjs.getMap("maloca:karma") as Y.Map<Karma>;
   }
 
-  async emit(tx: Omit<TransaccionKarma, "firma" | "timestamp" | "id">): Promise<void> {
+  async emit(txData: Omit<TransaccionKarma, "id" | "timestamp" | "firma">): Promise<TransaccionKarma> {
     const timestamp = Date.now();
-    const id = `${tx.nodeId}-${timestamp}-${Math.random().toString(36).substr(2, 9)}`;
+    const id = `${txData.emisor}:${timestamp}:${Math.random().toString(36).substring(2, 9)}`;
 
-    const txToSign = this.getStableTx(tx, id, timestamp);
-    const dataToSign = new TextEncoder().encode(JSON.stringify(txToSign));
-    const firma = await this.identity.firmar(dataToSign);
+    const payloadData = { ...txData, id, timestamp };
+    const payload = canonicalStringify(payloadData);
+    const firma = await this.identity.firmar(new TextEncoder().encode(payload));
 
-    const fullTx: TransaccionKarma = {
-      ...tx,
+    const tx: TransaccionKarma = {
+      ...txData,
       id,
       timestamp,
       firma,
     };
 
-    await this.opLog.append("karma_tx", fullTx, this.identity.nodoId);
-    this.applyTransaction(fullTx);
+    this.saveTransaction(tx);
+    return tx;
   }
 
-  private applyTransaction(tx: TransaccionKarma): void {
-    const history = this.histories.get(tx.nodeId) || [];
-    if (!history.some(h => h.id === tx.id)) {
-      history.push(tx);
-      history.sort((a, b) => a.timestamp - b.timestamp);
-      this.histories.set(tx.nodeId, history);
-    }
-  }
+  private saveTransaction(tx: TransaccionKarma): void {
+    const target = tx.sujeto;
 
-  getScore(nodeId: NodoId, proyecto?: string): number {
-    const history = this.histories.get(nodeId) || [];
-    const now = Date.now();
-
-    return history
-      .filter((tx) => !proyecto || tx.proyecto === proyecto)
-      .reduce((acc, tx) => {
-        const ageMs = now - tx.timestamp;
-        const ageDays = ageMs / (1000 * 60 * 60 * 24);
-        const decayedDelta = tx.delta * Math.pow(1 - this.decayRate, ageDays);
-        return acc + decayedDelta;
-      }, 0);
-  }
-
-  getHistory(nodeId: NodoId): TransaccionKarma[] {
-    return this.histories.get(nodeId) || [];
-  }
-
-  setDecayRate(rate: number): void {
-    this.decayRate = rate;
-  }
-
-  async verifySignature(tx: TransaccionKarma, publicKey: Uint8Array): Promise<boolean> {
-    const txToVerify = this.getStableTx(tx, tx.id, tx.timestamp);
-    const dataToVerify = new TextEncoder().encode(JSON.stringify(txToVerify));
-    return this.identity.verificar(dataToVerify, tx.firma, publicKey);
-  }
-
-  private getStableTx(tx: any, id: string, timestamp: number) {
-    return {
-      nodeId: tx.nodeId,
-      tipo: tx.tipo,
-      proyecto: tx.proyecto,
-      delta: tx.delta,
-      razon: tx.razon,
-      emitidoPor: tx.emitidoPor,
-      id,
-      timestamp
+    const currentKarma = this.karmaMap.get(target) || {
+      total: 0,
+      historial: [],
+      pesosPorProyecto: {},
+      ultimoDecay: Date.now(),
     };
+
+    const updatedKarma: Karma = {
+      ...currentKarma,
+      total: currentKarma.total + tx.delta,
+      historial: [...currentKarma.historial, tx],
+      pesosPorProyecto: {
+        ...currentKarma.pesosPorProyecto,
+        [tx.proyecto]: (currentKarma.pesosPorProyecto[tx.proyecto] || 0) + tx.delta,
+      },
+    };
+
+    this.karmaMap.set(target, updatedKarma);
   }
 
-  async loadFromOpLog(): Promise<void> {
-    const ops = await this.opLog.obtenerTodas();
-    for (const op of ops) {
-      if (op.tipo === "karma_tx") {
-        const tx = op.datos as TransaccionKarma;
-        this.applyTransaction(tx);
-      }
-    }
+  getScore(nodeId: NodoId): number {
+    return this.karmaMap.get(nodeId)?.total || 0;
+  }
+
+  getHistory(nodeId: NodoId): readonly TransaccionKarma[] {
+    return this.karmaMap.get(nodeId)?.historial || [];
+  }
+
+  applyDecay(nodeId: NodoId, factor: number = 0.95): void {
+    const current = this.karmaMap.get(nodeId);
+    if (!current) return;
+
+    const updated: Karma = {
+      ...current,
+      total: current.total * factor,
+      ultimoDecay: Date.now(),
+    };
+    this.karmaMap.set(nodeId, updated);
+  }
+
+  async verify(tx: TransaccionKarma, publicKey: ParPublico): Promise<boolean> {
+    const { firma, ...rest } = tx;
+    const payload = canonicalStringify(rest);
+    return this.identity.verificar(new TextEncoder().encode(payload), firma, publicKey);
   }
 }

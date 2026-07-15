@@ -1,95 +1,68 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { KarmaManager } from "../../src/maloca/karma.js";
-import { OpLog } from "../../src/op-log/index.js";
-import { InMemoryStorage } from "../../src/storage/index.js";
-import { createPostQuantumIdentity, generateKeypair } from "../../src/identity/index.js";
-import type { NodoId } from "../../src/types/index.js";
+import { describe, it, expect, beforeEach } from "vitest";
+import { EdgeMesh } from "../../src/edge-mesh.js";
+import { type NodoId } from "../../src/types/index.js";
 
 describe("KarmaManager", () => {
-  let karmaManager: KarmaManager;
-  let opLog: OpLog;
-  let identity: any;
+  let mesh: EdgeMesh;
 
   beforeEach(() => {
-    opLog = new OpLog({ docId: "test_karma", storage: new InMemoryStorage() });
-    identity = createPostQuantumIdentity("node1" as NodoId, generateKeypair());
-    karmaManager = new KarmaManager(opLog, identity);
+    mesh = new EdgeMesh({
+      nodoId: "test-node" as NodoId,
+      storageBackend: "mem",
+    });
   });
 
-  it("should emit karma transactions and update scores", async () => {
-    const tx = {
-      nodeId: "node2" as NodoId,
-      tipo: "puntos",
-      proyecto: "p1",
+  it("should emit and verify karma transactions", async () => {
+    const tx = await mesh.karma.emit({
+      tipo: "contribution",
+      proyecto: "maloca",
+      sujeto: "other-node" as NodoId,
       delta: 10,
-      razon: "test",
-      emitidoPor: "node1" as NodoId,
-    };
+      razon: "feature implementation",
+      emisor: mesh.identity.nodoId,
+    });
 
-    try {
-      await karmaManager.emit(tx);
-      expect(karmaManager.getScore("node2" as NodoId)).toBe(10);
-      expect(karmaManager.getScore("node2" as NodoId, "p1")).toBe(10);
-    } catch (e) {
-      if (!(e instanceof RangeError && e.message.includes("secretKey"))) {
-        throw e;
-      }
-    }
+    expect(tx.delta).toBe(10);
+    expect(tx.sujeto).toBe("other-node");
+
+    const isValid = await mesh.karma.verify(tx, mesh.identity.exportarPublico());
+    expect(isValid).toBe(true);
   });
 
-  it("should apply dynamic decay", async () => {
-    vi.useFakeTimers();
-    const tx = {
-      nodeId: "node2" as NodoId,
-      tipo: "puntos",
-      proyecto: "p1",
+  it("should track scores and history", async () => {
+    await mesh.karma.emit({
+      tipo: "contribution",
+      proyecto: "maloca",
+      sujeto: "node-1" as NodoId,
+      delta: 5,
+      razon: "bug fix",
+      emisor: mesh.identity.nodoId,
+    });
+
+    await mesh.karma.emit({
+      tipo: "contribution",
+      proyecto: "maloca",
+      sujeto: "node-1" as NodoId,
+      delta: 3,
+      razon: "docs",
+      emisor: mesh.identity.nodoId,
+    });
+
+    expect(mesh.karma.getScore("node-1" as NodoId)).toBe(8);
+    expect(mesh.karma.getHistory("node-1" as NodoId)).toHaveLength(2);
+  });
+
+  it("should apply decay", async () => {
+    await mesh.karma.emit({
+      tipo: "initial",
+      proyecto: "maloca",
+      sujeto: "node-1" as NodoId,
       delta: 100,
-      razon: "test",
-      emitidoPor: "node1" as NodoId,
-    };
+      razon: "setup",
+      emisor: mesh.identity.nodoId,
+    });
 
-    try {
-      await karmaManager.emit(tx);
-      karmaManager.setDecayRate(0.1); // 10% per day
-
-      expect(karmaManager.getScore("node2" as NodoId)).toBe(100);
-
-      // Advance 1 day
-      vi.advanceTimersByTime(24 * 60 * 60 * 1000);
-
-      expect(karmaManager.getScore("node2" as NodoId)).toBe(90);
-    } catch (e) {
-      if (!(e instanceof RangeError && e.message.includes("secretKey"))) {
-        throw e;
-      }
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("should verify signatures", async () => {
-    const tx = {
-      nodeId: "node2" as NodoId,
-      tipo: "puntos",
-      proyecto: "p1",
-      delta: 10,
-      razon: "test",
-      emitidoPor: "node1" as NodoId,
-    };
-
-    try {
-        await karmaManager.emit(tx);
-        const history = karmaManager.getHistory("node2" as NodoId);
-        const fullTx = history[0];
-
-        const isValid = await karmaManager.verifySignature(fullTx, identity.exportarPublico());
-        expect(isValid).toBe(true);
-    } catch (e) {
-        if (e instanceof RangeError && e.message.includes("secretKey")) {
-            console.warn("Skipping signature verification due to noble-post-quantum constraints in this environment");
-        } else {
-            throw e;
-        }
-    }
+    mesh.karma.applyDecay("node-1" as NodoId, 0.9);
+    expect(mesh.karma.getScore("node-1" as NodoId)).toBe(90);
   });
 });
