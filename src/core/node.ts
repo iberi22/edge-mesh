@@ -90,6 +90,7 @@ class DefaultEdgeMeshNode implements EdgeMeshNode {
   }
 
   async desconectar(): Promise<void> {
+    if (this.estado === "offline") return;
     this.transicionar("offline");
     this.emit("nodoDesconectado", { nodoId: this.nodoId });
   }

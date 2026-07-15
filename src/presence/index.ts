@@ -134,7 +134,6 @@ export class PresenceManager {
   procesarHeartbeat(datos: unknown): void {
     if (!esHeartbeatValido(datos)) return;
 
-    this.nodosConocidos.add(datos.nodoId);
     this.healthChecker.recibirHeartbeat(datos.nodoId, datos.timestamp);
   }
 
