@@ -1,131 +1,151 @@
 // ─── EDGE MESH ─────────────────────────────────────────────────────────────
 // Re-export completo de todo el paquete
 
-// ─── CORE ─────────────────────────────────────────────────────────────────
-export { EdgeMesh, YjsAdapter } from "./edge-mesh.js";
-export { createEdgeMeshNode, ESTADO_TRANSICIONES } from "./core/node.js";
-export type { EdgeMeshNode } from "./core/node.js";
-
-// ─── TYPES ────────────────────────────────────────────────────────────────
-export * from "./types/index.js";
-
-// ─── PROTOCOL ─────────────────────────────────────────────────────────────
-export { createEnvelope, MessageDeduplicator, validateEnvelope } from "./protocol/index.js";
-export type { DeduplicatorConfig } from "./protocol/index.js";
-export { generarNonce, generarId, bytesAHex, hexABytes } from "./protocol/utils.js";
-
-// ─── STORAGE ──────────────────────────────────────────────────────────────
-export { InMemoryStorage, StorageManager, StorageError } from "./storage/index.js";
-export type { IStorage, StorageManagerConfig } from "./storage/index.js";
-
-// ─── TRANSPORT ────────────────────────────────────────────────────────────
-export { PeerJSTransport } from "./transport/peerjs.js";
-export type { PeerJSTransportOptions, TransportEventMap } from "./transport/peerjs.js";
-
-// ─── GOVERNANCE ───────────────────────────────────────────────────────────
-export {
-  GovernanceManager,
-  createGovernanceManager,
-  ESTADO_PROPUESTA,
-} from "./governance/index.js";
-export type { Propuesta, EstadoPropuesta, GovernanceEventMap } from "./governance/index.js";
-
-// ─── IDENTITY ─────────────────────────────────────────────────────────────
-export {
-  createPostQuantumIdentity,
-  generateKeypair,
-  identityFromSecret,
-  serializeKeypair,
-  deserializeKeypair,
-  TIPO_IDENTIDAD,
-} from "./identity/index.js";
-export type {
-  PostQuantumKeypair,
-  PostQuantumIdentity,
-  TipoIdentidad,
-} from "./identity/index.js";
-
-// ─── PRESENCE ─────────────────────────────────────────────────────────────
-export { HealthChecker } from "./presence/health.js";
-export type { HealthCheckerConfig, HealthEventMap } from "./presence/health.js";
-export { PresenceManager } from "./presence/index.js";
-export type { PresenceManagerConfig, PresenceEventMap } from "./presence/index.js";
-
+export type { AuthzEventMap, CapacidadEstandar } from "./authz/index.js";
 // ─── AUTHZ ────────────────────────────────────────────────────────────────
 export {
-  NamespaceAuthorizer,
-  createNamespaceAuthorizer,
-  CAPACIDAD_ESTANDAR,
+	CAPACIDAD_ESTANDAR,
+	createNamespaceAuthorizer,
+	NamespaceAuthorizer,
 } from "./authz/index.js";
-export type { CapacidadEstandar, AuthzEventMap } from "./authz/index.js";
-
-// ─── NAMESPACES ───────────────────────────────────────────────────────────
-export { NamespaceManager, NAMESPACE_POR_DEFECTO } from "./namespaces/index.js";
-export type { NamespaceEventMap } from "./namespaces/index.js";
-
-// ─── OP LOG ───────────────────────────────────────────────────────────────
-export { OpLog } from "./op-log/index.js";
-export type { OpLogConfig, OpLogEventMap } from "./op-log/index.js";
-
-// ─── SYNC ─────────────────────────────────────────────────────────────────
-export { SyncEngine } from "./sync/engine.js";
 export type {
-  SyncEngineConfig,
-  SyncResult,
-  SyncDirection,
-  SyncEngineEventMap,
-} from "./sync/engine.js";
-
-// ─── SNAPSHOT ─────────────────────────────────────────────────────────────
-export {
-  SnapshotManager,
-  createSnapshotManager,
-} from "./snapshot/index.js";
-export type {
-  SnapshotManagerConfig,
-  SnapshotMetadata,
-  SnapshotEventMap,
-} from "./snapshot/index.js";
-
+	ChatEventMap,
+	ExamenEventMap,
+	Mensaje,
+	Pregunta,
+	TipoCanal,
+	TipoMensajeChat,
+	TipoPregunta,
+} from "./chat/index.js";
 // ─── CHAT P2P ─────────────────────────────────────────────────────────────
 export {
-  ChatChannel,
-  ExamenCompartido,
-  TIPO_MENSAJE_CHAT,
-  TIPO_CANAL,
-  TIPO_PREGUNTA,
+	ChatChannel,
+	ExamenCompartido,
+	TIPO_CANAL,
+	TIPO_MENSAJE_CHAT,
+	TIPO_PREGUNTA,
 } from "./chat/index.js";
+export type { EdgeMeshNode } from "./core/node.js";
+export { createEdgeMeshNode, ESTADO_TRANSICIONES } from "./core/node.js";
+// ─── CORE ─────────────────────────────────────────────────────────────────
+export { EdgeMesh, YjsAdapter } from "./edge-mesh.js";
 export type {
-  Mensaje,
-  Pregunta,
-  TipoMensajeChat,
-  TipoCanal,
-  TipoPregunta,
-  ChatEventMap,
-  ExamenEventMap,
-} from "./chat/index.js";
+	EstadoPropuesta,
+	GovernanceEventMap,
+	Propuesta,
+} from "./governance/index.js";
+// ─── GOVERNANCE ───────────────────────────────────────────────────────────
+export {
+	createGovernanceManager,
+	ESTADO_PROPUESTA,
+	GovernanceManager,
+} from "./governance/index.js";
+export type {
+	PostQuantumIdentity,
+	PostQuantumKeypair,
+	TipoIdentidad,
+} from "./identity/index.js";
+// ─── IDENTITY ─────────────────────────────────────────────────────────────
+export {
+	createPostQuantumIdentity,
+	deserializeKeypair,
+	generateKeypair,
+	identityFromSecret,
+	serializeKeypair,
+	TIPO_IDENTIDAD,
+} from "./identity/index.js";
+export type { EventoMaloca, TipoEventoMaloca } from "./maloca/event-bus.js";
+export { EventBus, TIPO_EVENTO_MALOCA } from "./maloca/event-bus.js";
+export type { Evidentia } from "./maloca/evidentia.js";
+export { EvidentiaManager } from "./maloca/evidentia.js";
+export type {
+	EstadoPlugin,
+	PluginInfo,
+	TipoPlugin,
+} from "./maloca/plugin-registry.js";
+// ─── MALOCA ───────────────────────────────────────────────────────────────
+export { PluginRegistry } from "./maloca/plugin-registry.js";
+export type {
+	EstrategiaFanOut,
+	GossipMessage,
+	MeshConfig,
+	MeshEventMap,
+	PeerInfo,
+} from "./mesh/index.js";
+// ─── MESH ESCALABLE ───────────────────────────────────────────────────────
+export { ESTRATEGIA_FAN_OUT, MeshManager } from "./mesh/index.js";
+export type { NamespaceEventMap } from "./namespaces/index.js";
+// ─── NAMESPACES ───────────────────────────────────────────────────────────
+export { NAMESPACE_POR_DEFECTO, NamespaceManager } from "./namespaces/index.js";
+export type { OpLogConfig, OpLogEventMap } from "./op-log/index.js";
+// ─── OP LOG ───────────────────────────────────────────────────────────────
+export { OpLog } from "./op-log/index.js";
+export type { HealthCheckerConfig, HealthEventMap } from "./presence/health.js";
+// ─── PRESENCE ─────────────────────────────────────────────────────────────
+export { HealthChecker } from "./presence/health.js";
+export type {
+	PresenceEventMap,
+	PresenceManagerConfig,
+} from "./presence/index.js";
+export { PresenceManager } from "./presence/index.js";
+export type { DeduplicatorConfig } from "./protocol/index.js";
+// ─── PROTOCOL ─────────────────────────────────────────────────────────────
+export {
+	createEnvelope,
+	MessageDeduplicator,
+	validateEnvelope,
+} from "./protocol/index.js";
+export {
+	bytesAHex,
+	generarId,
+	generarNonce,
+	hexABytes,
+} from "./protocol/utils.js";
+export type {
+	EstadoSalon,
+	SalonConfig,
+	SalonEventMap,
+	SalonInfo,
+	TipoSalon,
+} from "./salones/manager.js";
 
 // ─── SALONES VIRTUALES ────────────────────────────────────────────────────
 export {
-  SalonVirtual,
-  SalonesManager,
-  TIPO_SALON,
-  ESTADO_SALON,
+	ESTADO_SALON,
+	SalonesManager,
+	SalonVirtual,
+	TIPO_SALON,
 } from "./salones/manager.js";
 export type {
-  SalonConfig,
-  SalonInfo,
-  TipoSalon,
-  EstadoSalon,
-  SalonEventMap,
-} from "./salones/manager.js";
-
-// ─── MESH ESCALABLE ───────────────────────────────────────────────────────
-export { MeshManager, ESTRATEGIA_FAN_OUT } from "./mesh/index.js";
+	SnapshotEventMap,
+	SnapshotManagerConfig,
+	SnapshotMetadata,
+} from "./snapshot/index.js";
+// ─── SNAPSHOT ─────────────────────────────────────────────────────────────
+export {
+	createSnapshotManager,
+	SnapshotManager,
+} from "./snapshot/index.js";
+export type { IStorage, StorageManagerConfig } from "./storage/index.js";
+// ─── STORAGE ──────────────────────────────────────────────────────────────
+export {
+	InMemoryStorage,
+	StorageError,
+	StorageManager,
+} from "./storage/index.js";
 export type {
-  MeshConfig,
-  PeerInfo,
-  GossipMessage,
-  EstrategiaFanOut,
-  MeshEventMap,
-} from "./mesh/index.js";
+	SyncDirection,
+	SyncEngineConfig,
+	SyncEngineEventMap,
+	SyncResult,
+} from "./sync/engine.js";
+// ─── SYNC ─────────────────────────────────────────────────────────────────
+export { SyncEngine } from "./sync/engine.js";
+export type {
+	PeerJSTransportOptions,
+	TransportEventMap,
+} from "./transport/peerjs.js";
+// ─── TRANSPORT ────────────────────────────────────────────────────────────
+export { PeerJSTransport } from "./transport/peerjs.js";
+// ─── TYPES ────────────────────────────────────────────────────────────────
+export * from "./types/index.js";
