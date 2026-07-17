@@ -164,8 +164,7 @@ export class EdgeMesh {
 		this.defaultSyncNamespace = config.defaultSyncNamespace ?? "global";
 		this.sharesExternalDoc = config.yDoc !== undefined;
 		// Host-owned doc (dbSync) already broadcasts via p2pManager YJS_UPDATE — avoid double relay.
-		this.relayLocalYjs =
-			config.relayLocalYjs ?? (config.yDoc === undefined);
+		this.relayLocalYjs = config.relayLocalYjs ?? config.yDoc === undefined;
 
 		// Core — mesh uses its own EventTarget so emit("error") does not re-enter nodo handlers
 		this.nodo = createEdgeMeshNode(config.nodoId);

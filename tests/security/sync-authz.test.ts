@@ -1,10 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CAPACIDAD_ESTANDAR } from "../../src/authz/index.js";
 import { EdgeMesh } from "../../src/edge-mesh.js";
-import {
-	createEnvelope,
-	signEnvelope,
-} from "../../src/protocol/index.js";
+import { createEnvelope, signEnvelope } from "../../src/protocol/index.js";
 import { MemoryTransport } from "../../src/transport/memory.js";
 import type { NodoId } from "../../src/types/index.js";
 import { TIPO_MENSAJE } from "../../src/types/index.js";

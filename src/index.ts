@@ -155,12 +155,12 @@ export type {
 } from "./sync/engine.js";
 // ─── SYNC ─────────────────────────────────────────────────────────────────
 export { SyncEngine } from "./sync/engine.js";
+// ─── TRANSPORT ────────────────────────────────────────────────────────────
+export { MemoryTransport } from "./transport/memory.js";
 export type {
 	PeerJSTransportOptions,
 	TransportEventMap,
 } from "./transport/peerjs.js";
-// ─── TRANSPORT ────────────────────────────────────────────────────────────
-export { MemoryTransport } from "./transport/memory.js";
 export { PeerJSTransport } from "./transport/peerjs.js";
 export type { ITransport } from "./transport/types.js";
 // ─── TYPES ────────────────────────────────────────────────────────────────

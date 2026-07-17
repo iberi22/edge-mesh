@@ -24,7 +24,11 @@ export interface ReconnectDelayOptions {
 	readonly random?: () => number;
 }
 
-type HealthEventName = "peer:healthy" | "peer:stale" | "peer:offline" | "sync:error";
+type HealthEventName =
+	| "peer:healthy"
+	| "peer:stale"
+	| "peer:offline"
+	| "sync:error";
 
 export type PeerHealthEventPayload =
 	| PeerHealthState
@@ -33,8 +37,14 @@ export type PeerHealthEventPayload =
 export interface PeerHealthMonitor {
 	// Loose listener typing so callers can subscribe to peer:* with PeerHealthState
 	// without fighting the sync:error payload union.
-	on(eventName: HealthEventName, listener: (...args: never[]) => void): PeerHealthMonitor;
-	off(eventName: HealthEventName, listener: (...args: never[]) => void): PeerHealthMonitor;
+	on(
+		eventName: HealthEventName,
+		listener: (...args: never[]) => void,
+	): PeerHealthMonitor;
+	off(
+		eventName: HealthEventName,
+		listener: (...args: never[]) => void,
+	): PeerHealthMonitor;
 	markConnected(peerId: string): PeerHealthState;
 	markPing(peerId: string): PeerHealthState;
 	markPong(peerId: string): PeerHealthState;

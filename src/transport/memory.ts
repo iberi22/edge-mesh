@@ -101,12 +101,7 @@ export class MemoryTransport implements ITransport {
 
 		const env = esEnvolvente(payload)
 			? payload
-			: createEnvelope(
-					tipoMensaje as TipoMensaje,
-					this.nodoId,
-					"*",
-					payload,
-				);
+			: createEnvelope(tipoMensaje as TipoMensaje, this.nodoId, "*", payload);
 
 		for (const peer of room) {
 			if (peer === this) continue;

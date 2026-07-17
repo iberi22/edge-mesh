@@ -1,231 +1,208 @@
 {
-  "version": "1.1.0",
-  "updated": "2026-07-17",
-  "status_model": {
-    "skeleton": "Module surface exists; critical methods are placeholders or unwired",
-    "unit": "Local unit behavior works; not multi-peer / not security-hardened",
-    "integrated": "Wired into EdgeMesh data path for multi-peer use",
-    "hardened": "Authz + signature checks on wire + CI green"
-  },
-  "summary": {
-    "total_features": 18,
-    "implemented": 0,
-    "partial": 18,
-    "skeleton": 1,
-    "pending": 0,
-    "implementation_percentage": 66,
-    "notes": "Recalibrated 2026-07-17 + hardening A: MemoryTransport, SYNC/AUTHZ authz, ML-DSA sign/verify fix, peer-health exports. Avg 63%."
-  },
-  "features": [
-    {
-      "id": "F-001",
-      "name": "P2P Node Lifecycle",
-      "module": "core",
-      "status": "partial",
-      "maturity": "unit",
-      "implementation_percentage": 40,
-      "gaps": [
-        "enviar/transmitir are placeholders",
-        "conectar only flips state machine"
-      ]
-    },
-    {
-      "id": "F-002",
-      "name": "PeerJS Transport",
-      "module": "transport",
-      "status": "partial",
-      "maturity": "unit",
-      "implementation_percentage": 72,
-      "gaps": [
-        "Message type historically collapsed to sync",
-        "No binary-safe Yjs encoding guarantee",
-        "Reconnect policy limited"
-      ]
-    },
-    {
-      "id": "F-003",
-      "name": "CRDT Sync (Yjs)",
-      "module": "sync",
-      "status": "partial",
-      "maturity": "unit",
-      "implementation_percentage": 62,
-      "gaps": [
-        "No auto Yjs onUpdate broadcast in EdgeMesh",
-        "OpLog SyncEngine not unified with Yjs path"
-      ]
-    },
-    {
-      "id": "F-004",
-      "name": "Post-Quantum Identity",
-      "module": "identity",
-      "status": "partial",
-      "maturity": "unit",
-      "implementation_percentage": 70,
-      "gaps": [
-        "ML-DSA only (no ML-KEM in core)",
-        "identityFromSecret historically broken",
-        "Envelopes not always signed/verified"
-      ]
-    },
-    {
-      "id": "F-005",
-      "name": "Operation Log",
-      "module": "op-log",
-      "status": "partial",
-      "maturity": "unit",
-      "implementation_percentage": 75,
-      "gaps": [
-        "Single sequence model not multi-author vector clock"
-      ]
-    },
-    {
-      "id": "F-006",
-      "name": "Snapshot Manager",
-      "module": "snapshot",
-      "status": "partial",
-      "maturity": "unit",
-      "implementation_percentage": 70,
-      "gaps": [
-        "Local only; no authenticated snapshot protocol"
-      ]
-    },
-    {
-      "id": "F-007",
-      "name": "IndexedDB Storage",
-      "module": "storage",
-      "status": "partial",
-      "maturity": "unit",
-      "implementation_percentage": 80,
-      "gaps": [
-        "IDB path mostly mocked in tests"
-      ]
-    },
-    {
-      "id": "F-008",
-      "name": "Presence & Heartbeat",
-      "module": "presence",
-      "status": "partial",
-      "maturity": "unit",
-      "implementation_percentage": 65,
-      "gaps": [
-        "On-wire typing depends on transport envelope tipo"
-      ]
-    },
-    {
-      "id": "F-009",
-      "name": "Decentralized Governance",
-      "module": "governance",
-      "status": "partial",
-      "maturity": "unit",
-      "implementation_percentage": 50,
-      "gaps": [
-        "Threshold semantics weak",
-        "Remote votes not crypto-verified"
-      ]
-    },
-    {
-      "id": "F-010",
-      "name": "P2P Chat Channels",
-      "module": "chat",
-      "status": "partial",
-      "maturity": "unit",
-      "implementation_percentage": 70,
-      "gaps": [
-        "Local Yjs; network fan-out not guaranteed by EdgeMesh"
-      ]
-    },
-    {
-      "id": "F-011",
-      "name": "Virtual Rooms",
-      "module": "salones",
-      "status": "partial",
-      "maturity": "unit",
-      "implementation_percentage": 60,
-      "gaps": [
-        "Separate docs vs EdgeMesh.yjsAdapter in places"
-      ]
-    },
-    {
-      "id": "F-012",
-      "name": "Scalable Mesh Gossip",
-      "module": "mesh",
-      "status": "partial",
-      "maturity": "unit",
-      "implementation_percentage": 55,
-      "gaps": [
-        "Not fully integrated into EdgeMesh.procesarMensaje"
-      ]
-    },
-    {
-      "id": "F-013",
-      "name": "Protocol Envelope",
-      "module": "protocol",
-      "status": "partial",
-      "maturity": "unit",
-      "implementation_percentage": 80,
-      "gaps": [
-        "Structural validation only unless signature helpers used"
-      ]
-    },
-    {
-      "id": "F-014",
-      "name": "Namespace Authorization",
-      "module": "authz",
-      "status": "partial",
-      "maturity": "unit",
-      "implementation_percentage": 72,
-      "gaps": [
-        "Local grants work; remote AUTHZ must not be free-for-all"
-      ]
-    },
-    {
-      "id": "F-015",
-      "name": "Namespace Manager",
-      "module": "namespaces",
-      "status": "partial",
-      "maturity": "unit",
-      "implementation_percentage": 75,
-      "gaps": [
-        "Not enforced on transport path"
-      ]
-    },
-    {
-      "id": "F-016",
-      "name": "Unit Tests",
-      "module": "tests",
-      "status": "partial",
-      "maturity": "unit",
-      "implementation_percentage": 78,
-      "gaps": [
-        "Suite runs in standalone repo",
-        "Monorepo vitest still broken (@vitest/utils)",
-        "Few PeerJS multi-peer E2E"
-      ]
-    },
-    {
-      "id": "F-017",
-      "name": "Documentation",
-      "module": "docs",
-      "status": "partial",
-      "maturity": "unit",
-      "implementation_percentage": 65,
-      "gaps": [
-        "docs/ exists (api, architecture, SRS)",
-        "Architecture oversells integrated secure path"
-      ]
-    },
-    {
-      "id": "F-018",
-      "name": "CI Pipeline",
-      "module": "ci",
-      "status": "partial",
-      "maturity": "unit",
-      "implementation_percentage": 40,
-      "gaps": [
-        "GitHub Actions workflow added (.github/workflows/ci.yml)",
-        "Not yet verified green on remote CI",
-        "No coverage thresholds"
-      ]
-    }
-  ]
+	"version": "1.1.0",
+	"updated": "2026-07-17",
+	"status_model": {
+		"skeleton": "Module surface exists; critical methods are placeholders or unwired",
+		"unit": "Local unit behavior works; not multi-peer / not security-hardened",
+		"integrated": "Wired into EdgeMesh data path for multi-peer use",
+		"hardened": "Authz + signature checks on wire + CI green"
+	},
+	"summary": {
+		"total_features": 18,
+		"implemented": 0,
+		"partial": 18,
+		"skeleton": 1,
+		"pending": 0,
+		"implementation_percentage": 66,
+		"notes": "Recalibrated 2026-07-17 + hardening A: MemoryTransport, SYNC/AUTHZ authz, ML-DSA sign/verify fix, peer-health exports. Avg 63%."
+	},
+	"features": [
+		{
+			"id": "F-001",
+			"name": "P2P Node Lifecycle",
+			"module": "core",
+			"status": "partial",
+			"maturity": "unit",
+			"implementation_percentage": 40,
+			"gaps": [
+				"enviar/transmitir are placeholders",
+				"conectar only flips state machine"
+			]
+		},
+		{
+			"id": "F-002",
+			"name": "PeerJS Transport",
+			"module": "transport",
+			"status": "partial",
+			"maturity": "unit",
+			"implementation_percentage": 72,
+			"gaps": [
+				"Message type historically collapsed to sync",
+				"No binary-safe Yjs encoding guarantee",
+				"Reconnect policy limited"
+			]
+		},
+		{
+			"id": "F-003",
+			"name": "CRDT Sync (Yjs)",
+			"module": "sync",
+			"status": "partial",
+			"maturity": "unit",
+			"implementation_percentage": 62,
+			"gaps": [
+				"No auto Yjs onUpdate broadcast in EdgeMesh",
+				"OpLog SyncEngine not unified with Yjs path"
+			]
+		},
+		{
+			"id": "F-004",
+			"name": "Post-Quantum Identity",
+			"module": "identity",
+			"status": "partial",
+			"maturity": "unit",
+			"implementation_percentage": 70,
+			"gaps": [
+				"ML-DSA only (no ML-KEM in core)",
+				"identityFromSecret historically broken",
+				"Envelopes not always signed/verified"
+			]
+		},
+		{
+			"id": "F-005",
+			"name": "Operation Log",
+			"module": "op-log",
+			"status": "partial",
+			"maturity": "unit",
+			"implementation_percentage": 75,
+			"gaps": ["Single sequence model not multi-author vector clock"]
+		},
+		{
+			"id": "F-006",
+			"name": "Snapshot Manager",
+			"module": "snapshot",
+			"status": "partial",
+			"maturity": "unit",
+			"implementation_percentage": 70,
+			"gaps": ["Local only; no authenticated snapshot protocol"]
+		},
+		{
+			"id": "F-007",
+			"name": "IndexedDB Storage",
+			"module": "storage",
+			"status": "partial",
+			"maturity": "unit",
+			"implementation_percentage": 80,
+			"gaps": ["IDB path mostly mocked in tests"]
+		},
+		{
+			"id": "F-008",
+			"name": "Presence & Heartbeat",
+			"module": "presence",
+			"status": "partial",
+			"maturity": "unit",
+			"implementation_percentage": 65,
+			"gaps": ["On-wire typing depends on transport envelope tipo"]
+		},
+		{
+			"id": "F-009",
+			"name": "Decentralized Governance",
+			"module": "governance",
+			"status": "partial",
+			"maturity": "unit",
+			"implementation_percentage": 50,
+			"gaps": ["Threshold semantics weak", "Remote votes not crypto-verified"]
+		},
+		{
+			"id": "F-010",
+			"name": "P2P Chat Channels",
+			"module": "chat",
+			"status": "partial",
+			"maturity": "unit",
+			"implementation_percentage": 70,
+			"gaps": ["Local Yjs; network fan-out not guaranteed by EdgeMesh"]
+		},
+		{
+			"id": "F-011",
+			"name": "Virtual Rooms",
+			"module": "salones",
+			"status": "partial",
+			"maturity": "unit",
+			"implementation_percentage": 60,
+			"gaps": ["Separate docs vs EdgeMesh.yjsAdapter in places"]
+		},
+		{
+			"id": "F-012",
+			"name": "Scalable Mesh Gossip",
+			"module": "mesh",
+			"status": "partial",
+			"maturity": "unit",
+			"implementation_percentage": 55,
+			"gaps": ["Not fully integrated into EdgeMesh.procesarMensaje"]
+		},
+		{
+			"id": "F-013",
+			"name": "Protocol Envelope",
+			"module": "protocol",
+			"status": "partial",
+			"maturity": "unit",
+			"implementation_percentage": 80,
+			"gaps": ["Structural validation only unless signature helpers used"]
+		},
+		{
+			"id": "F-014",
+			"name": "Namespace Authorization",
+			"module": "authz",
+			"status": "partial",
+			"maturity": "unit",
+			"implementation_percentage": 72,
+			"gaps": ["Local grants work; remote AUTHZ must not be free-for-all"]
+		},
+		{
+			"id": "F-015",
+			"name": "Namespace Manager",
+			"module": "namespaces",
+			"status": "partial",
+			"maturity": "unit",
+			"implementation_percentage": 75,
+			"gaps": ["Not enforced on transport path"]
+		},
+		{
+			"id": "F-016",
+			"name": "Unit Tests",
+			"module": "tests",
+			"status": "partial",
+			"maturity": "unit",
+			"implementation_percentage": 78,
+			"gaps": [
+				"Suite runs in standalone repo",
+				"Monorepo vitest still broken (@vitest/utils)",
+				"Few PeerJS multi-peer E2E"
+			]
+		},
+		{
+			"id": "F-017",
+			"name": "Documentation",
+			"module": "docs",
+			"status": "partial",
+			"maturity": "unit",
+			"implementation_percentage": 65,
+			"gaps": [
+				"docs/ exists (api, architecture, SRS)",
+				"Architecture oversells integrated secure path"
+			]
+		},
+		{
+			"id": "F-018",
+			"name": "CI Pipeline",
+			"module": "ci",
+			"status": "partial",
+			"maturity": "unit",
+			"implementation_percentage": 40,
+			"gaps": [
+				"GitHub Actions workflow added (.github/workflows/ci.yml)",
+				"Not yet verified green on remote CI",
+				"No coverage thresholds"
+			]
+		}
+	]
 }

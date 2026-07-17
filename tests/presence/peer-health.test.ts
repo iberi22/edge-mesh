@@ -37,14 +37,14 @@ describe("createPeerHealthMonitor", () => {
 
 describe("getReconnectDelay", () => {
 	it("exponential backoff capped at max", () => {
-		expect(getReconnectDelay(0, { initialDelayMs: 1000, maxDelayMs: 8000 })).toBe(
-			1000,
-		);
-		expect(getReconnectDelay(1, { initialDelayMs: 1000, maxDelayMs: 8000 })).toBe(
-			2000,
-		);
-		expect(getReconnectDelay(10, { initialDelayMs: 1000, maxDelayMs: 8000 })).toBe(
-			8000,
-		);
+		expect(
+			getReconnectDelay(0, { initialDelayMs: 1000, maxDelayMs: 8000 }),
+		).toBe(1000);
+		expect(
+			getReconnectDelay(1, { initialDelayMs: 1000, maxDelayMs: 8000 }),
+		).toBe(2000);
+		expect(
+			getReconnectDelay(10, { initialDelayMs: 1000, maxDelayMs: 8000 }),
+		).toBe(8000);
 	});
 });

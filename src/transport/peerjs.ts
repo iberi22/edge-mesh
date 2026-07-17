@@ -1,6 +1,11 @@
 import Peer, { type DataConnection } from "peerjs";
 import { createEnvelope, MessageDeduplicator } from "../protocol/index.js";
-import type { Envolvente, NodoId, TipoMensaje, TipoTransporte } from "../types/index.js";
+import type {
+	Envolvente,
+	NodoId,
+	TipoMensaje,
+	TipoTransporte,
+} from "../types/index.js";
 import { TIPO_MENSAJE, TIPO_TRANSPORTE } from "../types/index.js";
 import type { ITransport, TransportEventMap } from "./types.js";
 
@@ -157,12 +162,7 @@ export class PeerJSTransport implements ITransport {
 	): Promise<void> {
 		const env = esEnvolvente(payload)
 			? payload
-			: createEnvelope(
-					tipoMensaje as TipoMensaje,
-					this.nodoId,
-					"*",
-					payload,
-				);
+			: createEnvelope(tipoMensaje as TipoMensaje, this.nodoId, "*", payload);
 
 		const promesas: Promise<void>[] = [];
 		for (const conn of this.conexiones.values()) {

@@ -19,12 +19,9 @@ describe("identity sign/verify", () => {
 			"n1" as NodoId,
 			generateKeypair("maestra"),
 		);
-		const env = createEnvelope(
-			TIPO_MENSAJE.SYNC,
-			"n1" as NodoId,
-			"*",
-			{ hello: true },
-		);
+		const env = createEnvelope(TIPO_MENSAJE.SYNC, "n1" as NodoId, "*", {
+			hello: true,
+		});
 		const signed = await signEnvelope(env, identity);
 		const ok = await verifyEnvelopeSignature(
 			signed,

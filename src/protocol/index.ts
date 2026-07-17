@@ -1,5 +1,10 @@
 import type { PostQuantumIdentity } from "../identity/index.js";
-import type { Envolvente, NodoId, ParPublico, TipoMensaje } from "../types/index.js";
+import type {
+	Envolvente,
+	NodoId,
+	ParPublico,
+	TipoMensaje,
+} from "../types/index.js";
 import { TIPO_MENSAJE } from "../types/index.js";
 
 // ─── ENVELOPE CREATION ─────────────────────────────────────────────────────
@@ -85,11 +90,7 @@ export async function verifyEnvelopeSignature(
 	identity: PostQuantumIdentity,
 ): Promise<boolean> {
 	if (!env.firma || env.firma.length === 0) return false;
-	return identity.verificar(
-		canonicalEnvelopeBytes(env),
-		env.firma,
-		parPublico,
-	);
+	return identity.verificar(canonicalEnvelopeBytes(env), env.firma, parPublico);
 }
 
 // ─── MESSAGE DEDUPLICATOR ──────────────────────────────────────────────────

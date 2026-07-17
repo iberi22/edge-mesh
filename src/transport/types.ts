@@ -28,7 +28,11 @@ export interface ITransport {
 		handler: (ev: TransportEventMap[K]) => void,
 	): void;
 
-	enviar(destino: NodoId, payload: unknown, tipoMensaje?: string): Promise<void>;
+	enviar(
+		destino: NodoId,
+		payload: unknown,
+		tipoMensaje?: string,
+	): Promise<void>;
 	transmitir(payload: unknown, tipoMensaje?: string): Promise<void>;
 	estaConectado(): boolean;
 	obtenerConexiones(): readonly string[];
