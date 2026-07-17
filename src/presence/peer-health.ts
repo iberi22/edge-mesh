@@ -26,15 +26,15 @@ export interface ReconnectDelayOptions {
 
 type HealthEventName = "peer:healthy" | "peer:stale" | "peer:offline" | "sync:error";
 
+export type PeerHealthEventPayload =
+	| PeerHealthState
+	| { peerId: string; error: unknown };
+
 export interface PeerHealthMonitor {
-	on(
-		eventName: HealthEventName,
-		listener: (state: PeerHealthState | { peerId: string; error: unknown }) => void,
-	): PeerHealthMonitor;
-	off(
-		eventName: HealthEventName,
-		listener: (state: PeerHealthState | { peerId: string; error: unknown }) => void,
-	): PeerHealthMonitor;
+	// Loose listener typing so callers can subscribe to peer:* with PeerHealthState
+	// without fighting the sync:error payload union.
+	on(eventName: HealthEventName, listener: (...args: never[]) => void): PeerHealthMonitor;
+	off(eventName: HealthEventName, listener: (...args: never[]) => void): PeerHealthMonitor;
 	markConnected(peerId: string): PeerHealthState;
 	markPing(peerId: string): PeerHealthState;
 	markPong(peerId: string): PeerHealthState;
@@ -66,7 +66,7 @@ class PeerHealthMonitorImpl implements PeerHealthMonitor {
 	private readonly peers = new Map<string, PeerHealthState>();
 	private readonly listeners = new Map<
 		HealthEventName,
-		Set<(state: PeerHealthState | { peerId: string; error: unknown }) => void>
+		Set<(payload: PeerHealthEventPayload) => void>
 	>();
 	private readonly now: () => number;
 	private readonly staleAfterMs: number;
@@ -80,19 +80,21 @@ class PeerHealthMonitorImpl implements PeerHealthMonitor {
 
 	on(
 		eventName: HealthEventName,
-		listener: (state: PeerHealthState | { peerId: string; error: unknown }) => void,
+		listener: (...args: never[]) => void,
 	): PeerHealthMonitor {
 		const set = this.listeners.get(eventName) ?? new Set();
-		set.add(listener);
+		set.add(listener as (payload: PeerHealthEventPayload) => void);
 		this.listeners.set(eventName, set);
 		return this;
 	}
 
 	off(
 		eventName: HealthEventName,
-		listener: (state: PeerHealthState | { peerId: string; error: unknown }) => void,
+		listener: (...args: never[]) => void,
 	): PeerHealthMonitor {
-		this.listeners.get(eventName)?.delete(listener);
+		this.listeners
+			.get(eventName)
+			?.delete(listener as (payload: PeerHealthEventPayload) => void);
 		return this;
 	}
 
