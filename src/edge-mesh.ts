@@ -1,5 +1,6 @@
 import * as Y from "yjs";
 import {
+	CAPACIDAD_ESTANDAR,
 	createNamespaceAuthorizer,
 	type NamespaceAuthorizer,
 } from "./authz/index.js";
@@ -11,16 +12,18 @@ import {
 import {
 	createPostQuantumIdentity,
 	generateKeypair,
+	identityFromSecret,
 	type PostQuantumIdentity,
-	type PostQuantumKeypair,
 } from "./identity/index.js";
 import { NamespaceManager } from "./namespaces/index.js";
 import { OpLog } from "./op-log/index.js";
 import { PresenceManager } from "./presence/index.js";
 import {
-	type createEnvelope,
+	createEnvelope,
 	MessageDeduplicator,
+	signEnvelope,
 	validateEnvelope,
+	verifyEnvelopeSignature,
 } from "./protocol/index.js";
 import {
 	createSnapshotManager,
@@ -28,14 +31,19 @@ import {
 } from "./snapshot/index.js";
 import { InMemoryStorage, StorageManager } from "./storage/index.js";
 import { SyncEngine } from "./sync/engine.js";
+import { MemoryTransport } from "./transport/memory.js";
 import {
 	PeerJSTransport,
 	type PeerJSTransportOptions,
 } from "./transport/peerjs.js";
+import type { ITransport } from "./transport/types.js";
 import type {
 	EdgeMeshConfig,
 	EdgeMeshEventMap,
+	Envolvente,
 	NodoId,
+	ParPublico,
+	TipoMensaje,
 } from "./types/index.js";
 import { TIPO_MENSAJE } from "./types/index.js";
 
@@ -43,13 +51,16 @@ import { TIPO_MENSAJE } from "./types/index.js";
 
 export class YjsAdapter {
 	readonly doc: Y.Doc;
+	/** When false, destroy() only detaches listeners (shared host doc). */
+	readonly ownsDoc: boolean;
 	private readonly listeners: Map<
 		string,
 		Set<(update: Uint8Array, origin: unknown) => void>
 	>;
 
-	constructor(existingDoc?: Y.Doc) {
+	constructor(existingDoc?: Y.Doc, ownsDoc = !existingDoc) {
 		this.doc = existingDoc ?? new Y.Doc();
+		this.ownsDoc = ownsDoc;
 		this.listeners = new Map();
 	}
 
@@ -96,8 +107,16 @@ export class YjsAdapter {
 	}
 
 	destroy(): void {
-		this.doc.destroy();
+		// Detach update handlers first
+		for (const handlers of this.listeners.values()) {
+			for (const handler of handlers) {
+				this.doc.off("update", handler as never);
+			}
+		}
 		this.listeners.clear();
+		if (this.ownsDoc) {
+			this.doc.destroy();
+		}
 	}
 }
 
@@ -116,20 +135,41 @@ export class EdgeMesh {
 	readonly namespaces: NamespaceManager;
 	readonly yjsAdapter: YjsAdapter;
 
-	private transport: PeerJSTransport | null = null;
+	private transport: ITransport | null = null;
 	private readonly logsDoc: Map<string, OpLog>;
 	private readonly syncs: Map<string, SyncEngine>;
 	private readonly snapshots: Map<string, SnapshotManager>;
+	/** Registered peer public keys for envelope verification. */
+	private readonly peerPublicKeys: Map<NodoId, ParPublico>;
+	private readonly requireAuthz: boolean;
+	private readonly requireSignedEnvelopes: boolean;
+	private readonly defaultSyncNamespace: string;
+	private unsubYjs: (() => void) | null = null;
+	private transportMessageHandler:
+		| ((ev: CustomEvent<{ envolvente: Envolvente }>) => void)
+		| null = null;
+	private iniciado = false;
+	/** True when this mesh created the Y.Doc (false when host injects yDoc). */
+	readonly sharesExternalDoc: boolean;
+	private readonly relayLocalYjs: boolean;
 
 	constructor(config: EdgeMeshConfig) {
 		this.config = config;
 		this.logsDoc = new Map();
 		this.syncs = new Map();
 		this.snapshots = new Map();
+		this.peerPublicKeys = new Map();
+		this.requireAuthz = config.requireAuthz !== false;
+		this.requireSignedEnvelopes = config.requireSignedEnvelopes === true;
+		this.defaultSyncNamespace = config.defaultSyncNamespace ?? "global";
+		this.sharesExternalDoc = config.yDoc !== undefined;
+		// Host-owned doc (dbSync) already broadcasts via p2pManager YJS_UPDATE — avoid double relay.
+		this.relayLocalYjs =
+			config.relayLocalYjs ?? (config.yDoc === undefined);
 
-		// Core
+		// Core — mesh uses its own EventTarget so emit("error") does not re-enter nodo handlers
 		this.nodo = createEdgeMeshNode(config.nodoId);
-		this.eventTarget = this.nodo.eventTarget;
+		this.eventTarget = new EventTarget();
 		this.deduplicator = new MessageDeduplicator();
 
 		// Storage
@@ -140,20 +180,24 @@ export class EdgeMesh {
 						dbName: `edge-mesh-${config.nodoId}`,
 					});
 
-		// Identity
-		const keypair: PostQuantumKeypair = config.identitySecret
-			? {
-					parPrivado: config.identitySecret,
-					parPublico: new Uint8Array(0),
-					algoritmo: "ML-DSA-65",
-					tipo: "maestra",
-					fechaCreacion: Date.now(),
-				}
-			: generateKeypair("maestra");
-		this.identity = createPostQuantumIdentity(config.nodoId, keypair);
+		// Identity — never pair a custom private key with an empty public key
+		if (config.identitySecret && config.identitySecret.length > 0) {
+			this.identity = identityFromSecret(
+				config.nodoId,
+				config.identitySecret,
+				"maestra",
+			);
+		} else {
+			this.identity = createPostQuantumIdentity(
+				config.nodoId,
+				generateKeypair("maestra"),
+			);
+		}
+		this.registrarClavePublica(config.nodoId, this.identity.exportarPublico());
 
-		// Yjs
-		this.yjsAdapter = new YjsAdapter();
+		// Yjs — Phase B: optional shared host document (e.g. dbSync.doc)
+		const externalDoc = config.yDoc as Y.Doc | undefined;
+		this.yjsAdapter = new YjsAdapter(externalDoc, !externalDoc);
 
 		// Governance
 		this.governance = createGovernanceManager(config.governancePolicy);
@@ -170,80 +214,226 @@ export class EdgeMesh {
 		// Namespaces
 		this.namespaces = new NamespaceManager();
 
-		// Re-encolar eventos del nodo
+		// Re-encolar eventos del nodo (forward to mesh EventTarget without looping)
 		this.nodo.on("nodoConectado", (ev) => {
 			this.onNodoConectado(ev.detail.nodoId);
+			this.emit("nodoConectado", ev.detail);
 		});
 		this.nodo.on("nodoDesconectado", (ev) => {
 			this.onNodoDesconectado(ev.detail.nodoId);
+			this.emit("nodoDesconectado", ev.detail);
 		});
-		this.nodo.on("error", (ev) => {
-			this.emit("error", ev.detail);
+		this.nodo.on("estadoCambiado", (ev) => {
+			this.emit("estadoCambiado", ev.detail);
 		});
+		// Note: do NOT re-emit nodo "error" onto the same shared target pattern —
+		// mesh-level errors use this.emit("error") on a dedicated EventTarget.
+	}
+
+	// ─── PUBLIC KEY REGISTRY ─────────────────────────────────────────────
+
+	registrarClavePublica(nodoId: NodoId, parPublico: ParPublico): void {
+		this.peerPublicKeys.set(nodoId, new Uint8Array(parPublico));
+	}
+
+	obtenerClavePublica(nodoId: NodoId): ParPublico | undefined {
+		return this.peerPublicKeys.get(nodoId);
 	}
 
 	// ─── INICIALIZACION ──────────────────────────────────────────────────
 
+	/**
+	 * Attach an external transport (MemoryTransport, adapter over host PeerJS, etc.).
+	 * Prefer this over `peerId` when the host app already owns a Peer connection.
+	 * Safe to call after `iniciar()` (Phase C late-bind).
+	 */
+	usarTransport(transport: ITransport): void {
+		if (this.transport && this.transportMessageHandler) {
+			this.transport.off("mensaje", this.transportMessageHandler as never);
+		}
+
+		this.transport = transport;
+		this.transportMessageHandler = (ev) => {
+			void this.procesarMensaje(ev.detail.envolvente);
+		};
+		this.transport.on("mensaje", this.transportMessageHandler as never);
+
+		// Late-bind Yjs relay if mesh already started
+		if (this.iniciado) {
+			this.ensureYjsRelay();
+		}
+	}
+
+	/** Detach transport without destroying host PeerJS (adapter.cerrar only unsubscribes). */
+	detachTransport(): void {
+		if (this.transport && this.transportMessageHandler) {
+			this.transport.off("mensaje", this.transportMessageHandler as never);
+		}
+		this.transportMessageHandler = null;
+		this.transport = null;
+		if (this.unsubYjs) {
+			this.unsubYjs();
+			this.unsubYjs = null;
+		}
+	}
+
+	private ensureYjsRelay(): void {
+		if (this.unsubYjs || this.transport === null || !this.relayLocalYjs) return;
+
+		this.unsubYjs = this.yjsAdapter.onUpdate((update, origin) => {
+			if (origin === "remote" || origin === this.config.nodoId) return;
+			// Local writes: string "local" or object { origin: "local", branchId }
+			const isLocalObject =
+				typeof origin === "object" &&
+				origin !== null &&
+				(origin as { origin?: string }).origin === "local";
+			if (origin !== "local" && !isLocalObject && origin !== null) return;
+			void this.broadcastYjsUpdate(update);
+		});
+	}
+
 	async iniciar(): Promise<void> {
-		// Iniciar transporte si hay configuracion
-		if (this.config.peerId !== undefined) {
+		// Optional built-in PeerJS — skip when host provides transport or omits peerId
+		if (this.transport === null && this.config.peerId !== undefined) {
 			const opts: PeerJSTransportOptions = {
 				peerId: this.config.peerId,
 				...(this.config.transportConfig as Partial<PeerJSTransportOptions>),
 			};
 
-			this.transport = new PeerJSTransport(this.config.nodoId, opts);
-
-			this.transport.on("mensaje", (ev) => {
-				void this.procesarMensaje(ev.detail.envolvente);
-			});
+			const peerTransport = new PeerJSTransport(this.config.nodoId, opts);
+			this.usarTransport(peerTransport);
 		}
+
+		// Connect memory transport if already attached
+		if (this.transport instanceof MemoryTransport) {
+			await this.transport.conectar();
+		}
+
+		this.ensureYjsRelay();
 
 		// Iniciar presencia
 		await this.presence.iniciar(this.config.nodoId, async (payload) => {
-			await this.transmitir(payload);
+			await this.transmitir(payload, TIPO_MENSAJE.HEARTBEAT);
 		});
 
 		// Conectar nodo
 		await this.nodo.conectar();
+		this.iniciado = true;
 	}
 
 	async detener(): Promise<void> {
+		this.iniciado = false;
 		this.presence.detener();
+		if (this.unsubYjs) {
+			this.unsubYjs();
+			this.unsubYjs = null;
+		}
 
 		if (this.transport !== null) {
+			if (this.transportMessageHandler) {
+				this.transport.off("mensaje", this.transportMessageHandler as never);
+				this.transportMessageHandler = null;
+			}
 			await this.transport.cerrar();
 			this.transport = null;
 		}
 
 		await this.nodo.desconectar();
+		// Shared host docs are only detached (listeners cleared), never destroyed.
 		this.yjsAdapter.destroy();
 		this.governance.destruir();
 	}
 
+	/** Current attached transport (if any). */
+	obtenerTransport(): ITransport | null {
+		return this.transport;
+	}
+
+	/** Whether yjsAdapter.doc is an externally owned document. */
+	isSharedYDoc(): boolean {
+		return this.sharesExternalDoc;
+	}
+
 	// ─── TRANSPORTE ──────────────────────────────────────────────────────
 
-	async enviar(destino: NodoId, payload: unknown): Promise<void> {
+	async enviar(
+		destino: NodoId,
+		payload: unknown,
+		tipoMensaje: TipoMensaje = TIPO_MENSAJE.SYNC,
+	): Promise<void> {
 		if (this.transport !== null) {
-			await this.transport.enviar(destino, payload);
+			await this.transport.enviar(destino, payload, tipoMensaje);
 		}
 		await this.nodo.enviar(destino, payload);
 	}
 
-	async transmitir(payload: unknown): Promise<void> {
+	async transmitir(
+		payload: unknown,
+		tipoMensaje: TipoMensaje = TIPO_MENSAJE.SYNC,
+	): Promise<void> {
 		if (this.transport !== null) {
-			await this.transport.transmitir(payload);
+			await this.transport.transmitir(payload, tipoMensaje);
 		}
 		await this.nodo.transmitir(payload);
 	}
 
+	/**
+	 * Publish a CRDT update to peers (optionally signed).
+	 */
+	async broadcastYjsUpdate(
+		update: Uint8Array,
+		docId = "default",
+	): Promise<void> {
+		const payload = {
+			docId,
+			// JSON-safe encoding for transports that serialize to JSON
+			datos: Array.from(update),
+			clock: Date.now(),
+		};
+
+		let env = createEnvelope(
+			TIPO_MENSAJE.SYNC,
+			this.config.nodoId,
+			"*",
+			payload,
+		);
+
+		if (this.requireSignedEnvelopes) {
+			env = await signEnvelope(env, this.identity);
+		}
+
+		if (this.transport !== null) {
+			await this.transport.transmitir(env, TIPO_MENSAJE.SYNC);
+		}
+	}
+
 	// ─── PROCESAMIENTO DE MENSAJES ───────────────────────────────────────
+
+	/** Exposed for tests / external transports feeding envelopes. */
+	async recibirEnvelope(env: unknown): Promise<void> {
+		await this.procesarMensaje(env);
+	}
 
 	private async procesarMensaje(env: unknown): Promise<void> {
 		if (!validateEnvelope(env as never)) return;
-		const envolvente = env as ReturnType<typeof createEnvelope>;
+		const envolvente = env as Envolvente;
 
 		if (this.deduplicator.esDuplicado(envolvente)) return;
+
+		// Signature gate for sensitive message types
+		if (
+			this.requireSignedEnvelopes &&
+			(envolvente.tipo === TIPO_MENSAJE.SYNC ||
+				envolvente.tipo === TIPO_MENSAJE.AUTHZ)
+		) {
+			const ok = await this.verificarFirmaEnvelope(envolvente);
+			if (!ok) {
+				this.emit("error", {
+					mensaje: `Firma invalida o ausente de ${envolvente.origen} (${envolvente.tipo})`,
+				});
+				return;
+			}
+		}
 
 		this.emit("mensajeRecibido", { envolvente });
 
@@ -277,33 +467,74 @@ export class EdgeMesh {
 		}
 	}
 
-	private async procesarSync(
-		env: ReturnType<typeof createEnvelope>,
-	): Promise<void> {
+	private async verificarFirmaEnvelope(env: Envolvente): Promise<boolean> {
+		const pub = this.peerPublicKeys.get(env.origen);
+		if (!pub) return false;
+		return verifyEnvelopeSignature(env, pub, this.identity);
+	}
+
+	private decodeSyncBytes(datos: unknown): Uint8Array | null {
+		if (datos instanceof Uint8Array) return datos;
+		if (Array.isArray(datos)) return new Uint8Array(datos);
+		if (typeof datos === "object" && datos !== null && "data" in datos) {
+			const arr = (datos as { data: number[] }).data;
+			if (Array.isArray(arr)) return new Uint8Array(arr);
+		}
+		return null;
+	}
+
+	private async procesarSync(env: Envolvente): Promise<void> {
 		const payload = env.payload as {
-			docId: string;
-			datos: Uint8Array;
-			clock: number;
+			docId?: string;
+			datos?: unknown;
+			clock?: number;
+			namespace?: string;
 		};
 		if (payload === undefined || typeof payload !== "object") return;
 
-		const docId = (payload as { docId?: string }).docId;
+		const docId = payload.docId;
 		if (docId === undefined) return;
 
-		this.yjsAdapter.applyUpdate(
-			(payload as { datos: Uint8Array }).datos,
-			env.origen,
-		);
+		const namespace = payload.namespace ?? this.defaultSyncNamespace;
+
+		if (this.requireAuthz) {
+			const allowed =
+				this.authorizer.verificarCapacidad(
+					namespace,
+					env.origen,
+					CAPACIDAD_ESTANDAR.ESCRIBIR,
+				) ||
+				this.authorizer.verificarCapacidad(
+					namespace,
+					env.origen,
+					CAPACIDAD_ESTANDAR.SINC,
+				) ||
+				this.authorizer.verificarCapacidad(
+					namespace,
+					env.origen,
+					CAPACIDAD_ESTANDAR.ADMIN,
+				);
+
+			if (!allowed) {
+				this.emit("error", {
+					mensaje: `SYNC denegado: ${env.origen} sin write/sync en ${namespace}`,
+				});
+				return;
+			}
+		}
+
+		const bytes = this.decodeSyncBytes(payload.datos);
+		if (!bytes || bytes.length === 0) return;
+
+		this.yjsAdapter.applyUpdate(bytes, env.origen);
 
 		this.emit("syncCompletado", {
 			docId,
-			clock: (payload as { clock: number }).clock,
+			clock: payload.clock ?? 0,
 		});
 	}
 
-	private async procesarSnapshot(
-		env: ReturnType<typeof createEnvelope>,
-	): Promise<void> {
+	private async procesarSnapshot(env: Envolvente): Promise<void> {
 		const snapshot = env.payload as {
 			docId: string;
 			version: number;
@@ -322,9 +553,7 @@ export class EdgeMesh {
 		}
 	}
 
-	private async procesarGovernance(
-		env: ReturnType<typeof createEnvelope>,
-	): Promise<void> {
+	private async procesarGovernance(env: Envolvente): Promise<void> {
 		const payload = env.payload as {
 			accion: string;
 			propuesta: string;
@@ -336,15 +565,36 @@ export class EdgeMesh {
 		}
 	}
 
-	private async procesarAuthz(
-		env: ReturnType<typeof createEnvelope>,
-	): Promise<void> {
+	private async procesarAuthz(env: Envolvente): Promise<void> {
 		const payload = env.payload as {
 			accion: string;
 			espacio: string;
 			sujeto: NodoId;
 			capacidad: string;
 		};
+
+		// Never accept unauthenticated remote capability grants
+		if (this.requireAuthz) {
+			const isAdmin = this.authorizer.verificarCapacidad(
+				payload.espacio,
+				env.origen,
+				CAPACIDAD_ESTANDAR.ADMIN,
+			);
+			const signedOk =
+				!this.requireSignedEnvelopes ||
+				(await this.verificarFirmaEnvelope(env));
+
+			if (!isAdmin || !signedOk) {
+				// Even without requireSignedEnvelopes, still require admin capability
+				// for remote grants when requireAuthz is on.
+				if (!isAdmin) {
+					this.emit("error", {
+						mensaje: `AUTHZ denegado: ${env.origen} no es admin de ${payload.espacio}`,
+					});
+					return;
+				}
+			}
+		}
 
 		if (payload.accion === "conceder") {
 			this.authorizer.concederCapacidad(
@@ -355,9 +605,7 @@ export class EdgeMesh {
 		}
 	}
 
-	private async procesarNamespace(
-		env: ReturnType<typeof createEnvelope>,
-	): Promise<void> {
+	private async procesarNamespace(env: Envolvente): Promise<void> {
 		const payload = env.payload as {
 			accion: string;
 			espacio: string;

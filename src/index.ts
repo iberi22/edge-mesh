@@ -88,12 +88,26 @@ export type {
 	PresenceManagerConfig,
 } from "./presence/index.js";
 export { PresenceManager } from "./presence/index.js";
+export type {
+	PeerHealthMonitor,
+	PeerHealthMonitorOptions,
+	PeerHealthState,
+	PeerHealthStatus,
+	ReconnectDelayOptions,
+} from "./presence/peer-health.js";
+export {
+	createPeerHealthMonitor,
+	getReconnectDelay,
+} from "./presence/peer-health.js";
 export type { DeduplicatorConfig } from "./protocol/index.js";
 // ─── PROTOCOL ─────────────────────────────────────────────────────────────
 export {
+	canonicalEnvelopeBytes,
 	createEnvelope,
 	MessageDeduplicator,
+	signEnvelope,
 	validateEnvelope,
+	verifyEnvelopeSignature,
 } from "./protocol/index.js";
 export {
 	bytesAHex,
@@ -146,6 +160,8 @@ export type {
 	TransportEventMap,
 } from "./transport/peerjs.js";
 // ─── TRANSPORT ────────────────────────────────────────────────────────────
+export { MemoryTransport } from "./transport/memory.js";
 export { PeerJSTransport } from "./transport/peerjs.js";
+export type { ITransport } from "./transport/types.js";
 // ─── TYPES ────────────────────────────────────────────────────────────────
 export * from "./types/index.js";

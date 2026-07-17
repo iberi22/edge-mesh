@@ -1,22 +1,166 @@
-﻿{
-  "version": "1.0.0",
+{
+  "version": "1.1.0",
+  "updated": "2026-07-17",
   "modules": [
-    { "name": "core", "path": "src/core/node.ts", "desc": "P2P node lifecycle", "status": "implemented", "api": ["createEdgeMeshNode", "ESTADO_TRANSICIONES"] },
-    { "name": "chat", "path": "src/chat/index.ts", "desc": "P2P chat channels with Yjs", "status": "implemented", "api": ["ChatChannel", "ExamenCompartido", "TIPO_MENSAJE_CHAT", "TIPO_CANAL"] },
-    { "name": "salones", "path": "src/salones/manager.ts", "desc": "Virtual room management", "status": "implemented", "api": ["SalonVirtual", "SalonesManager", "TIPO_SALON", "ESTADO_SALON"] },
-    { "name": "mesh", "path": "src/mesh/index.ts", "desc": "Scalable mesh with gossip", "status": "implemented", "api": ["MeshManager", "ESTRATEGIA_FAN_OUT"] },
-    { "name": "identity", "path": "src/identity/index.ts", "desc": "ML-DSA-65 post-quantum", "status": "implemented", "api": ["createPostQuantumIdentity", "generateKeypair"] },
-    { "name": "sync", "path": "src/sync/engine.ts", "desc": "CRDT sync engine", "status": "implemented", "api": ["SyncEngine"] },
-    { "name": "storage", "path": "src/storage/index.ts", "desc": "IndexedDB + InMemory", "status": "implemented", "api": ["StorageManager", "InMemoryStorage"] },
-    { "name": "snapshot", "path": "src/snapshot/index.ts", "desc": "Periodic state snapshots", "status": "implemented", "api": ["SnapshotManager"] },
-    { "name": "transport", "path": "src/transport/peerjs.ts", "desc": "WebRTC via PeerJS", "status": "implemented", "api": ["PeerJSTransport"] },
-    { "name": "presence", "path": "src/presence/index.ts", "desc": "Heartbeat presence", "status": "implemented", "api": ["PresenceManager", "HealthChecker"] },
-    { "name": "op-log", "path": "src/op-log/index.ts", "desc": "Operation log with clock vectors", "status": "implemented", "api": ["OpLog"] },
-    { "name": "namespaces", "path": "src/namespaces/index.ts", "desc": "Logical namespace isolation", "status": "implemented", "api": ["NamespaceManager"] },
-    { "name": "authz", "path": "src/authz/index.ts", "desc": "Capability-based authorization", "status": "implemented", "api": ["NamespaceAuthorizer"] },
-    { "name": "governance", "path": "src/governance/index.ts", "desc": "Decentralized voting", "status": "implemented", "api": ["GovernanceManager"] },
-    { "name": "protocol", "path": "src/protocol/index.ts", "desc": "Envelope protocol", "status": "implemented", "api": ["createEnvelope", "MessageDeduplicator"] },
-    { "name": "tests", "path": "tests/", "desc": "Unit/integration tests", "status": "pending" },
-    { "name": "docs", "path": "docs/", "desc": "API docs", "status": "pending" }
+    {
+      "name": "core",
+      "path": "src/core/node.ts",
+      "desc": "P2P node lifecycle",
+      "status": "partial",
+      "maturity": "unit",
+      "implementation_percentage": 40,
+      "api": ["createEdgeMeshNode", "ESTADO_TRANSICIONES"],
+      "gaps": ["enviar/transmitir placeholders"]
+    },
+    {
+      "name": "chat",
+      "path": "src/chat/index.ts",
+      "desc": "P2P chat channels with Yjs",
+      "status": "partial",
+      "maturity": "unit",
+      "implementation_percentage": 70,
+      "api": ["ChatChannel", "ExamenCompartido", "TIPO_MENSAJE_CHAT", "TIPO_CANAL"]
+    },
+    {
+      "name": "salones",
+      "path": "src/salones/manager.ts",
+      "desc": "Virtual room management",
+      "status": "partial",
+      "maturity": "unit",
+      "implementation_percentage": 60,
+      "api": ["SalonVirtual", "SalonesManager", "TIPO_SALON", "ESTADO_SALON"]
+    },
+    {
+      "name": "mesh",
+      "path": "src/mesh/index.ts",
+      "desc": "Scalable mesh with gossip",
+      "status": "partial",
+      "maturity": "unit",
+      "implementation_percentage": 55,
+      "api": ["MeshManager", "ESTRATEGIA_FAN_OUT"]
+    },
+    {
+      "name": "identity",
+      "path": "src/identity/index.ts",
+      "desc": "ML-DSA-65 post-quantum",
+      "status": "partial",
+      "maturity": "unit",
+      "implementation_percentage": 55,
+      "api": ["createPostQuantumIdentity", "generateKeypair", "identityFromSecret"]
+    },
+    {
+      "name": "sync",
+      "path": "src/sync/engine.ts",
+      "desc": "CRDT sync engine / Yjs adapter",
+      "status": "partial",
+      "maturity": "unit",
+      "implementation_percentage": 55,
+      "api": ["SyncEngine", "YjsAdapter"]
+    },
+    {
+      "name": "storage",
+      "path": "src/storage/index.ts",
+      "desc": "IndexedDB + InMemory",
+      "status": "partial",
+      "maturity": "unit",
+      "implementation_percentage": 80,
+      "api": ["StorageManager", "InMemoryStorage"]
+    },
+    {
+      "name": "snapshot",
+      "path": "src/snapshot/index.ts",
+      "desc": "Periodic state snapshots",
+      "status": "partial",
+      "maturity": "unit",
+      "implementation_percentage": 70,
+      "api": ["SnapshotManager"]
+    },
+    {
+      "name": "transport",
+      "path": "src/transport/",
+      "desc": "PeerJS + Memory transports",
+      "status": "partial",
+      "maturity": "unit",
+      "implementation_percentage": 70,
+      "api": ["PeerJSTransport", "MemoryTransport", "ITransport"]
+    },
+    {
+      "name": "presence",
+      "path": "src/presence/",
+      "desc": "Heartbeat presence + peer health monitor",
+      "status": "partial",
+      "maturity": "unit",
+      "implementation_percentage": 70,
+      "api": ["PresenceManager", "HealthChecker", "createPeerHealthMonitor", "getReconnectDelay"]
+    },
+    {
+      "name": "op-log",
+      "path": "src/op-log/index.ts",
+      "desc": "Operation log with sequence clocks",
+      "status": "partial",
+      "maturity": "unit",
+      "implementation_percentage": 75,
+      "api": ["OpLog"]
+    },
+    {
+      "name": "namespaces",
+      "path": "src/namespaces/index.ts",
+      "desc": "Logical namespace isolation",
+      "status": "partial",
+      "maturity": "unit",
+      "implementation_percentage": 75,
+      "api": ["NamespaceManager"]
+    },
+    {
+      "name": "authz",
+      "path": "src/authz/index.ts",
+      "desc": "Capability-based authorization",
+      "status": "partial",
+      "maturity": "unit",
+      "implementation_percentage": 60,
+      "api": ["NamespaceAuthorizer"]
+    },
+    {
+      "name": "governance",
+      "path": "src/governance/index.ts",
+      "desc": "Decentralized voting",
+      "status": "partial",
+      "maturity": "unit",
+      "implementation_percentage": 50,
+      "api": ["GovernanceManager"]
+    },
+    {
+      "name": "protocol",
+      "path": "src/protocol/index.ts",
+      "desc": "Envelope protocol + signing helpers",
+      "status": "partial",
+      "maturity": "unit",
+      "implementation_percentage": 75,
+      "api": ["createEnvelope", "MessageDeduplicator", "signEnvelope", "verifyEnvelopeSignature"]
+    },
+    {
+      "name": "tests",
+      "path": "tests/",
+      "desc": "Unit/integration tests",
+      "status": "partial",
+      "maturity": "unit",
+      "implementation_percentage": 70
+    },
+    {
+      "name": "docs",
+      "path": "docs/",
+      "desc": "API and architecture docs",
+      "status": "partial",
+      "maturity": "unit",
+      "implementation_percentage": 65
+    },
+    {
+      "name": "ci",
+      "path": ".github/",
+      "desc": "CI pipeline",
+      "status": "pending",
+      "maturity": "skeleton",
+      "implementation_percentage": 0
+    }
   ]
 }
