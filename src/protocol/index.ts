@@ -1,4 +1,10 @@
-import type { Envolvente, NodoId, TipoMensaje } from "../types/index.js";
+import type { PostQuantumIdentity } from "../identity/index.js";
+import type {
+	Envolvente,
+	NodoId,
+	ParPublico,
+	TipoMensaje,
+} from "../types/index.js";
 import { TIPO_MENSAJE } from "../types/index.js";
 
 // ─── ENVELOPE CREATION ─────────────────────────────────────────────────────
@@ -50,6 +56,41 @@ export function validateEnvelope(env: Envolvente): boolean {
 	if (env.version < 1) return false;
 	if (!env.nonce || typeof env.nonce !== "string") return false;
 	return true;
+}
+
+/**
+ * Canonical bytes used for ML-DSA sign/verify (excludes `firma`).
+ * Payload is JSON-stringified; Uint8Array fields must be pre-encoded by callers.
+ */
+export function canonicalEnvelopeBytes(env: Envolvente): Uint8Array {
+	const body = JSON.stringify({
+		id: env.id,
+		tipo: env.tipo,
+		origen: env.origen,
+		destino: env.destino,
+		timestamp: env.timestamp,
+		payload: env.payload,
+		version: env.version,
+		nonce: env.nonce,
+	});
+	return new TextEncoder().encode(body);
+}
+
+export async function signEnvelope(
+	env: Envolvente,
+	identity: PostQuantumIdentity,
+): Promise<Envolvente> {
+	const firma = await identity.firmar(canonicalEnvelopeBytes(env));
+	return { ...env, firma };
+}
+
+export async function verifyEnvelopeSignature(
+	env: Envolvente,
+	parPublico: ParPublico,
+	identity: PostQuantumIdentity,
+): Promise<boolean> {
+	if (!env.firma || env.firma.length === 0) return false;
+	return identity.verificar(canonicalEnvelopeBytes(env), env.firma, parPublico);
 }
 
 // ─── MESSAGE DEDUPLICATOR ──────────────────────────────────────────────────

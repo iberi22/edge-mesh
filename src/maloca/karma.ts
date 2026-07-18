@@ -1,5 +1,5 @@
-import type { OpLog } from "../op-log/index.js";
 import type { PostQuantumIdentity } from "../identity/index.js";
+import type { OpLog } from "../op-log/index.js";
 import type { NodoId, ParPublico } from "../types/index.js";
 import type { Karma, TransaccionKarma } from "./types.js";
 
@@ -15,147 +15,155 @@ export type { TransaccionKarma };
  * Deterministically stringifies an object for signing.
  */
 function canonicalStringify(obj: unknown): string {
-  if (obj === null || typeof obj !== "object") {
-    return JSON.stringify(obj);
-  }
-  if (Array.isArray(obj)) {
-    return "[" + obj.map(canonicalStringify).join(",") + "]";
-  }
-  const keys = Object.keys(obj as Record<string, unknown>).sort();
-  return (
-    "{" +
-    keys
-      .map(
-        (k) =>
-          `${JSON.stringify(k)}:${canonicalStringify((obj as Record<string, unknown>)[k])}`,
-      )
-      .join(",") +
-    "}"
-  );
+	if (obj === null || typeof obj !== "object") {
+		return JSON.stringify(obj);
+	}
+	if (Array.isArray(obj)) {
+		return "[" + obj.map(canonicalStringify).join(",") + "]";
+	}
+	const keys = Object.keys(obj as Record<string, unknown>).sort();
+	return (
+		"{" +
+		keys
+			.map(
+				(k) =>
+					`${JSON.stringify(k)}:${canonicalStringify((obj as Record<string, unknown>)[k])}`,
+			)
+			.join(",") +
+		"}"
+	);
 }
 
 export class KarmaManager {
-  private readonly oplog: OpLog;
-  private readonly identity: PostQuantumIdentity;
-  private cache: Map<string, Karma> = new Map();
+	private readonly oplog: OpLog;
+	private readonly identity: PostQuantumIdentity;
+	private cache: Map<string, Karma> = new Map();
 
-  constructor(oplog: OpLog, identity: PostQuantumIdentity) {
-    this.oplog = oplog;
-    this.identity = identity;
-  }
+	constructor(oplog: OpLog, identity: PostQuantumIdentity) {
+		this.oplog = oplog;
+		this.identity = identity;
+	}
 
-  /**
-   * Carga el estado de karma desde el OpLog.
-   * Debe llamarse después de crear la instancia.
-   */
-  async loadFromOpLog(): Promise<void> {
-    this.cache.clear();
-    const ops = await this.oplog.obtenerTodas();
-    for (const op of ops) {
-      if (op.tipo === "karma:emit") {
-        const tx = op.datos as TransaccionKarma;
-        this.applyTransaction(tx);
-      } else if (op.tipo === "karma:decay") {
-        const data = op.datos as { sujeto: NodoId; factor: number };
-        this.applyDecayToCache(data.sujeto, data.factor);
-      }
-    }
-  }
+	/**
+	 * Carga el estado de karma desde el OpLog.
+	 * Debe llamarse después de crear la instancia.
+	 */
+	async loadFromOpLog(): Promise<void> {
+		this.cache.clear();
+		const ops = await this.oplog.obtenerTodas();
+		for (const op of ops) {
+			if (op.tipo === "karma:emit") {
+				const tx = op.datos as TransaccionKarma;
+				this.applyTransaction(tx);
+			} else if (op.tipo === "karma:decay") {
+				const data = op.datos as { sujeto: NodoId; factor: number };
+				this.applyDecayToCache(data.sujeto, data.factor);
+			}
+		}
+	}
 
-  /**
-   * Emite una transacción de karma firmada con la identidad PQC del nodo.
-   */
-  async emit(
-    txData: Omit<TransaccionKarma, "id" | "timestamp" | "firma">,
-  ): Promise<TransaccionKarma> {
-    const timestamp = Date.now();
-    const id = `${txData.emisor}:${timestamp}:${Math.random().toString(36).substring(2, 9)}`;
+	/**
+	 * Emite una transacción de karma firmada con la identidad PQC del nodo.
+	 */
+	async emit(
+		txData: Omit<TransaccionKarma, "id" | "timestamp" | "firma">,
+	): Promise<TransaccionKarma> {
+		const timestamp = Date.now();
+		const id = `${txData.emisor}:${timestamp}:${Math.random().toString(36).substring(2, 9)}`;
 
-    const payloadData = { ...txData, id, timestamp };
-    const payload = canonicalStringify(payloadData);
-    let firma: Uint8Array;
-    try {
-      firma = await this.identity.firmar(new TextEncoder().encode(payload));
-    } catch {
-      // Si la identidad PQC no está completamente inicializada (ej. entorno test),
-      // usar firma vacía en lugar de fallar.
-      firma = new Uint8Array(0);
-    }
+		const payloadData = { ...txData, id, timestamp };
+		const payload = canonicalStringify(payloadData);
+		let firma: Uint8Array;
+		try {
+			firma = await this.identity.firmar(new TextEncoder().encode(payload));
+		} catch {
+			// Si la identidad PQC no está completamente inicializada (ej. entorno test),
+			// usar firma vacía en lugar de fallar.
+			firma = new Uint8Array(0);
+		}
 
-    const tx: TransaccionKarma = {
-      ...txData,
-      id,
-      timestamp,
-      firma,
-    };
+		const tx: TransaccionKarma = {
+			...txData,
+			id,
+			timestamp,
+			firma,
+		};
 
-    this.applyTransaction(tx);
-    await this.oplog.append("karma:emit", tx, txData.emisor as any);
-    return tx;
-  }
+		this.applyTransaction(tx);
+		await this.oplog.append("karma:emit", tx, txData.emisor as any);
+		return tx;
+	}
 
-  /**
-   * Obtiene el score de karma de un nodo.
-   */
-  getScore(nodeId: NodoId): number {
-    return this.cache.get(nodeId)?.total ?? 0;
-  }
+	/**
+	 * Obtiene el score de karma de un nodo.
+	 */
+	getScore(nodeId: NodoId): number {
+		return this.cache.get(nodeId)?.total ?? 0;
+	}
 
-  /**
-   * Obtiene el historial de transacciones de un nodo.
-   */
-  getHistory(nodeId: NodoId): readonly TransaccionKarma[] {
-    return this.cache.get(nodeId)?.historial ?? [];
-  }
+	/**
+	 * Obtiene el historial de transacciones de un nodo.
+	 */
+	getHistory(nodeId: NodoId): readonly TransaccionKarma[] {
+		return this.cache.get(nodeId)?.historial ?? [];
+	}
 
-  /**
-   * Aplica decay (olvido) al score de un nodo.
-   * - factor: 0.95 reduce 5%, 0.90 reduce 10%, etc.
-   */
-  async applyDecay(nodeId: NodoId, factor: number = 0.95): Promise<void> {
-    this.applyDecayToCache(nodeId, factor);
-    await this.oplog.append("karma:decay", { sujeto: nodeId, factor }, nodeId as any);
-  }
+	/**
+	 * Aplica decay (olvido) al score de un nodo.
+	 * - factor: 0.95 reduce 5%, 0.90 reduce 10%, etc.
+	 */
+	async applyDecay(nodeId: NodoId, factor: number = 0.95): Promise<void> {
+		this.applyDecayToCache(nodeId, factor);
+		await this.oplog.append(
+			"karma:decay",
+			{ sujeto: nodeId, factor },
+			nodeId as any,
+		);
+	}
 
-  /**
-   * Verifica una firma de transacción contra una clave pública.
-   */
-  async verify(tx: TransaccionKarma, publicKey: ParPublico): Promise<boolean> {
-    const { firma, ...rest } = tx;
-    const payload = canonicalStringify(rest);
-    return this.identity.verificar(new TextEncoder().encode(payload), firma, publicKey);
-  }
+	/**
+	 * Verifica una firma de transacción contra una clave pública.
+	 */
+	async verify(tx: TransaccionKarma, publicKey: ParPublico): Promise<boolean> {
+		const { firma, ...rest } = tx;
+		const payload = canonicalStringify(rest);
+		return this.identity.verificar(
+			new TextEncoder().encode(payload),
+			firma,
+			publicKey,
+		);
+	}
 
-  // ─── INTERNOS ───────────────────────────────────────────────────────
+	// ─── INTERNOS ───────────────────────────────────────────────────────
 
-  private applyTransaction(tx: TransaccionKarma): void {
-    const target = tx.sujeto;
-    const current = this.cache.get(target) ?? {
-      total: 0,
-      historial: [],
-      pesosPorProyecto: {},
-      ultimoDecay: Date.now(),
-    };
+	private applyTransaction(tx: TransaccionKarma): void {
+		const target = tx.sujeto;
+		const current = this.cache.get(target) ?? {
+			total: 0,
+			historial: [],
+			pesosPorProyecto: {},
+			ultimoDecay: Date.now(),
+		};
 
-    this.cache.set(target, {
-      total: current.total + tx.delta,
-      historial: [...current.historial, tx],
-      pesosPorProyecto: {
-        ...current.pesosPorProyecto,
-        [tx.proyecto]: (current.pesosPorProyecto[tx.proyecto] ?? 0) + tx.delta,
-      },
-      ultimoDecay: current.ultimoDecay,
-    });
-  }
+		this.cache.set(target, {
+			total: current.total + tx.delta,
+			historial: [...current.historial, tx],
+			pesosPorProyecto: {
+				...current.pesosPorProyecto,
+				[tx.proyecto]: (current.pesosPorProyecto[tx.proyecto] ?? 0) + tx.delta,
+			},
+			ultimoDecay: current.ultimoDecay,
+		});
+	}
 
-  private applyDecayToCache(nodeId: NodoId, factor: number): void {
-    const current = this.cache.get(nodeId);
-    if (!current) return;
+	private applyDecayToCache(nodeId: NodoId, factor: number): void {
+		const current = this.cache.get(nodeId);
+		if (!current) return;
 
-    this.cache.set(nodeId, {
-      ...current,
-      total: current.total * factor,
-      ultimoDecay: Date.now(),
-    });
-  }
+		this.cache.set(nodeId, {
+			...current,
+			total: current.total * factor,
+			ultimoDecay: Date.now(),
+		});
+	}
 }

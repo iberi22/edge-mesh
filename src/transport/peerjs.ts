@@ -1,7 +1,13 @@
 import Peer, { type DataConnection } from "peerjs";
 import { createEnvelope, MessageDeduplicator } from "../protocol/index.js";
-import type { Envolvente, NodoId, TipoTransporte } from "../types/index.js";
-import { TIPO_TRANSPORTE } from "../types/index.js";
+import type {
+	Envolvente,
+	NodoId,
+	TipoMensaje,
+	TipoTransporte,
+} from "../types/index.js";
+import { TIPO_MENSAJE, TIPO_TRANSPORTE } from "../types/index.js";
+import type { ITransport, TransportEventMap } from "./types.js";
 
 // ─── TYPES ─────────────────────────────────────────────────────────────────
 
@@ -15,16 +21,11 @@ export interface PeerJSTransportOptions {
 	readonly config?: RTCConfiguration;
 }
 
-export interface TransportEventMap {
-	conectado: CustomEvent<{ readonly nodoId: NodoId }>;
-	desconectado: CustomEvent<{ readonly nodoId: NodoId }>;
-	mensaje: CustomEvent<{ readonly envolvente: Envolvente }>;
-	error: CustomEvent<{ readonly mensaje: string; readonly error?: Error }>;
-}
+export type { TransportEventMap };
 
 // ─── PEERJS TRANSPORT ──────────────────────────────────────────────────────
 
-export class PeerJSTransport {
+export class PeerJSTransport implements ITransport {
 	readonly tipo: TipoTransporte = TIPO_TRANSPORTE.PEERJS;
 	readonly eventTarget: EventTarget;
 	readonly nodoId: NodoId;
@@ -129,19 +130,39 @@ export class PeerJSTransport {
 
 	// ─── ENVIO ─────────────────────────────────────────────────────────────
 
-	async enviar(destino: NodoId, payload: unknown): Promise<void> {
+	async enviar(
+		destino: NodoId,
+		payload: unknown,
+		tipoMensaje: string = TIPO_MENSAJE.SYNC,
+	): Promise<void> {
 		const conn = this.conexiones.get(destino);
 		if (conn === undefined) {
 			throw new Error(`No hay conexion con el nodo ${destino}`);
 		}
 
-		const env = createEnvelope("sync" as never, this.nodoId, destino, payload);
+		// If caller already built an envelope, forward as-is.
+		if (esEnvolvente(payload)) {
+			conn.send(payload);
+			return;
+		}
+
+		const env = createEnvelope(
+			tipoMensaje as TipoMensaje,
+			this.nodoId,
+			destino,
+			payload,
+		);
 
 		conn.send(env);
 	}
 
-	async transmitir(payload: unknown): Promise<void> {
-		const env = createEnvelope("sync" as never, this.nodoId, "*", payload);
+	async transmitir(
+		payload: unknown,
+		tipoMensaje: string = TIPO_MENSAJE.SYNC,
+	): Promise<void> {
+		const env = esEnvolvente(payload)
+			? payload
+			: createEnvelope(tipoMensaje as TipoMensaje, this.nodoId, "*", payload);
 
 		const promesas: Promise<void>[] = [];
 		for (const conn of this.conexiones.values()) {

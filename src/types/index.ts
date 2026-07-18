@@ -262,7 +262,12 @@ export type StorageFilter = {
 
 export interface EdgeMeshConfig {
 	readonly nodoId: NodoId;
+	/**
+	 * When set, EdgeMesh opens its own PeerJS transport with this id.
+	 * Prefer omitting this when the host app already owns PeerJS (e.g. Shelf p2p-mesh-core).
+	 */
 	readonly peerId?: string;
+	/** Serialized keypair bytes from `serializeKeypair`, not a raw private key. */
 	readonly identitySecret?: Uint8Array;
 	readonly heartbeatIntervalMs?: number;
 	readonly heartbeatTimeoutMs?: number;
@@ -273,4 +278,37 @@ export interface EdgeMeshConfig {
 	readonly transportConfig?: Record<string, unknown>;
 	readonly maxReconnectAttempts?: number;
 	readonly logLevel?: "debug" | "info" | "warn" | "error";
+	/**
+	 * When true (default), remote SYNC requires write/sync capability for the origin peer.
+	 * Remote AUTHZ grants require a valid signature from a registered admin/master key.
+	 */
+	readonly requireAuthz?: boolean;
+	/**
+	 * When true, remote SYNC/AUTHZ envelopes must carry a verifiable ML-DSA signature.
+	 * Default false for backward compatibility; enable in hardened deployments/tests.
+	 */
+	readonly requireSignedEnvelopes?: boolean;
+	/**
+	 * Namespace used when authorizing generic CRDT sync writes.
+	 * Defaults to "global".
+	 */
+	readonly defaultSyncNamespace?: string;
+	/**
+	 * Optional external Yjs document (Phase B: share host app CRDT doc).
+	 * When provided, EdgeMesh does **not** destroy it on `detener()`.
+	 * Use a structural type to avoid forcing yjs types on pure type consumers.
+	 */
+	readonly yDoc?: {
+		on: (...args: never[]) => unknown;
+		off: (...args: never[]) => unknown;
+		getMap: (name: string) => unknown;
+		destroy: () => void;
+		[key: string]: unknown;
+	};
+	/**
+	 * When true, local Yjs updates are relayed over the attached ITransport.
+	 * Default: `false` if `yDoc` is provided (host app owns YJS broadcast, e.g. p2pManager),
+	 * otherwise `true`.
+	 */
+	readonly relayLocalYjs?: boolean;
 }
