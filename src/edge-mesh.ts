@@ -208,7 +208,7 @@ export class EdgeMesh {
 		});
 
 		// Authz
-		this.authorizer = createNamespaceAuthorizer();
+		this.authorizer = createNamespaceAuthorizer(this.storage);
 
 		// Namespaces
 		this.namespaces = new NamespaceManager();
@@ -292,6 +292,11 @@ export class EdgeMesh {
 	}
 
 	async iniciar(): Promise<void> {
+		// Cargar persistencia de authz
+		await this.authorizer.loadGrants();
+		await this.authorizer.loadRoleAssignments();
+		await this.authorizer.loadCapabilities();
+
 		// Optional built-in PeerJS — skip when host provides transport or omits peerId
 		if (this.transport === null && this.config.peerId !== undefined) {
 			const opts: PeerJSTransportOptions = {

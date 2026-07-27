@@ -6,6 +6,7 @@ import type { StorageEntry, StorageFilter } from "../types/index.js";
 export interface IStorage {
 	get<T>(key: string): Promise<StorageEntry<T> | null>;
 	set<T>(key: string, valor: T): Promise<void>;
+	put<T>(key: string, valor: T): Promise<void>;
 	delete(key: string): Promise<boolean>;
 	list(filter?: StorageFilter): Promise<readonly StorageEntry<unknown>[]>;
 	clear(prefijo?: string): Promise<void>;
@@ -46,6 +47,10 @@ export class InMemoryStorage implements IStorage {
 			timestamp: Date.now(),
 			version: (existente?.version ?? 0) + 1,
 		});
+	}
+
+	async put<T>(key: string, valor: T): Promise<void> {
+		return this.set(key, valor);
 	}
 
 	async delete(key: string): Promise<boolean> {
@@ -152,6 +157,10 @@ export class StorageManager implements IStorage {
 			version: (existente?.version ?? 0) + 1,
 		};
 		await db.put(this.config.storeName, entry as never);
+	}
+
+	async put<T>(key: string, valor: T): Promise<void> {
+		return this.set(key, valor);
 	}
 
 	async delete(key: string): Promise<boolean> {
