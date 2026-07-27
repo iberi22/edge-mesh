@@ -1,4 +1,5 @@
 import type { EdgeMesh } from "../../edge-mesh.js";
+import { TokenBucketRateLimiter } from "../../security/rate-limiter.js";
 import type { Envolvente } from "../../types/index.js";
 
 /**
@@ -6,15 +7,33 @@ import type { Envolvente } from "../../types/index.js";
  * Simulación de manejador de WS.
  */
 
-export class MalocaWSGateway {
+export class MalocaWSGateway extends EventTarget {
 	private activeSubscriptions: Map<string, Set<string>> = new Map();
+	private readonly rateLimiter = new TokenBucketRateLimiter({
+		tokensPerInterval: 5,
+		intervalMs: 1000,
+		maxTokens: 10,
+	});
 
-	constructor(private readonly mesh: EdgeMesh) {}
+	constructor(private readonly mesh: EdgeMesh) {
+		super();
+	}
 
 	/**
 	 * Conecta un cliente WS al mesh.
 	 */
-	async connectWS(profileId: string) {
+	async connectWS(profileId: string, clientIp = "127.0.0.1") {
+		if (!this.rateLimiter.consume(clientIp)) {
+			console.warn(
+				`Rate limit exceeded for IP: ${clientIp} on Gateway WS connect`,
+			);
+			this.dispatchEvent(
+				new CustomEvent("rate_limited", {
+					detail: { peerId: clientIp, resource: "websocket" },
+				}),
+			);
+			throw new Error("Rate limit exceeded: 429");
+		}
 		console.log(`WS Client connected: ${profileId}`);
 
 		// Iniciar escucha de eventos del mesh para reenviar al WS
