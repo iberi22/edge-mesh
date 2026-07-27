@@ -30,6 +30,7 @@
 	},
 	"dependencies": {
 		"@noble/post-quantum": "^0.6.1",
+		"ethers": "^6.17.0",
 		"idb": "^8.0.3",
 		"peerjs": "^1.5.5",
 		"y-protocols": "^1.0.7",
@@ -38,6 +39,7 @@
 	"devDependencies": {
 		"@biomejs/biome": "^2.5.3",
 		"@types/node": "^26.1.1",
+		"solc": "^0.8.36",
 		"typescript": "^7.0.2",
 		"vitest": "^4.1.9"
 	},
