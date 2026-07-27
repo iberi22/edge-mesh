@@ -41,6 +41,26 @@ export interface PresenceEventMap {
 	}>;
 }
 
+export class MeshPresence {
+	private static readonly onlineNodes = new Set<string>();
+
+	static isOnline(peerId: string): boolean {
+		return MeshPresence.onlineNodes.has(peerId);
+	}
+
+	static setOnline(peerId: string, online: boolean): void {
+		if (online) {
+			MeshPresence.onlineNodes.add(peerId);
+		} else {
+			MeshPresence.onlineNodes.delete(peerId);
+		}
+	}
+
+	static clear(): void {
+		MeshPresence.onlineNodes.clear();
+	}
+}
+
 export class PresenceManager {
 	readonly eventTarget: EventTarget;
 	readonly healthChecker: HealthChecker;
@@ -49,6 +69,7 @@ export class PresenceManager {
 	private readonly nodosAparecieron: Set<NodoId>;
 	private transmitirHandler: TransmitirHandler | null = null;
 	private intervaloAnuncio: ReturnType<typeof setInterval> | null = null;
+	private readonly onOnlineCallbacks: Set<(peerId: string) => void> = new Set();
 
 	constructor(config: Partial<PresenceManagerConfig> = {}) {
 		this.eventTarget = new EventTarget();
@@ -68,6 +89,7 @@ export class PresenceManager {
 		this.healthChecker.on("nodoCaido", (ev) => {
 			this.nodosConocidos.delete(ev.detail.nodoId);
 			this.emit("nodoDesaparecio", { nodoId: ev.detail.nodoId });
+			MeshPresence.setOnline(ev.detail.nodoId, false);
 		});
 
 		this.healthChecker.on("saludCambiada", (ev) => {
@@ -89,6 +111,8 @@ export class PresenceManager {
 				nodoId: ev.detail.nodoId,
 				latenciaMs: ev.detail.latenciaMs,
 			});
+			MeshPresence.setOnline(ev.detail.nodoId, true);
+			this.onOnline(ev.detail.nodoId);
 		});
 	}
 
@@ -154,6 +178,20 @@ export class PresenceManager {
 
 	obtenerTotalNodos(): number {
 		return this.nodosConocidos.size;
+	}
+
+	onOnline(peerId: string, callback?: (peerId: string) => void): void {
+		if (callback) {
+			this.onOnlineCallbacks.add(callback);
+		} else {
+			for (const cb of this.onOnlineCallbacks) {
+				try {
+					cb(peerId);
+				} catch (e) {
+					console.error("Error in onOnline callback:", e);
+				}
+			}
+		}
 	}
 
 	// ─── EVENTOS ─────────────────────────────────────────────────────────

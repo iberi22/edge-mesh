@@ -109,6 +109,7 @@ export class SalonVirtual extends EventTarget {
 			`salon:${this.id}`,
 			this.yjsAdapter,
 			TIPO_CANAL.SALON_VIRTUAL,
+			config.edgeMesh.offlineQueue,
 		);
 
 		// Inicializar metadata del salón

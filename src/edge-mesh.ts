@@ -29,6 +29,7 @@ import {
 	createSnapshotManager,
 	type SnapshotManager,
 } from "./snapshot/index.js";
+import { PersistentOfflineQueue } from "./chat/offline-queue.js";
 import { InMemoryStorage, StorageManager } from "./storage/index.js";
 import { SyncEngine } from "./sync/engine.js";
 import { MemoryTransport } from "./transport/memory.js";
@@ -134,6 +135,7 @@ export class EdgeMesh {
 	readonly authorizer: NamespaceAuthorizer;
 	readonly namespaces: NamespaceManager;
 	readonly yjsAdapter: YjsAdapter;
+	readonly offlineQueue: PersistentOfflineQueue;
 
 	private transport: ITransport | null = null;
 	private readonly logsDoc: Map<string, OpLog>;
@@ -212,6 +214,12 @@ export class EdgeMesh {
 
 		// Namespaces
 		this.namespaces = new NamespaceManager();
+
+		// Offline Queue
+		this.offlineQueue = new PersistentOfflineQueue(this.storage);
+		this.presence.onOnline((peerId) => {
+			void this.offlineQueue.handlePeerReconnect(peerId);
+		});
 
 		// Re-encolar eventos del nodo (forward to mesh EventTarget without looping)
 		this.nodo.on("nodoConectado", (ev) => {
