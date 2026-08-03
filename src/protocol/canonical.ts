@@ -18,10 +18,16 @@ export function canonicalStringify(val: any): string {
 		return "[" + val.map((v) => canonicalStringify(v)).join(",") + "]";
 	}
 	const keys = Object.keys(val).sort();
-	const parts = keys.map(
-		(k) => `${JSON.stringify(k)}:${canonicalStringify(val[k])}`,
+	return (
+		"{" +
+		keys
+			.map(
+				(k) =>
+					`${JSON.stringify(k)}:${canonicalStringify((val as Record<string, unknown>)[k])}`,
+			)
+			.join(",") +
+		"}"
 	);
-	return "{" + parts.join(",") + "}";
 }
 
 /**

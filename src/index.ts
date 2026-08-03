@@ -101,6 +101,7 @@ export {
 } from "./presence/peer-health.js";
 export type { DeduplicatorConfig } from "./protocol/index.js";
 // ─── PROTOCOL ─────────────────────────────────────────────────────────────
+export { canonicalStringify } from "./protocol/canonical.js";
 export {
 	canonicalEnvelopeBytes,
 	createEnvelope,

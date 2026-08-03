@@ -1,7 +1,10 @@
 {
-	"name": "edge-mesh",
+	"name": "@iberi22/edge-mesh",
 	"version": "1.0.0",
 	"description": "Mesh networking library with CRDT sync, post-quantum identity, and peer-to-peer transport",
+	"publishConfig": {
+		"registry": "https://npm.pkg.github.com"
+	},
 	"license": "GPL-2.0-only",
 	"type": "module",
 	"main": "./dist/index.js",
@@ -22,11 +25,12 @@
 	"scripts": {
 		"build": "tsc",
 		"dev": "tsc -w",
-		"test": "vitest run",
+		"test": "node tests/run-tests.js",
 		"test:watch": "vitest",
 		"lint": "biome check src/",
 		"format": "biome format --write src/",
-		"check": "npx tsc --noEmit"
+		"check": "npx tsc --noEmit",
+		"bench": "npm run build && node scripts/bench.js"
 	},
 	"dependencies": {
 		"@noble/post-quantum": "^0.6.1",

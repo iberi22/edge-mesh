@@ -1,16 +1,33 @@
 import type { EdgeMesh } from "../../edge-mesh.js";
+import { TokenBucketRateLimiter } from "../../security/rate-limiter.js";
 
 /**
  * REST API Gateway para el mesh Maloca.
  */
 
 export class MalocaGatewayAPI {
+	private readonly rateLimiter = new TokenBucketRateLimiter({
+		tokensPerInterval: 60,
+		intervalMs: 1000,
+		maxTokens: 100,
+	});
+
 	constructor(private readonly mesh: EdgeMesh) {}
+
+	private checkRateLimit(clientIp: string) {
+		if (!this.rateLimiter.consume(clientIp)) {
+			console.warn(
+				`Rate limit exceeded for IP/peer: ${clientIp} on Gateway API`,
+			);
+			throw new Error("Rate limit exceeded: 429");
+		}
+	}
 
 	/**
 	 * GET /mesh/status
 	 */
-	async getMeshStatus() {
+	async getMeshStatus(clientIp = "127.0.0.1") {
+		this.checkRateLimit(clientIp);
 		const nodes = this.mesh.presence.obtenerNodosActivos();
 		return {
 			status: "online",
@@ -25,7 +42,8 @@ export class MalocaGatewayAPI {
 	/**
 	 * GET /profiles/:id
 	 */
-	async getProfile(id: string) {
+	async getProfile(id: string, clientIp = "127.0.0.1") {
+		this.checkRateLimit(clientIp);
 		const profiles = this.mesh.yjsAdapter.getMap("maloca:profiles");
 		const profileData = profiles.get(id) as any;
 
@@ -47,7 +65,8 @@ export class MalocaGatewayAPI {
 	/**
 	 * POST /profiles
 	 */
-	async registerProfile(profile: any) {
+	async registerProfile(profile: any, clientIp = "127.0.0.1") {
+		this.checkRateLimit(clientIp);
 		const profiles = this.mesh.yjsAdapter.getMap("maloca:profiles");
 		profiles.set(this.mesh.config.nodoId, {
 			...profile,
@@ -63,7 +82,8 @@ export class MalocaGatewayAPI {
 	/**
 	 * GET /karma/:id
 	 */
-	async getKarma(id: string) {
+	async getKarma(id: string, clientIp = "127.0.0.1") {
+		this.checkRateLimit(clientIp);
 		const karmaValue = await this.getKarmaValue(id);
 		return {
 			nodoId: id,
@@ -75,7 +95,11 @@ export class MalocaGatewayAPI {
 	/**
 	 * POST /karma/emit
 	 */
-	async emitKarma(transaction: { to: string; amount: number; reason: string }) {
+	async emitKarma(
+		transaction: { to: string; amount: number; reason: string },
+		clientIp = "127.0.0.1",
+	) {
+		this.checkRateLimit(clientIp);
 		const karmaLogs = this.mesh.yjsAdapter.getArray("maloca:karma:txs");
 		const tx = {
 			from: this.mesh.config.nodoId,
@@ -93,7 +117,8 @@ export class MalocaGatewayAPI {
 	/**
 	 * GET /plugins
 	 */
-	async getPlugins() {
+	async getPlugins(clientIp = "127.0.0.1") {
+		this.checkRateLimit(clientIp);
 		// Lista de plugins activos basada en configuración o estado dinámico
 		return [
 			{ id: "core", status: "active" },
@@ -106,7 +131,11 @@ export class MalocaGatewayAPI {
 	/**
 	 * POST /evidentia/notarize
 	 */
-	async notarizeDocument(doc: { hash: string; metadata: any }) {
+	async notarizeDocument(
+		doc: { hash: string; metadata: any },
+		clientIp = "127.0.0.1",
+	) {
+		this.checkRateLimit(clientIp);
 		const notarizations = this.mesh.yjsAdapter.getMap("maloca:evidentia");
 		const entry = {
 			...doc,
