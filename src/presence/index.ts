@@ -311,6 +311,14 @@ export class PresenceManager {
 		}
 	}
 
+	/**
+	 * Registra un listener global que se invoca con el peerId cuando un nodo
+	 * pasa a online (sin requerir el peerId en la llamada).
+	 */
+	addOnlineListener(callback: (peerId: string) => void): void {
+		this.onOnlineCallbacks.add(callback);
+	}
+
 	// ─── EVENTOS ─────────────────────────────────────────────────────────
 
 	on<K extends keyof PresenceEventMap>(

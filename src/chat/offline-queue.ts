@@ -1,5 +1,4 @@
 import type { IStorage } from "../storage/index.js";
-import { MeshPresence } from "../presence/index.js";
 import type { Mensaje } from "./index.js";
 
 export type ChatMessage = Mensaje;

@@ -218,7 +218,7 @@ export class EdgeMesh {
 
 		// Offline Queue
 		this.offlineQueue = new PersistentOfflineQueue(this.storage);
-		this.presence.onOnline((peerId) => {
+		this.presence.addOnlineListener((peerId) => {
 			void this.offlineQueue.handlePeerReconnect(peerId);
 		});
 
