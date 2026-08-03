@@ -10,6 +10,12 @@ import type { YjsAdapter } from "../edge-mesh.js";
 import { generarId } from "../protocol/utils.js";
 import { TokenBucketRateLimiter } from "../security/rate-limiter.js";
 import type { NodoId } from "../types/index.js";
+import {
+	type ChatMessage,
+	MeshPresence,
+	type OfflineMessageQueue,
+	PersistentOfflineQueue,
+} from "./offline-queue.js";
 
 // ─── CONST OBJECT PATTERNS ────────────────────────────────────────────────
 
@@ -102,6 +108,8 @@ export class ChatChannel extends EventTarget {
 	readonly nombreCanal: string;
 	readonly tipoCanal: TipoCanal;
 	readonly yjsAdapter: YjsAdapter;
+	readonly offlineQueue?: OfflineMessageQueue;
+	peerId?: string;
 	private readonly yjsText: Y.Text;
 	private readonly yjsMeta: Y.Map<unknown>;
 	private readonly yjsUsuarios: Y.Array<unknown>;
@@ -119,12 +127,23 @@ export class ChatChannel extends EventTarget {
 		nombreCanal: string,
 		yjsAdapter: YjsAdapter,
 		tipoCanal: TipoCanal = TIPO_CANAL.PUBLICO,
+		offlineQueue?: OfflineMessageQueue,
 	) {
 		super();
 		this.nodoId = nodoId;
 		this.nombreCanal = nombreCanal;
 		this.tipoCanal = tipoCanal;
 		this.yjsAdapter = yjsAdapter;
+		this.offlineQueue = offlineQueue;
+
+		// Detect peerId for private channel
+		if (tipoCanal === TIPO_CANAL.PRIVADO) {
+			if (nombreCanal.startsWith("private:")) {
+				this.peerId = nombreCanal.slice("private:".length);
+			} else {
+				this.peerId = nombreCanal;
+			}
+		}
 
 		// Cada canal usa su propio namespace Yjs
 		const prefijo = `chat:${nombreCanal}`;
@@ -134,6 +153,16 @@ export class ChatChannel extends EventTarget {
 		this.yjsMensajes = this.yjsAdapter.getArray(`${prefijo}:mensajes`);
 
 		this.inicializar();
+
+		if (this.offlineQueue instanceof PersistentOfflineQueue) {
+			this.offlineQueue.registerChannel(
+				this.nombreCanal,
+				this.peerId ?? this.nombreCanal,
+				async (msg) => {
+					await this.enviarMensajeDirecto(msg);
+				},
+			);
+		}
 	}
 
 	private inicializar(): void {
@@ -211,7 +240,30 @@ export class ChatChannel extends EventTarget {
 
 	// ─── METODOS PUBLICOS ────────────────────────────────────────────────
 
-	async enviarMensaje(
+	setPeerId(peerId: string): void {
+		this.peerId = peerId;
+		if (this.offlineQueue instanceof PersistentOfflineQueue) {
+			this.offlineQueue.registerChannel(
+				this.nombreCanal,
+				peerId,
+				async (msg) => {
+					await this.enviarMensajeDirecto(msg);
+				},
+			);
+		}
+	}
+
+	async enviarMensajeDirecto(mensaje: ChatMessage): Promise<void> {
+		Y.transact(this.yjsAdapter.doc, () => {
+			this.yjsMensajes.push([mensaje]);
+			this.yjsText.insert(
+				this.yjsText.length,
+				`\n[${mensaje.sender}] ${mensaje.text}`,
+			);
+		});
+	}
+
+	async sendMessage(
 		texto: string,
 		tipo?: TipoMensajeChat,
 		metadata?: Readonly<Record<string, unknown>>,
@@ -228,7 +280,25 @@ export class ChatChannel extends EventTarget {
 			throw new Error("Rate limit exceeded");
 		}
 
-		const mensaje: Mensaje = {
+		const targetPeer =
+			this.peerId ??
+			(this.tipoCanal === TIPO_CANAL.PRIVADO ? this.nombreCanal : undefined);
+
+		if (targetPeer && !MeshPresence.isOnline(targetPeer) && this.offlineQueue) {
+			const mensaje: ChatMessage = {
+				id: generarId(),
+				sender: this.nodoId,
+				text: texto,
+				timestamp: Date.now(),
+				type: tipo ?? TIPO_MENSAJE_CHAT.TEXTO,
+				canal: this.nombreCanal,
+				metadata,
+			};
+			await this.offlineQueue.enqueue(this.nombreCanal, mensaje);
+			return mensaje.id;
+		}
+
+		const mensaje: ChatMessage = {
 			id: generarId(),
 			sender: this.nodoId,
 			text: texto,
@@ -247,6 +317,14 @@ export class ChatChannel extends EventTarget {
 			);
 			return mensaje.id;
 		});
+	}
+
+	async enviarMensaje(
+		texto: string,
+		tipo?: TipoMensajeChat,
+		metadata?: Readonly<Record<string, unknown>>,
+	): Promise<string> {
+		return this.sendMessage(texto, tipo, metadata);
 	}
 
 	async unirseAlCanal(): Promise<void> {
@@ -509,3 +587,5 @@ function esPreguntaValida(valor: unknown): valor is Pregunta {
 		typeof p.puntaje === "number"
 	);
 }
+
+export * from "./offline-queue.js";

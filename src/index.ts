@@ -10,8 +10,10 @@ export {
 } from "./authz/index.js";
 export type {
 	ChatEventMap,
+	ChatMessage,
 	ExamenEventMap,
 	Mensaje,
+	OfflineMessageQueue,
 	Pregunta,
 	TipoCanal,
 	TipoMensajeChat,
@@ -21,6 +23,7 @@ export type {
 export {
 	ChatChannel,
 	ExamenCompartido,
+	PersistentOfflineQueue,
 	TIPO_CANAL,
 	TIPO_MENSAJE_CHAT,
 	TIPO_PREGUNTA,
@@ -87,7 +90,7 @@ export type {
 	PresenceEventMap,
 	PresenceManagerConfig,
 } from "./presence/index.js";
-export { PresenceManager } from "./presence/index.js";
+export { PresenceManager, MeshPresence } from "./presence/index.js";
 export type {
 	PeerHealthMonitor,
 	PeerHealthMonitorOptions,
