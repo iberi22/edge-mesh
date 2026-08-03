@@ -50,7 +50,7 @@ export function stableStringify(val: unknown): string {
 	}
 	const keys = Object.keys(val).sort();
 	const parts = keys.map(
-		(k) => `${JSON.stringify(k)}:${stableStringify(val[k])}`,
+		(k) => `${JSON.stringify(k)}:${stableStringify((val as Record<string, unknown>)[k])}`,
 	);
 	return `{${parts.join(",")}}`;
 }
@@ -172,9 +172,10 @@ export class GovernanceMerger implements GovernanceMerge {
 
 		// Helper to extract proposal
 		const extractProp = (ev: GovernanceEvent): Proposal | null => {
-			if (ev.payload && typeof ev.payload === "object") {
-				if (ev.payload.propuesta && typeof ev.payload.propuesta === "object") {
-					return ev.payload.propuesta as Proposal;
+			const payload = ev.payload as Record<string, unknown> | null;
+			if (payload && typeof payload === "object") {
+				if (payload.propuesta && typeof payload.propuesta === "object") {
+					return payload.propuesta as Proposal;
 				}
 			}
 			return null;
@@ -186,7 +187,8 @@ export class GovernanceMerger implements GovernanceMerge {
 				localProps.set(prop.id, prop);
 			}
 			if (ev.tipo === "expulsion") {
-				const target = ev.payload?.target || ev.payload?.nodoId || ev.id;
+				const pp = ev.payload as Record<string, unknown> | null;
+				const target = (pp?.target ?? pp?.nodoId ?? ev.id) as string;
 				localExpulsions.set(target, ev);
 			}
 		}
@@ -197,7 +199,8 @@ export class GovernanceMerger implements GovernanceMerge {
 				remoteProps.set(prop.id, prop);
 			}
 			if (ev.tipo === "expulsion") {
-				const target = ev.payload?.target || ev.payload?.nodoId || ev.id;
+				const pp = ev.payload as Record<string, unknown> | null;
+				const target = (pp?.target ?? pp?.nodoId ?? ev.id) as string;
 				remoteExpulsions.set(target, ev);
 			}
 		}
@@ -224,7 +227,7 @@ export class GovernanceMerger implements GovernanceMerge {
 			if (remoteExp) {
 				if (
 					localExp.timestamp !== remoteExp.timestamp ||
-					localExp.payload?.resultado !== remoteExp.payload?.resultado
+					(localExp.payload as Record<string, unknown>)?.resultado !== (remoteExp.payload as Record<string, unknown>)?.resultado
 				) {
 					return true;
 				}
