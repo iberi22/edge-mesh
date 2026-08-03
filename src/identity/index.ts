@@ -2,6 +2,8 @@ import { ml_dsa65 } from "@noble/post-quantum/ml-dsa.js";
 import { bytesAHex, hexABytes } from "../protocol/utils.js";
 import type { NodoId, ParPublico } from "../types/index.js";
 
+export type { ParPublico };
+
 // ─── CONSTANTS ─────────────────────────────────────────────────────────────
 
 const ALGORITMO = "ML-DSA-65" as const;
