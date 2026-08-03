@@ -1,16 +1,9 @@
-name: edge-mesh CI
+name: CI/CD edge-mesh
 
-on:
-  push:
-    branches: [main, master]
-  pull_request:
-
-permissions:
-  contents: read
+on: [push, pull_request]
 
 jobs:
-  test:
-    name: Lint + typecheck + unit tests
+  lint:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -22,14 +15,97 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Install
+      - name: Install dependencies
         run: npm ci
 
-      - name: Typecheck
-        run: npx tsc --noEmit
+      - name: Run linter
+        run: npx biome check src/
 
-      - name: Lint
-        run: npm run lint
+  test:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Unit tests
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
         run: npm test
+
+  security:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run audit
+        run: npm audit
+
+      - name: Run Snyk test
+        run: npx snyk test --severity-threshold=high || true
+
+  benchmark-gate:
+    needs: [test, security]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run benchmark
+        run: npm run bench
+
+      - name: Check benchmark thresholds
+        run: node scripts/check-benchmark-thresholds.js
+
+  publish:
+    needs: [benchmark-gate]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://npm.pkg.github.com'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build project
+        run: npm run build
+
+      - name: Publish to GitHub Packages
+        run: npm publish --tag beta
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -208,6 +208,7 @@ export class EdgeMesh {
 			heartbeatIntervalMs: config.heartbeatIntervalMs ?? 5_000,
 			timeoutMs: config.heartbeatTimeoutMs ?? 15_000,
 		});
+		this.presence.registrarClavePublica(config.nodoId, this.identity.exportarPublico());
 
 		// Authz
 		this.authorizer = createNamespaceAuthorizer();
@@ -241,6 +242,9 @@ export class EdgeMesh {
 
 	registrarClavePublica(nodoId: NodoId, parPublico: ParPublico): void {
 		this.peerPublicKeys.set(nodoId, new Uint8Array(parPublico));
+		if (this.presence) {
+			this.presence.registrarClavePublica(nodoId, new Uint8Array(parPublico));
+		}
 	}
 
 	obtenerClavePublica(nodoId: NodoId): ParPublico | undefined {
@@ -321,7 +325,7 @@ export class EdgeMesh {
 		// Iniciar presencia
 		await this.presence.iniciar(this.config.nodoId, async (payload) => {
 			await this.transmitir(payload, TIPO_MENSAJE.HEARTBEAT);
-		});
+		}, this.identity);
 
 		// Conectar nodo
 		await this.nodo.conectar();
@@ -446,7 +450,7 @@ export class EdgeMesh {
 
 		switch (envolvente.tipo) {
 			case TIPO_MENSAJE.HEARTBEAT:
-				this.presence.procesarHeartbeat(envolvente.payload);
+				await this.presence.procesarHeartbeat(envolvente.payload);
 				break;
 
 			case TIPO_MENSAJE.SYNC:

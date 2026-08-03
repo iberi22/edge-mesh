@@ -136,6 +136,22 @@ export class KarmaManager {
 
 	// ─── INTERNOS ───────────────────────────────────────────────────────
 
+	/**
+	 * Devuelve el peer con mejor karma en la mesh (para asignación de trabajo).
+	 * Si no hay peers con karma registrado, devuelve null.
+	 */
+	getBestPeer(): NodoId | null {
+		let best: NodoId | null = null;
+		let bestScore = Number.NEGATIVE_INFINITY;
+		for (const [nodeId, karma] of this.cache.entries()) {
+			if (karma.total > bestScore) {
+				best = nodeId as NodoId;
+				bestScore = karma.total;
+			}
+		}
+		return best;
+	}
+
 	private applyTransaction(tx: TransaccionKarma): void {
 		const target = tx.sujeto;
 		const current = this.cache.get(target) ?? {

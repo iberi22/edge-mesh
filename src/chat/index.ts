@@ -8,6 +8,7 @@
 import * as Y from "yjs";
 import type { YjsAdapter } from "../edge-mesh.js";
 import { generarId } from "../protocol/utils.js";
+import { TokenBucketRateLimiter } from "../security/rate-limiter.js";
 import type { NodoId } from "../types/index.js";
 import {
 	type ChatMessage,
@@ -79,6 +80,10 @@ export interface ChatEventMap {
 		readonly canal: string;
 	}>;
 	error: CustomEvent<{ readonly mensaje: string; readonly error?: Error }>;
+	rate_limited: CustomEvent<{
+		readonly peerId: string;
+		readonly resource: string;
+	}>;
 }
 
 export interface ExamenEventMap {
@@ -111,6 +116,11 @@ export class ChatChannel extends EventTarget {
 	private readonly yjsMensajes: Y.Array<unknown>;
 	private historialCache: Mensaje[] = [];
 	private usuariosConectados: Set<string> = new Set();
+	private readonly rateLimiter = new TokenBucketRateLimiter({
+		tokensPerInterval: 10,
+		intervalMs: 1000,
+		maxTokens: 20,
+	});
 
 	constructor(
 		nodoId: NodoId,
@@ -258,6 +268,18 @@ export class ChatChannel extends EventTarget {
 		tipo?: TipoMensajeChat,
 		metadata?: Readonly<Record<string, unknown>>,
 	): Promise<string> {
+		if (!this.rateLimiter.consume(this.nodoId)) {
+			console.warn(
+				`Rate limit exceeded for peer: ${this.nodoId} in chat channel`,
+			);
+			this.dispatchEvent(
+				new CustomEvent("rate_limited", {
+					detail: { peerId: this.nodoId, resource: "chat" },
+				}),
+			);
+			throw new Error("Rate limit exceeded");
+		}
+
 		const targetPeer =
 			this.peerId ??
 			(this.tipoCanal === TIPO_CANAL.PRIVADO ? this.nombreCanal : undefined);

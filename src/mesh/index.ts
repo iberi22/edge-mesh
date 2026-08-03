@@ -11,6 +11,7 @@
 import type { EdgeMesh } from "../edge-mesh.js";
 import { createEnvelope } from "../protocol/index.js";
 import { generarNonce } from "../protocol/utils.js";
+import { TokenBucketRateLimiter } from "../security/rate-limiter.js";
 import type { Envolvente, NodoId } from "../types/index.js";
 import { TIPO_MENSAJE } from "../types/index.js";
 
@@ -89,6 +90,10 @@ export interface MeshEventMap {
 		readonly peers: readonly NodoId[];
 	}>;
 	error: CustomEvent<{ readonly mensaje: string; readonly error?: Error }>;
+	rate_limited: CustomEvent<{
+		readonly peerId: string;
+		readonly resource: string;
+	}>;
 }
 
 // ─── MESH MANAGER ─────────────────────────────────────────────────────────
@@ -98,6 +103,11 @@ export class MeshManager extends EventTarget {
 	private readonly edgeMesh: EdgeMesh;
 	private readonly peers: Map<NodoId, PeerInfo>;
 	private readonly gossipsVistos: Set<string>;
+	private readonly gossipRateLimiter = new TokenBucketRateLimiter({
+		tokensPerInterval: 100,
+		intervalMs: 1000,
+		maxTokens: 200,
+	});
 	private readonly namespacePeers: Map<string, Set<NodoId>>;
 	private activo: boolean = false;
 	private intervalos: {
@@ -401,6 +411,21 @@ export class MeshManager extends EventTarget {
 
 		// Verificar duplicado
 		if (this.gossipsVistos.has(mensaje.id)) return;
+
+		// Rate Limiting
+		const peerId =
+			mensaje.ruta.length > 0
+				? mensaje.ruta[mensaje.ruta.length - 1]
+				: mensaje.origen;
+		if (!this.gossipRateLimiter.consume(peerId)) {
+			console.warn(`Rate limit exceeded for peer: ${peerId} in gossip receive`);
+			this.dispatchEvent(
+				new CustomEvent("rate_limited", {
+					detail: { peerId, resource: "gossip" },
+				}),
+			);
+			return;
+		}
 
 		// Marcar como visto
 		this.gossipsVistos.add(mensaje.id);

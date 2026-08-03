@@ -1,5 +1,8 @@
 import { ml_dsa65 } from "@noble/post-quantum/ml-dsa.js";
+import { bytesAHex, hexABytes } from "../protocol/utils.js";
 import type { NodoId, ParPublico } from "../types/index.js";
+
+export type { ParPublico };
 
 // ─── CONSTANTS ─────────────────────────────────────────────────────────────
 
@@ -24,7 +27,16 @@ export interface PostQuantumKeypair {
 	readonly fechaCreacion: number;
 }
 
-export interface PostQuantumIdentity {
+export interface IdentityProvider {
+	sign(data: string): Promise<string>;
+	verify(
+		data: string,
+		signature: string,
+		publicKey: Uint8Array,
+	): Promise<boolean>;
+}
+
+export interface PostQuantumIdentity extends IdentityProvider {
 	readonly nodoId: NodoId;
 	readonly keypair: PostQuantumKeypair;
 
@@ -78,6 +90,26 @@ class PostQuantumIdentityImpl implements PostQuantumIdentity {
 		try {
 			// @noble/post-quantum ML-DSA: verify(signature, message, publicKey)
 			return ml_dsa65.verify(firma, datos, parPublico);
+		} catch {
+			return false;
+		}
+	}
+
+	async sign(data: string): Promise<string> {
+		const bytes = new TextEncoder().encode(data);
+		const firmaBytes = await this.firmar(bytes);
+		return bytesAHex(firmaBytes);
+	}
+
+	async verify(
+		data: string,
+		signature: string,
+		publicKey: Uint8Array,
+	): Promise<boolean> {
+		try {
+			const bytes = new TextEncoder().encode(data);
+			const firmaBytes = hexABytes(signature);
+			return await this.verificar(bytes, firmaBytes, publicKey);
 		} catch {
 			return false;
 		}
