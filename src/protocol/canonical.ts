@@ -1,22 +1,38 @@
+import { bytesAHex } from "./utils.js";
+
 /**
- * Deterministically stringifies an object for signing.
+ * Deterministic stringify of any value by sorting object keys alphabetically.
+ * Uint8Array instances are serialized as their hex representation.
  */
-export function canonicalStringify(obj: unknown): string {
-	if (obj === null || typeof obj !== "object") {
-		return JSON.stringify(obj);
+export function canonicalStringify(val: any): string {
+	if (val === null || val === undefined) {
+		return "null";
 	}
-	if (Array.isArray(obj)) {
-		return "[" + obj.map(canonicalStringify).join(",") + "]";
+	if (val instanceof Uint8Array) {
+		return JSON.stringify(bytesAHex(val));
 	}
-	const keys = Object.keys(obj as Record<string, unknown>).sort();
+	if (typeof val !== "object") {
+		return JSON.stringify(val);
+	}
+	if (Array.isArray(val)) {
+		return "[" + val.map((v) => canonicalStringify(v)).join(",") + "]";
+	}
+	const keys = Object.keys(val).sort();
 	return (
 		"{" +
 		keys
 			.map(
 				(k) =>
-					`${JSON.stringify(k)}:${canonicalStringify((obj as Record<string, unknown>)[k])}`,
+					`${JSON.stringify(k)}:${canonicalStringify((val as Record<string, unknown>)[k])}`,
 			)
 			.join(",") +
 		"}"
 	);
+}
+
+/**
+ * Returns canonical byte serialization of any value.
+ */
+export function canonicalSerialize(val: any): Uint8Array {
+	return new TextEncoder().encode(canonicalStringify(val));
 }
