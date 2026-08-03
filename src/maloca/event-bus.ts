@@ -1,5 +1,6 @@
 import type { GossipMessage, MeshManager } from "../mesh/index.js";
 import type { OpLog } from "../op-log/index.js";
+import { InMemoryStorage, type IStorage } from "../storage/index.js";
 import type { NodoId } from "../types/index.js";
 
 // ─── EVENT TYPES ───────────────────────────────────────────────────────────
@@ -28,6 +29,77 @@ export interface EventoMaloca {
 	readonly timestamp: number;
 }
 
+export interface MeshEvent extends EventoMaloca {}
+
+// ─── PERSISTENT EVENT QUEUE ────────────────────────────────────────────────
+
+export interface PersistentEventQueue {
+	enqueue(event: MeshEvent): Promise<void>;
+	dequeueAll(): Promise<MeshEvent[]>;
+	replay(namespace: string): Promise<MeshEvent[]>;
+	clear(): Promise<void>;
+	size(): Promise<number>;
+}
+
+export class PersistentEventQueueImpl implements PersistentEventQueue {
+	private readonly storage: IStorage;
+	private readonly namespace: string;
+
+	constructor(storage: IStorage, namespace: string) {
+		this.storage = storage;
+		this.namespace = namespace;
+	}
+
+	async enqueue(event: MeshEvent): Promise<void> {
+		const key = `events:bus:${this.namespace}:${event.timestamp}:${Math.random().toString(36).substring(2, 9)}`;
+		await this.storage.set(key, event);
+	}
+
+	async dequeueAll(): Promise<MeshEvent[]> {
+		return this.replay(this.namespace);
+	}
+
+	async replay(namespace: string): Promise<MeshEvent[]> {
+		const prefix = `events:bus:${namespace}`;
+		const entries = await this.storage.list({ prefijo: prefix });
+		const now = Date.now();
+		const validEvents: MeshEvent[] = [];
+
+		for (const entry of entries) {
+			const event = entry.valor as MeshEvent;
+			if (now - event.timestamp < 3600000) {
+				validEvents.push(event);
+			}
+			await this.storage.delete(entry.key);
+		}
+
+		return validEvents;
+	}
+
+	async clear(): Promise<void> {
+		const prefix = `events:bus:${this.namespace}`;
+		await this.storage.clear(prefix);
+	}
+
+	async size(): Promise<number> {
+		const prefix = `events:bus:${this.namespace}`;
+		const entries = await this.storage.list({ prefijo: prefix });
+		const now = Date.now();
+		let count = 0;
+
+		for (const entry of entries) {
+			const event = entry.valor as MeshEvent;
+			if (now - event.timestamp < 3600000) {
+				count++;
+			} else {
+				await this.storage.delete(entry.key);
+			}
+		}
+
+		return count;
+	}
+}
+
 // ─── EVENT BUS ─────────────────────────────────────────────────────────────
 
 export class EventBus extends EventTarget {
@@ -35,12 +107,22 @@ export class EventBus extends EventTarget {
 	private readonly opLog: OpLog;
 	private readonly handlers: Map<string, Set<(evento: EventoMaloca) => void>>;
 	private readonly NAMESPACE = "_maloca:events";
+	readonly queue: PersistentEventQueue;
 
-	constructor(mesh: MeshManager, opLog: OpLog) {
+	constructor(mesh: MeshManager, opLog: OpLog, storage?: IStorage) {
 		super();
 		this.mesh = mesh;
 		this.opLog = opLog;
 		this.handlers = new Map();
+
+		const actualStorage =
+			storage ??
+			(opLog as unknown as { storage: IStorage }).storage ??
+			new InMemoryStorage();
+		this.queue = new PersistentEventQueueImpl(actualStorage, this.NAMESPACE);
+
+		// Unir a namespace para ruteo de gossip
+		void this.mesh.unirANamespace(this.NAMESPACE);
 
 		// Escuchar eventos de la red
 		this.mesh.addEventListener("gossipRecibido", (ev: Event) => {
@@ -49,6 +131,11 @@ export class EventBus extends EventTarget {
 			if (mensaje.namespace === this.NAMESPACE) {
 				this.procesarEventoRemoto(mensaje.payload as EventoMaloca);
 			}
+		});
+
+		// Replay automático al reconectar
+		this.mesh.addEventListener("peerConectado", () => {
+			void this.reconnectHandler();
 		});
 	}
 
@@ -73,7 +160,12 @@ export class EventBus extends EventTarget {
 
 		// Si es para toda la red o un nodo remoto
 		if (destino === "*" || destino !== this.mesh.config.nodoId) {
-			await this.mesh.transmitirConGossip(this.NAMESPACE, evento);
+			const peers = this.mesh.obtenerPeersEnNamespace(this.NAMESPACE);
+			if (peers.length === 0) {
+				await this.queue.enqueue(evento);
+			} else {
+				await this.mesh.transmitirConGossip(this.NAMESPACE, evento);
+			}
 		}
 	}
 
@@ -101,13 +193,9 @@ export class EventBus extends EventTarget {
 	}
 
 	async broadcastToPlugin(
-		pluginId: string,
+		_pluginId: string,
 		evento: Omit<EventoMaloca, "origen" | "timestamp" | "destino">,
 	): Promise<void> {
-		// Nota: El pluginId aquí se usa simbólicamente o para lookup del nodoId
-		// En esta implementación, asumimos que el pluginId nos ayuda a encontrar el destino
-		// Para simplificar, si no tenemos el mapeo, lo emitimos como broadcast normal
-		// con un campo de destino si fuera posible identificar el nodoId del plugin.
 		await this.emit(evento.tipo, evento.payload);
 	}
 
@@ -116,6 +204,16 @@ export class EventBus extends EventTarget {
 		return ops
 			.filter((op) => op.tipo.startsWith("event:"))
 			.map((op) => op.datos as EventoMaloca);
+	}
+
+	private async reconnectHandler(): Promise<void> {
+		const peers = this.mesh.obtenerPeersEnNamespace(this.NAMESPACE);
+		if (peers.length > 0) {
+			const eventsToReplay = await this.queue.dequeueAll();
+			for (const event of eventsToReplay) {
+				await this.mesh.transmitirConGossip(this.NAMESPACE, event);
+			}
+		}
 	}
 
 	private procesarEventoRemoto(evento: EventoMaloca): void {
