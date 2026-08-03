@@ -1,6 +1,9 @@
 import { generarNonce } from "../protocol/utils.js";
 import type { NamespaceCapabilityGrant, NodoId } from "../types/index.js";
 
+/** Rol de un sujeto dentro de un namespace (string, consistente con updateRole/revokeRole). */
+export type Role = string;
+
 // ─── CONSTANTS ─────────────────────────────────────────────────────────────
 
 const EXPIRACION_POR_DEFECTO_MS = 86_400_000; // 24h
