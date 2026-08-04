@@ -1,12 +1,12 @@
-import type { EstadoSalud, HealthStatus, NodoId } from "../types/index.js";
-import { HealthChecker, type HealthCheckerConfig } from "./health.js";
-import { canonicalStringify } from "../protocol/canonical.js";
 import {
-	type PostQuantumIdentity,
-	type IdentityProvider,
 	createPostQuantumIdentity,
 	generateKeypair,
+	type IdentityProvider,
+	type PostQuantumIdentity,
 } from "../identity/index.js";
+import { canonicalStringify } from "../protocol/canonical.js";
+import type { EstadoSalud, HealthStatus, NodoId } from "../types/index.js";
+import { HealthChecker, type HealthCheckerConfig } from "./health.js";
 
 // ─── CONSTANTS ─────────────────────────────────────────────────────────────
 

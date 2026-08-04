@@ -50,7 +50,8 @@ export function stableStringify(val: unknown): string {
 	}
 	const keys = Object.keys(val).sort();
 	const parts = keys.map(
-		(k) => `${JSON.stringify(k)}:${stableStringify((val as Record<string, unknown>)[k])}`,
+		(k) =>
+			`${JSON.stringify(k)}:${stableStringify((val as Record<string, unknown>)[k])}`,
 	);
 	return `{${parts.join(",")}}`;
 }
@@ -227,7 +228,8 @@ export class GovernanceMerger implements GovernanceMerge {
 			if (remoteExp) {
 				if (
 					localExp.timestamp !== remoteExp.timestamp ||
-					(localExp.payload as Record<string, unknown>)?.resultado !== (remoteExp.payload as Record<string, unknown>)?.resultado
+					(localExp.payload as Record<string, unknown>)?.resultado !==
+						(remoteExp.payload as Record<string, unknown>)?.resultado
 				) {
 					return true;
 				}

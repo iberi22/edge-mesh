@@ -4,6 +4,7 @@ import {
 	createNamespaceAuthorizer,
 	type NamespaceAuthorizer,
 } from "./authz/index.js";
+import { PersistentOfflineQueue } from "./chat/offline-queue.js";
 import { createEdgeMeshNode, type EdgeMeshNode } from "./core/node.js";
 import {
 	createGovernanceManager,
@@ -29,7 +30,6 @@ import {
 	createSnapshotManager,
 	type SnapshotManager,
 } from "./snapshot/index.js";
-import { PersistentOfflineQueue } from "./chat/offline-queue.js";
 import { InMemoryStorage, StorageManager } from "./storage/index.js";
 import { SyncEngine } from "./sync/engine.js";
 import { MemoryTransport } from "./transport/memory.js";
@@ -208,7 +208,10 @@ export class EdgeMesh {
 			heartbeatIntervalMs: config.heartbeatIntervalMs ?? 5_000,
 			timeoutMs: config.heartbeatTimeoutMs ?? 15_000,
 		});
-		this.presence.registrarClavePublica(config.nodoId, this.identity.exportarPublico());
+		this.presence.registrarClavePublica(
+			config.nodoId,
+			this.identity.exportarPublico(),
+		);
 
 		// Authz
 		this.authorizer = createNamespaceAuthorizer();
@@ -323,9 +326,13 @@ export class EdgeMesh {
 		this.ensureYjsRelay();
 
 		// Iniciar presencia
-		await this.presence.iniciar(this.config.nodoId, async (payload) => {
-			await this.transmitir(payload, TIPO_MENSAJE.HEARTBEAT);
-		}, this.identity);
+		await this.presence.iniciar(
+			this.config.nodoId,
+			async (payload) => {
+				await this.transmitir(payload, TIPO_MENSAJE.HEARTBEAT);
+			},
+			this.identity,
+		);
 
 		// Conectar nodo
 		await this.nodo.conectar();
