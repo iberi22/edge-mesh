@@ -80,6 +80,15 @@ export { ESTRATEGIA_FAN_OUT, MeshManager } from "./mesh/index.js";
 export type { NamespaceEventMap } from "./namespaces/index.js";
 // ─── NAMESPACES ───────────────────────────────────────────────────────────
 export { NAMESPACE_POR_DEFECTO, NamespaceManager } from "./namespaces/index.js";
+// ─── NODE MEMORY ──────────────────────────────────────────────────────────
+export type {
+	MemoryEvent,
+	MemoryKind,
+	MemoryRecord,
+	NodeMemory,
+	NodeMemoryOptions,
+} from "./node-memory/index.js";
+export { createNodeMemory } from "./node-memory/index.js";
 export type { OpLogConfig, OpLogEventMap } from "./op-log/index.js";
 // ─── OP LOG ───────────────────────────────────────────────────────────────
 export { OpLog } from "./op-log/index.js";
@@ -90,7 +99,7 @@ export type {
 	PresenceEventMap,
 	PresenceManagerConfig,
 } from "./presence/index.js";
-export { PresenceManager, MeshPresence } from "./presence/index.js";
+export { MeshPresence, PresenceManager } from "./presence/index.js";
 export type {
 	PeerHealthMonitor,
 	PeerHealthMonitorOptions,
@@ -102,9 +111,9 @@ export {
 	createPeerHealthMonitor,
 	getReconnectDelay,
 } from "./presence/peer-health.js";
-export type { DeduplicatorConfig } from "./protocol/index.js";
 // ─── PROTOCOL ─────────────────────────────────────────────────────────────
 export { canonicalStringify } from "./protocol/canonical.js";
+export type { DeduplicatorConfig } from "./protocol/index.js";
 export {
 	canonicalEnvelopeBytes,
 	createEnvelope,
@@ -126,7 +135,6 @@ export type {
 	SalonInfo,
 	TipoSalon,
 } from "./salones/manager.js";
-
 // ─── SALONES VIRTUALES ────────────────────────────────────────────────────
 export {
 	ESTADO_SALON,
