@@ -1,8 +1,20 @@
 import { generarNonce } from "../protocol/utils.js";
+import { InMemoryStorage, type IStorage } from "../storage/index.js";
 import type { NamespaceCapabilityGrant, NodoId } from "../types/index.js";
 
 /** Rol de un sujeto dentro de un namespace (string, consistente con updateRole/revokeRole). */
 export type Role = string;
+
+export interface RoleAssignment {
+	readonly id: string;
+	readonly rol: string;
+	readonly sujeto: NodoId;
+}
+
+export interface Capability {
+	readonly nombre: string;
+	readonly descripcion?: string;
+}
 
 // ─── CONSTANTS ─────────────────────────────────────────────────────────────
 
@@ -39,13 +51,101 @@ export interface AuthzEventMap {
 
 export class NamespaceAuthorizer {
 	readonly eventTarget: EventTarget;
-	private readonly grants: Map<string, NamespaceCapabilityGrant>;
+	private grants: Map<string, NamespaceCapabilityGrant>;
 	private readonly reglasLocales: Map<string, Set<string>>;
+	private roleAssignments: Map<string, RoleAssignment>;
+	private capabilities: Map<string, Capability[]>;
+	private readonly storage: IStorage;
 
-	constructor() {
+	constructor(storage?: IStorage) {
 		this.eventTarget = new EventTarget();
 		this.grants = new Map();
 		this.reglasLocales = new Map();
+		this.roleAssignments = new Map();
+		this.capabilities = new Map();
+		this.storage = storage ?? new InMemoryStorage();
+
+		// Background loading during construction
+		void this.loadGrants();
+		void this.loadRoleAssignments();
+		void this.loadCapabilities();
+	}
+
+	// ─── PERSISTENCE ─────────────────────────────────────────────────────
+
+	async saveGrants(): Promise<void> {
+		await this.storage.put("authz:grants", Array.from(this.grants.entries()));
+	}
+
+	async loadGrants(): Promise<void> {
+		const data = await this.storage.get("authz:grants");
+		if (data) {
+			let loadedMap: Map<string, NamespaceCapabilityGrant>;
+			if (Array.isArray(data)) {
+				loadedMap = new Map(data);
+			} else if (typeof data === "object" && data !== null && "valor" in data) {
+				loadedMap = new Map((data as any).valor);
+			} else {
+				return;
+			}
+			for (const [key, value] of loadedMap) {
+				if (!this.grants.has(key)) {
+					this.grants.set(key, value);
+				}
+			}
+		}
+	}
+
+	async saveRoleAssignments(): Promise<void> {
+		await this.storage.put(
+			"authz:roleAssignments",
+			Array.from(this.roleAssignments.entries()),
+		);
+	}
+
+	async loadRoleAssignments(): Promise<void> {
+		const data = await this.storage.get("authz:roleAssignments");
+		if (data) {
+			let loadedMap: Map<string, RoleAssignment>;
+			if (Array.isArray(data)) {
+				loadedMap = new Map(data);
+			} else if (typeof data === "object" && data !== null && "valor" in data) {
+				loadedMap = new Map((data as any).valor);
+			} else {
+				return;
+			}
+			for (const [key, value] of loadedMap) {
+				if (!this.roleAssignments.has(key)) {
+					this.roleAssignments.set(key, value);
+				}
+			}
+		}
+	}
+
+	async saveCapabilities(): Promise<void> {
+		await this.storage.put(
+			"authz:capabilities",
+			Array.from(this.capabilities.entries()),
+		);
+	}
+
+	async loadCapabilities(): Promise<void> {
+		const data = await this.storage.get("authz:capabilities");
+		if (data) {
+			let loadedMap: Map<string, Capability[]>;
+			if (Array.isArray(data)) {
+				loadedMap = new Map(data);
+			} else if (typeof data === "object" && data !== null && "valor" in data) {
+				loadedMap = new Map((data as any).valor);
+			} else {
+				return;
+			}
+			for (const [key, value] of loadedMap) {
+				if (!this.capabilities.has(key)) {
+					this.capabilities.set(key, value);
+				}
+			}
+		}
 	}
 
 	// ─── GRANTS ──────────────────────────────────────────────────────────
@@ -71,7 +171,18 @@ export class NamespaceAuthorizer {
 		this.grants.set(clave, grant);
 
 		this.emit("capacidadConcedida", { grant });
+		void this.saveGrants();
 		return grant;
+	}
+
+	grant(
+		espacio: string,
+		sujeto: NodoId,
+		capacidad: string,
+		expiracionMs?: number,
+		firma?: Uint8Array,
+	): NamespaceCapabilityGrant {
+		return this.concederCapacidad(espacio, sujeto, capacidad, expiracionMs, firma);
 	}
 
 	revocarCapacidad(
@@ -90,7 +201,16 @@ export class NamespaceAuthorizer {
 			espacio,
 			sujeto,
 		});
+		void this.saveGrants();
 		return true;
+	}
+
+	revoke(
+		espacio: string,
+		sujeto: NodoId,
+		capacidad: string,
+	): boolean {
+		return this.revocarCapacidad(espacio, sujeto, capacidad);
 	}
 
 	verificarCapacidad(
@@ -130,6 +250,7 @@ export class NamespaceAuthorizer {
 				capacidad,
 				razon: "Permiso expirado",
 			});
+			void this.saveGrants();
 			return false;
 		}
 
@@ -183,7 +304,40 @@ export class NamespaceAuthorizer {
 				eliminados++;
 			}
 		}
+		if (eliminados > 0) {
+			void this.saveGrants();
+		}
 		return eliminados;
+	}
+
+	// ─── ROLES & CAPABILITIES HELPER METHODS ─────────────────────────────
+
+	updateRole(sujeto: NodoId, rol: string): void {
+		const id = generarNonce();
+		const assignment: RoleAssignment = { id, rol, sujeto };
+		this.roleAssignments.set(sujeto, assignment);
+		void this.saveRoleAssignments();
+	}
+
+	obtenerRoles(): Map<string, RoleAssignment> {
+		return this.roleAssignments;
+	}
+
+	revokeRole(sujeto: NodoId): boolean {
+		const res = this.roleAssignments.delete(sujeto);
+		if (res) {
+			void this.saveRoleAssignments();
+		}
+		return res;
+	}
+
+	concederCapacidades(espacio: string, caps: Capability[]): void {
+		this.capabilities.set(espacio, caps);
+		void this.saveCapabilities();
+	}
+
+	obtenerCapacidades(espacio: string): Capability[] | undefined {
+		return this.capabilities.get(espacio);
 	}
 
 	// ─── EVENTOS ─────────────────────────────────────────────────────────
@@ -226,6 +380,6 @@ export class NamespaceAuthorizer {
 
 // ─── FACTORY ───────────────────────────────────────────────────────────────
 
-export function createNamespaceAuthorizer(): NamespaceAuthorizer {
-	return new NamespaceAuthorizer();
+export function createNamespaceAuthorizer(storage?: IStorage): NamespaceAuthorizer {
+	return new NamespaceAuthorizer(storage);
 }
