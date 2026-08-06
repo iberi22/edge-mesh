@@ -30,35 +30,35 @@ describe("MerkleTree and Split-Brain Reconciliación", () => {
 	});
 
 	describe("MerkleTree Básicos", () => {
-		it("debería calcular la raíz de manera consistente", () => {
+		it("debería calcular la raíz de manera consistente", async () => {
 			const leaf1: Leaf = { id: "1", hash: "hash-1", timestamp: 1000 };
 			const leaf2: Leaf = { id: "2", hash: "hash-2", timestamp: 2000 };
 
 			const tree1 = new MerkleTree([leaf1, leaf2]);
 			const tree2 = new MerkleTree([leaf1, leaf2]);
 
-			expect(tree1.getRoot()).toBe(tree2.getRoot());
-			expect(tree1.getRoot()).not.toBe("");
+			expect(await tree1.getRoot()).toBe(await tree2.getRoot());
+			expect(await tree1.getRoot()).not.toBe("");
 		});
 
-		it("debería poder verificar una hoja utilizando pruebas criptográficas", () => {
+		it("debería poder verificar una hoja utilizando pruebas criptográficas", async () => {
 			const leaf1: Leaf = { id: "1", hash: "hash-1", timestamp: 1000 };
 			const leaf2: Leaf = { id: "2", hash: "hash-2", timestamp: 2000 };
 			const leaf3: Leaf = { id: "3", hash: "hash-3", timestamp: 3000 };
 
 			const tree = new MerkleTree([leaf1, leaf2, leaf3]);
 
-			const proof1 = tree.getProof(leaf1);
-			const proof2 = tree.getProof(leaf2);
-			const proof3 = tree.getProof(leaf3);
+			const proof1 = await tree.getProof(leaf1);
+			const proof2 = await tree.getProof(leaf2);
+			const proof3 = await tree.getProof(leaf3);
 
-			expect(tree.verify(leaf1, proof1)).toBe(true);
-			expect(tree.verify(leaf2, proof2)).toBe(true);
-			expect(tree.verify(leaf3, proof3)).toBe(true);
+			expect(await tree.verify(leaf1, proof1)).toBe(true);
+			expect(await tree.verify(leaf2, proof2)).toBe(true);
+			expect(await tree.verify(leaf3, proof3)).toBe(true);
 
 			// Hoja incorrecta no debería verificar
 			const modifiedLeaf1 = { ...leaf1, hash: "modified-hash" };
-			expect(tree.verify(modifiedLeaf1, proof1)).toBe(false);
+			expect(await tree.verify(modifiedLeaf1, proof1)).toBe(false);
 		});
 	});
 
@@ -154,8 +154,8 @@ describe("MerkleTree and Split-Brain Reconciliación", () => {
 			const treeA = new MerkleTree([leaf1]);
 			const treeB = new MerkleTree([leaf2]);
 
-			const rootA_pre = treeA.getRoot();
-			const rootB_pre = treeB.getRoot();
+			const rootA_pre = await treeA.getRoot();
+			const rootB_pre = await treeB.getRoot();
 
 			// Forzamos un error en la firma PQC de la identidad para que falle
 			vi.spyOn(identity, "firmar").mockRejectedValue(
@@ -167,8 +167,8 @@ describe("MerkleTree and Split-Brain Reconciliación", () => {
 			).rejects.toThrow("Falla de Hardware HSM simulada");
 
 			// Los árboles originales deben haber quedado intactos (rollback / immutability)
-			expect(treeA.getRoot()).toBe(rootA_pre);
-			expect(treeB.getRoot()).toBe(rootB_pre);
+			expect(await treeA.getRoot()).toBe(rootA_pre);
+			expect(await treeB.getRoot()).toBe(rootB_pre);
 			expect(treeA.getLeaves()).toHaveLength(1);
 			expect(treeB.getLeaves()).toHaveLength(1);
 			expect(treeA.getLeaves()[0]).toEqual(leaf1);
