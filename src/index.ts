@@ -31,7 +31,8 @@ export {
 export type { EdgeMeshNode } from "./core/node.js";
 export { createEdgeMeshNode, ESTADO_TRANSICIONES } from "./core/node.js";
 // ─── CORE ─────────────────────────────────────────────────────────────────
-export { EdgeMesh, YjsAdapter } from "./edge-mesh.js";
+export { EdgeMesh, YjsAdapter, MUTATION_REVERT_ORIGIN } from "./edge-mesh.js";
+export type { MutationGuardFn } from "./edge-mesh.js";
 export type {
 	EstadoPropuesta,
 	GovernanceEventMap,
