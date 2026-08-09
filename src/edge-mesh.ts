@@ -47,6 +47,8 @@ import type {
 	TipoMensaje,
 } from "./types/index.js";
 import { TIPO_MENSAJE } from "./types/index.js";
+import { PqcHandshake, type PqcChannelState } from "./transport/pqc-handshake.js";
+import { bytesAHex, hexABytes } from "./protocol/utils.js";
 
 // ─── YJS ADAPTER ───────────────────────────────────────────────────────────
 
@@ -278,6 +280,8 @@ export class EdgeMesh {
 	readonly namespaces: NamespaceManager;
 	readonly yjsAdapter: YjsAdapter;
 	readonly offlineQueue: PersistentOfflineQueue;
+	readonly peerSecureChannels: Map<NodoId, PqcChannelState>;
+	readonly pqcHandshake: PqcHandshake;
 
 	private transport: ITransport | null = null;
 	private readonly logsDoc: Map<string, OpLog>;
@@ -315,6 +319,7 @@ export class EdgeMesh {
 		this.eventTarget = new EventTarget();
 		this.deduplicator = new MessageDeduplicator();
 
+		this.peerSecureChannels = new Map();
 		// Storage
 		this.storage =
 			config.storageBackend === "mem"
@@ -337,6 +342,11 @@ export class EdgeMesh {
 			);
 		}
 		this.registrarClavePublica(config.nodoId, this.identity.exportarPublico());
+
+		this.pqcHandshake = new PqcHandshake(
+			this.identity,
+			(peerId) => this.obtenerClavePublica(peerId),
+		);
 
 		// Yjs — Phase B: optional shared host document (e.g. dbSync.doc)
 		const externalDoc = config.yDoc as Y.Doc | undefined;
@@ -365,6 +375,9 @@ export class EdgeMesh {
 		this.offlineQueue = new PersistentOfflineQueue(this.storage);
 		this.presence.addOnlineListener((peerId) => {
 			void this.offlineQueue.handlePeerReconnect(peerId);
+			if (this.config.enablePqcEncryption !== false && this.config.nodoId < peerId) {
+				void this.iniciarPqcHandshake(peerId as NodoId);
+			}
 			void this.solicitarSyncYjs(peerId as NodoId);
 		});
 
@@ -537,6 +550,17 @@ export class EdgeMesh {
 		payload: unknown,
 		tipoMensaje: TipoMensaje = TIPO_MENSAJE.SYNC,
 	): Promise<void> {
+		if (tipoMensaje === TIPO_MENSAJE.SYNC) {
+			const connections = this.transport ? this.transport.obtenerConexiones() : [];
+			if (connections.length > 0) {
+				const promesas = connections.map((peerId) =>
+					this.enviarSyncEnvelope(peerId as NodoId, payload),
+				);
+				await Promise.all(promesas);
+				return;
+			}
+		}
+
 		if (this.transport !== null) {
 			await this.transport.transmitir(payload, tipoMensaje);
 		}
@@ -547,11 +571,26 @@ export class EdgeMesh {
 		destino: NodoId,
 		payload: unknown,
 	): Promise<void> {
+		const rawPayload = esEnvolvente(payload) ? payload.payload : payload;
+		let finalPayload = rawPayload;
+
+		const secureChannel = this.peerSecureChannels.get(destino);
+		if (secureChannel && secureChannel.status === "ready" && secureChannel.channel) {
+			const plaintext = new TextEncoder().encode(JSON.stringify(rawPayload));
+			const encrypted = secureChannel.channel.encrypt(plaintext);
+			finalPayload = {
+				encrypted: true,
+				ciphertext: bytesAHex(encrypted.ciphertext),
+				iv: bytesAHex(encrypted.iv),
+				tag: bytesAHex(encrypted.tag),
+			};
+		}
+
 		let env = createEnvelope(
 			TIPO_MENSAJE.SYNC,
 			this.config.nodoId,
 			destino,
-			payload,
+			finalPayload,
 		);
 
 		if (this.requireSignedEnvelopes) {
@@ -559,6 +598,32 @@ export class EdgeMesh {
 		}
 
 		await this.enviar(destino, env, TIPO_MENSAJE.SYNC);
+	}
+
+	async iniciarPqcHandshake(destino: NodoId): Promise<void> {
+		if (this.config.enablePqcEncryption === false) return;
+		const existing = this.peerSecureChannels.get(destino);
+		if (existing && (existing.status === "initiating" || existing.status === "ready")) {
+			return;
+		}
+
+		// Set status synchronously to prevent concurrent triggers!
+		this.peerSecureChannels.set(destino, { status: "initiating" });
+
+		try {
+			const { payload, keysA, challengeA } = await this.pqcHandshake.initiate(destino);
+			this.peerSecureChannels.set(destino, {
+				status: "initiating",
+				keysA,
+				challengeA,
+			});
+			await this.enviar(destino, payload, TIPO_MENSAJE.PQC_HANDSHAKE);
+		} catch (err) {
+			this.peerSecureChannels.delete(destino);
+			this.emit("error", {
+				mensaje: `Error al iniciar PQC handshake con ${destino}: ${(err as Error).message}`,
+			});
+		}
 	}
 
 	async solicitarSyncYjs(destino: NodoId, docId = "default"): Promise<void> {
@@ -600,7 +665,7 @@ export class EdgeMesh {
 		}
 
 		if (this.transport !== null) {
-			await this.transport.transmitir(env, TIPO_MENSAJE.SYNC);
+			await this.transmitir(env, TIPO_MENSAJE.SYNC);
 		}
 	}
 
@@ -617,50 +682,217 @@ export class EdgeMesh {
 
 		if (this.deduplicator.esDuplicado(envolvente)) return;
 
-		// Signature gate for sensitive message types
+		// Handshake trigger
 		if (
-			this.requireSignedEnvelopes &&
-			(envolvente.tipo === TIPO_MENSAJE.SYNC ||
-				envolvente.tipo === TIPO_MENSAJE.AUTHZ)
+			this.config.enablePqcEncryption !== false &&
+			this.config.nodoId < envolvente.origen &&
+			!this.peerSecureChannels.has(envolvente.origen) &&
+			envolvente.tipo !== TIPO_MENSAJE.PQC_HANDSHAKE &&
+			envolvente.tipo !== TIPO_MENSAJE.KEM_REPLY &&
+			envolvente.tipo !== TIPO_MENSAJE.PQC_ACK
 		) {
-			const ok = await this.verificarFirmaEnvelope(envolvente);
-			if (!ok) {
+			void this.iniciarPqcHandshake(envolvente.origen);
+		}
+
+		let processedEnvelope = envolvente;
+		if (
+			envolvente.tipo === TIPO_MENSAJE.SYNC &&
+			envolvente.payload &&
+			typeof envolvente.payload === "object" &&
+			(envolvente.payload as any).encrypted === true
+		) {
+			const secureChannel = this.peerSecureChannels.get(envolvente.origen);
+			if (
+				secureChannel &&
+				(secureChannel.status === "ready" || secureChannel.status === "responding") &&
+				secureChannel.channel
+			) {
+				try {
+					const encPayload = envolvente.payload as {
+						ciphertext: string;
+						iv: string;
+						tag: string;
+					};
+					const decryptedBytes = secureChannel.channel.decrypt(
+						hexABytes(encPayload.ciphertext),
+						hexABytes(encPayload.iv),
+						hexABytes(encPayload.tag),
+					);
+					const decryptedPayload = JSON.parse(
+						new TextDecoder().decode(decryptedBytes),
+					);
+					processedEnvelope = {
+						...envolvente,
+						payload: decryptedPayload,
+					};
+				} catch (err) {
+					this.emit("error", {
+						mensaje: `Error descifrando SYNC de ${envolvente.origen}: ${(err as Error).message}`,
+					});
+					return;
+				}
+			} else {
 				this.emit("error", {
-					mensaje: `Firma invalida o ausente de ${envolvente.origen} (${envolvente.tipo})`,
+					mensaje: `SYNC cifrado recibido de ${envolvente.origen} pero no hay canal seguro listo`,
 				});
 				return;
 			}
 		}
 
-		this.emit("mensajeRecibido", { envolvente });
+		// Signature gate for sensitive message types
+		if (
+			this.requireSignedEnvelopes &&
+			(processedEnvelope.tipo === TIPO_MENSAJE.SYNC ||
+				processedEnvelope.tipo === TIPO_MENSAJE.AUTHZ)
+		) {
+			const ok = await this.verificarFirmaEnvelope(processedEnvelope);
+			if (!ok) {
+				this.emit("error", {
+					mensaje: `Firma invalida o ausente de ${processedEnvelope.origen} (${processedEnvelope.tipo})`,
+				});
+				return;
+			}
+		}
 
-		switch (envolvente.tipo) {
+		this.emit("mensajeRecibido", { envolvente: processedEnvelope });
+
+		switch (processedEnvelope.tipo) {
 			case TIPO_MENSAJE.HEARTBEAT:
-				await this.presence.procesarHeartbeat(envolvente.payload);
+				await this.presence.procesarHeartbeat(processedEnvelope.payload);
 				break;
 
 			case TIPO_MENSAJE.SYNC:
-				await this.procesarSync(envolvente);
+				await this.procesarSync(processedEnvelope);
 				break;
 
 			case TIPO_MENSAJE.SNAPSHOT:
-				await this.procesarSnapshot(envolvente);
+				await this.procesarSnapshot(processedEnvelope);
 				break;
 
 			case TIPO_MENSAJE.GOVERNANCE:
-				await this.procesarGovernance(envolvente);
+				await this.procesarGovernance(processedEnvelope);
 				break;
 
 			case TIPO_MENSAJE.AUTHZ:
-				await this.procesarAuthz(envolvente);
+				await this.procesarAuthz(processedEnvelope);
 				break;
 
 			case TIPO_MENSAJE.NAMESPACE:
-				await this.procesarNamespace(envolvente);
+				await this.procesarNamespace(processedEnvelope);
+				break;
+
+			case TIPO_MENSAJE.PQC_HANDSHAKE:
+				await this.procesarPqcHandshake(processedEnvelope);
+				break;
+
+			case TIPO_MENSAJE.KEM_REPLY:
+				await this.procesarKemReply(processedEnvelope);
+				break;
+
+			case TIPO_MENSAJE.PQC_ACK:
+				await this.procesarPqcAck(processedEnvelope);
 				break;
 
 			default:
 				break;
+		}
+	}
+
+	private async procesarPqcHandshake(env: Envolvente): Promise<void> {
+		if (this.config.enablePqcEncryption === false) return;
+		const payload = env.payload as {
+			kemPubKey: string;
+			challenge: string;
+			signature: string;
+		};
+		const existing = this.peerSecureChannels.get(env.origen);
+		if (existing && (existing.status === "responding" || existing.status === "ready")) {
+			return;
+		}
+
+		// Synchronous reservation
+		this.peerSecureChannels.set(env.origen, { status: "responding" });
+
+		try {
+			const { payload: replyPayload, channel, challengeB } =
+				await this.pqcHandshake.respond(env.origen, payload);
+
+			this.peerSecureChannels.set(env.origen, {
+				status: "responding",
+				challengeB,
+				channel,
+			});
+
+			await this.enviar(env.origen, replyPayload, TIPO_MENSAJE.KEM_REPLY);
+		} catch (err) {
+			this.peerSecureChannels.delete(env.origen);
+			this.emit("error", {
+				mensaje: `Error procesando PQC_HANDSHAKE de ${env.origen}: ${(err as Error).message}`,
+			});
+		}
+	}
+
+	private async procesarKemReply(env: Envolvente): Promise<void> {
+		if (this.config.enablePqcEncryption === false) return;
+		const payload = env.payload as {
+			cipherText: string;
+			challenge: string;
+			signature: string;
+		};
+		const state = this.peerSecureChannels.get(env.origen);
+		if (!state || state.status !== "initiating") return;
+
+		// Move state synchronously to ready
+		this.peerSecureChannels.set(env.origen, { status: "ready" });
+
+		try {
+			const { payload: ackPayload, channel } = await this.pqcHandshake.finalize(
+				env.origen,
+				state,
+				payload,
+			);
+
+			this.peerSecureChannels.set(env.origen, {
+				status: "ready",
+				channel,
+			});
+
+			this.emit("handshakeCompletado" as any, { peerId: env.origen });
+
+			await this.enviar(env.origen, ackPayload, TIPO_MENSAJE.PQC_ACK);
+		} catch (err) {
+			this.peerSecureChannels.set(env.origen, state); // revert state
+			this.emit("error", {
+				mensaje: `Error procesando KEM_REPLY de ${env.origen}: ${(err as Error).message}`,
+			});
+		}
+	}
+
+	private async procesarPqcAck(env: Envolvente): Promise<void> {
+		if (this.config.enablePqcEncryption === false) return;
+		const payload = env.payload as {
+			signature: string;
+		};
+		const state = this.peerSecureChannels.get(env.origen);
+		if (!state || state.status !== "responding") return;
+
+		// Move state synchronously to ready
+		this.peerSecureChannels.set(env.origen, { status: "ready" });
+
+		try {
+			await this.pqcHandshake.verifyAck(env.origen, state, payload);
+
+			this.peerSecureChannels.set(env.origen, {
+				status: "ready",
+				channel: state.channel,
+			});
+
+			this.emit("handshakeCompletado" as any, { peerId: env.origen });
+		} catch (err) {
+			this.peerSecureChannels.set(env.origen, state); // revert state
+			this.emit("error", {
+				mensaje: `Error procesando PQC_ACK de ${env.origen}: ${(err as Error).message}`,
+			});
 		}
 	}
 
@@ -923,4 +1155,17 @@ export class EdgeMesh {
 		const evento = new CustomEvent(tipo as string, { detail: detalle });
 		this.eventTarget.dispatchEvent(evento);
 	}
+}
+
+function esEnvolvente(valor: unknown): valor is Envolvente {
+	if (typeof valor !== "object" || valor === null) return false;
+	const candidate = valor as Record<string, unknown>;
+	return (
+		typeof candidate.id === "string" &&
+		typeof candidate.tipo === "string" &&
+		typeof candidate.origen === "string" &&
+		typeof candidate.destino === "string" &&
+		typeof candidate.timestamp === "number" &&
+		candidate.payload !== undefined
+	);
 }

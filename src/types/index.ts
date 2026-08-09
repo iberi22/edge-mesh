@@ -13,6 +13,9 @@ export const TIPO_MENSAJE = {
 	GOVERNANCE: "governance",
 	IDENTITY: "identity",
 	ERROR: "error",
+	PQC_HANDSHAKE: "pqc_handshake",
+	KEM_REPLY: "kem_reply",
+	PQC_ACK: "pqc_ack",
 } as const;
 
 export type TipoMensaje = (typeof TIPO_MENSAJE)[keyof typeof TIPO_MENSAJE];
@@ -311,4 +314,9 @@ export interface EdgeMeshConfig {
 	 * otherwise `true`.
 	 */
 	readonly relayLocalYjs?: boolean;
+	/**
+	 * When true (or omitted/undefined), PQC Handshake and encryption on SYNC path are enabled.
+	 * Set to false to disable/simulate fallback behavior.
+	 */
+	readonly enablePqcEncryption?: boolean;
 }
