@@ -223,6 +223,7 @@ export class EdgeMesh {
 		this.offlineQueue = new PersistentOfflineQueue(this.storage);
 		this.presence.addOnlineListener((peerId) => {
 			void this.offlineQueue.handlePeerReconnect(peerId);
+			void this.solicitarSyncYjs(peerId as NodoId);
 		});
 
 		// Re-encolar eventos del nodo (forward to mesh EventTarget without looping)
@@ -400,6 +401,36 @@ export class EdgeMesh {
 		await this.nodo.transmitir(payload);
 	}
 
+	private async enviarSyncEnvelope(
+		destino: NodoId,
+		payload: unknown,
+	): Promise<void> {
+		let env = createEnvelope(
+			TIPO_MENSAJE.SYNC,
+			this.config.nodoId,
+			destino,
+			payload,
+		);
+
+		if (this.requireSignedEnvelopes) {
+			env = await signEnvelope(env, this.identity);
+		}
+
+		await this.enviar(destino, env, TIPO_MENSAJE.SYNC);
+	}
+
+	async solicitarSyncYjs(destino: NodoId, docId = "default"): Promise<void> {
+		const stateVector = this.yjsAdapter.getStateVector();
+		const payload = {
+			tipoSync: "solicitud" as const,
+			docId,
+			datos: Array.from(stateVector),
+			clock: Date.now(),
+			namespace: this.defaultSyncNamespace,
+		};
+		await this.enviarSyncEnvelope(destino, payload);
+	}
+
 	/**
 	 * Publish a CRDT update to peers (optionally signed).
 	 */
@@ -408,6 +439,7 @@ export class EdgeMesh {
 		docId = "default",
 	): Promise<void> {
 		const payload = {
+			tipoSync: "delta" as const,
 			docId,
 			// JSON-safe encoding for transports that serialize to JSON
 			datos: Array.from(update),
@@ -512,6 +544,7 @@ export class EdgeMesh {
 			datos?: unknown;
 			clock?: number;
 			namespace?: string;
+			tipoSync?: "estado" | "delta" | "solicitud";
 		};
 		if (payload === undefined || typeof payload !== "object") return;
 
@@ -547,14 +580,30 @@ export class EdgeMesh {
 		}
 
 		const bytes = this.decodeSyncBytes(payload.datos);
-		if (!bytes || bytes.length === 0) return;
+		if (!bytes) return;
 
-		this.yjsAdapter.applyUpdate(bytes, env.origen);
+		const tipoSync = payload.tipoSync ?? "delta";
 
-		this.emit("syncCompletado", {
-			docId,
-			clock: payload.clock ?? 0,
-		});
+		if (tipoSync === "solicitud") {
+			const diff = Y.encodeStateAsUpdate(this.yjsAdapter.doc, bytes);
+			const responsePayload = {
+				tipoSync: "delta" as const,
+				docId,
+				datos: Array.from(diff),
+				clock: Date.now(),
+				namespace,
+			};
+			await this.enviarSyncEnvelope(env.origen, responsePayload);
+		} else {
+			if (bytes.length > 0) {
+				this.yjsAdapter.applyUpdate(bytes, env.origen);
+			}
+
+			this.emit("syncCompletado", {
+				docId,
+				clock: payload.clock ?? 0,
+			});
+		}
 	}
 
 	private async procesarSnapshot(env: Envolvente): Promise<void> {
