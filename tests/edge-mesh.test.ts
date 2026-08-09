@@ -123,3 +123,119 @@ describe("EdgeMesh", () => {
 		expect(updateSpy).toHaveBeenCalled();
 	});
 });
+
+describe("YjsAdapter Mutation Guard and Self-Healing", () => {
+	let adapter: YjsAdapter;
+
+	beforeEach(() => {
+		adapter = new YjsAdapter();
+	});
+
+	afterEach(() => {
+		adapter.destroy();
+	});
+
+	it("should allow authorized updates and reject/revert unauthorized remote updates", () => {
+		const map = adapter.getMap("settings");
+		map.set("theme", "light");
+
+		// Register a mutation guard that rejects any updates from "untrusted-peer"
+		adapter.registerMutationGuard((origin, touched) => {
+			if (origin === "untrusted-peer") {
+				return false; // Reject all
+			}
+			return true; // Allow
+		});
+
+		// 1. Authorized transaction (local or trusted)
+		adapter.doc.transact(() => {
+			map.set("theme", "dark");
+		}, "trusted-peer");
+
+		expect(map.get("theme")).toBe("dark");
+
+		// 2. Unauthorized transaction (should be reverted)
+		adapter.doc.transact(() => {
+			map.set("theme", "neon");
+		}, "untrusted-peer");
+
+		// The value should be reverted back to "dark"
+		expect(map.get("theme")).toBe("dark");
+	});
+
+	it("should surgically revert only rejected keys while preserving allowed keys", () => {
+		const map = adapter.getMap("posts");
+		map.set("title", "Initial Title");
+		map.set("likes", 10);
+
+		// Register a mutation guard that surgically rejects only the "likes" property
+		adapter.registerMutationGuard((origin, touched) => {
+			const rejected = new Map<string, Set<string>>();
+			for (const [colName, keys] of touched.entries()) {
+				if (colName === "posts") {
+					for (const key of keys) {
+						if (key === "likes") {
+							if (!rejected.has(colName)) {
+								rejected.set(colName, new Set());
+							}
+							rejected.get(colName)!.add(key);
+						}
+					}
+				}
+			}
+			return rejected.size > 0 ? rejected : true;
+		});
+
+		adapter.doc.transact(() => {
+			map.set("title", "Updated Title");
+			map.set("likes", 999);
+		}, "remote-peer");
+
+		// "title" should be allowed and updated to "Updated Title"
+		expect(map.get("title")).toBe("Updated Title");
+		// "likes" should be reverted to 10
+		expect(map.get("likes")).toBe(10);
+	});
+
+	it("should revert all changes if a guard throws an error", () => {
+		const map = adapter.getMap("profile");
+		map.set("name", "Bob");
+
+		adapter.registerMutationGuard(() => {
+			throw new Error("Security policy error!");
+		});
+
+		adapter.doc.transact(() => {
+			map.set("name", "Malicious Alice");
+		}, "remote-peer");
+
+		// Since guard threw an error, it should be reverted to "Bob"
+		expect(map.get("name")).toBe("Bob");
+	});
+
+	it("should support unregistered mutation guards through the returned callback", () => {
+		const map = adapter.getMap("profile");
+		map.set("status", "active");
+
+		const unregister = adapter.registerMutationGuard((origin) => {
+			if (origin === "some-peer") {
+				return false;
+			}
+		});
+
+		adapter.doc.transact(() => {
+			map.set("status", "banned");
+		}, "some-peer");
+
+		expect(map.get("status")).toBe("active"); // Reverted
+
+		// Unregister the guard
+		unregister();
+
+		adapter.doc.transact(() => {
+			map.set("status", "banned");
+		}, "some-peer");
+
+		expect(map.get("status")).toBe("banned"); // Allowed now
+	});
+});

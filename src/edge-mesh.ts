@@ -50,6 +50,33 @@ import { TIPO_MENSAJE } from "./types/index.js";
 
 // ─── YJS ADAPTER ───────────────────────────────────────────────────────────
 
+/**
+ * Reserved transaction origin used when the mutation guard reverts unauthorized changes (self-healing).
+ */
+export const MUTATION_REVERT_ORIGIN = "mutation-guard-revert";
+
+export type MutationGuardFn = (
+	origin: unknown,
+	touched: Map<string, Set<string>>,
+) => boolean | Map<string, Set<string>> | void;
+
+/**
+ * Utility helper to trace a nested or top-level shared type back to its top-level map collection name.
+ */
+function findTopLevelName(doc: Y.Doc, type: any): string | null {
+	let current = type;
+	while (current && current._item) {
+		current = current.parent;
+	}
+	if (!current) return null;
+	for (const [name, sharedType] of doc.share.entries()) {
+		if (sharedType === current) {
+			return name;
+		}
+	}
+	return null;
+}
+
 export class YjsAdapter {
 	readonly doc: Y.Doc;
 	/** When false, destroy() only detaches listeners (shared host doc). */
@@ -58,11 +85,124 @@ export class YjsAdapter {
 		string,
 		Set<(update: Uint8Array, origin: unknown) => void>
 	>;
+	private readonly mutationGuards: Set<MutationGuardFn>;
+	private readonly afterTransactionHandler: (tr: any) => void;
 
 	constructor(existingDoc?: Y.Doc, ownsDoc = !existingDoc) {
 		this.doc = existingDoc ?? new Y.Doc();
 		this.ownsDoc = ownsDoc;
 		this.listeners = new Map();
+		this.mutationGuards = new Set();
+
+		this.afterTransactionHandler = (tr: any) => {
+			if (tr.origin === MUTATION_REVERT_ORIGIN) {
+				return;
+			}
+			if (this.mutationGuards.size === 0) {
+				return;
+			}
+
+			// Collect all touched keys in Y.Map instances under their top-level collection names
+			const touched = new Map<string, Set<string>>();
+			tr.changedParentTypes.forEach((events: any, type: any) => {
+				if (type instanceof Y.Map) {
+					const mapName = findTopLevelName(this.doc, type);
+					if (!mapName) return;
+
+					if (!touched.has(mapName)) {
+						touched.set(mapName, new Set());
+					}
+					const keySet = touched.get(mapName)!;
+
+					for (const event of events) {
+						if (event instanceof Y.YMapEvent) {
+							for (const key of event.keys.keys()) {
+								keySet.add(key);
+							}
+						}
+					}
+				}
+			});
+
+			if (touched.size === 0) {
+				return;
+			}
+
+			let rejectAll = false;
+			const rejectedKeys = new Map<string, Set<string>>();
+
+			for (const guard of this.mutationGuards) {
+				try {
+					const result = guard(tr.origin, touched);
+					if (result === false) {
+						rejectAll = true;
+					} else if (result instanceof Map) {
+						for (const [mapName, keys] of result.entries()) {
+							if (!rejectedKeys.has(mapName)) {
+								rejectedKeys.set(mapName, new Set());
+							}
+							const set = rejectedKeys.get(mapName)!;
+							for (const k of keys) {
+								set.add(k);
+							}
+						}
+					}
+				} catch (error) {
+					rejectAll = true;
+					console.error("Mutation guard threw an error, rejecting all changes:", error);
+				}
+			}
+
+			if (rejectAll) {
+				for (const [mapName, keys] of touched.entries()) {
+					if (!rejectedKeys.has(mapName)) {
+						rejectedKeys.set(mapName, new Set());
+					}
+					const set = rejectedKeys.get(mapName)!;
+					for (const k of keys) {
+						set.add(k);
+					}
+				}
+			}
+
+			// Apply surgical self-healing/reversion if any keys were rejected
+			if (rejectedKeys.size > 0) {
+				this.doc.transact(() => {
+					tr.changedParentTypes.forEach((events: any, type: any) => {
+						if (type instanceof Y.Map) {
+							const mapName = findTopLevelName(this.doc, type);
+							if (!mapName) return;
+
+							const keysToReject = rejectedKeys.get(mapName);
+							if (!keysToReject) return;
+
+							for (const event of events) {
+								if (event instanceof Y.YMapEvent) {
+									event.keys.forEach((change: any, key: string) => {
+										if (keysToReject.has(key)) {
+											if (change.action === "update" || change.action === "delete") {
+												event.target.set(key, change.oldValue);
+											} else if (change.action === "add") {
+												event.target.delete(key);
+											}
+										}
+									});
+								}
+							}
+						}
+					});
+				}, MUTATION_REVERT_ORIGIN);
+			}
+		};
+
+		this.doc.on("afterTransaction", this.afterTransactionHandler);
+	}
+
+	registerMutationGuard(fn: MutationGuardFn): () => void {
+		this.mutationGuards.add(fn);
+		return () => {
+			this.mutationGuards.delete(fn);
+		};
 	}
 
 	onUpdate(handler: (update: Uint8Array, origin: unknown) => void): () => void {
@@ -115,6 +255,8 @@ export class YjsAdapter {
 			}
 		}
 		this.listeners.clear();
+		this.mutationGuards.clear();
+		this.doc.off("afterTransaction", this.afterTransactionHandler);
 		if (this.ownsDoc) {
 			this.doc.destroy();
 		}
