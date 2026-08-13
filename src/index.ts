@@ -97,7 +97,13 @@ export type {
 export { ESTRATEGIA_FAN_OUT, MeshManager } from "./mesh/index.js";
 export type { NamespaceEventMap } from "./namespaces/index.js";
 // ─── NAMESPACES ───────────────────────────────────────────────────────────
-export { NAMESPACE_POR_DEFECTO, NamespaceManager } from "./namespaces/index.js";
+export {
+	NAMESPACE_POR_DEFECTO,
+	NamespaceManager,
+	swalNamespace,
+	parseSwalNamespace,
+	namespacesAreIsolated,
+} from "./namespaces/index.js";
 // ─── NODE MEMORY ──────────────────────────────────────────────────────────
 export type {
 	MemoryEvent,

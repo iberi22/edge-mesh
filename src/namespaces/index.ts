@@ -5,6 +5,44 @@ import type { NamespacePartition, NodoId } from "../types/index.js";
 
 export const NAMESPACE_POR_DEFECTO = "global" as const;
 
+/**
+ * Canonical SWAL mesh data-plane namespace (NODE_PRO_AND_INSTANCES / DL-F1-02).
+ * Two installs of the same app MUST use distinct instanceIds.
+ */
+export function swalNamespace(appId: string, instanceId: string): string {
+	const app = appId.trim();
+	const instance = instanceId.trim();
+	if (!app || !instance) {
+		throw new Error("swalNamespace requires non-empty appId and instanceId");
+	}
+	if (app.includes("/") || instance.includes("/")) {
+		throw new Error("swalNamespace segments must not contain '/'");
+	}
+	return `swal/${app}/${instance}`;
+}
+
+/** Parse `swal/{appId}/{instanceId}` → parts, or null if invalid. */
+export function parseSwalNamespace(
+	ns: string,
+): { appId: string; instanceId: string } | null {
+	const parts = ns.split("/");
+	if (parts.length !== 3 || parts[0] !== "swal" || !parts[1] || !parts[2]) {
+		return null;
+	}
+	return { appId: parts[1], instanceId: parts[2] };
+}
+
+/** True when two namespaces belong to different instances (must not mix). */
+export function namespacesAreIsolated(a: string, b: string): boolean {
+	if (a === b) return false;
+	const pa = parseSwalNamespace(a);
+	const pb = parseSwalNamespace(b);
+	if (pa && pb) {
+		return pa.appId !== pb.appId || pa.instanceId !== pb.instanceId;
+	}
+	return a !== b;
+}
+
 // ─── NAMESPACE MANAGER ─────────────────────────────────────────────────────
 
 export interface NamespaceEventMap {
