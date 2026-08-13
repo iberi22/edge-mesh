@@ -1,4 +1,5 @@
 import Peer, { type DataConnection } from "peerjs";
+import { getReconnectDelay } from "../presence/peer-health.js";
 import { createEnvelope, MessageDeduplicator } from "../protocol/index.js";
 import type {
 	Envolvente,
@@ -29,29 +30,50 @@ export class PeerJSTransport implements ITransport {
 	readonly tipo: TipoTransporte = TIPO_TRANSPORTE.PEERJS;
 	readonly eventTarget: EventTarget;
 	readonly nodoId: NodoId;
-	private readonly peer: Peer;
+	private peer!: Peer;
+	private readonly opciones: PeerJSTransportOptions;
 	private readonly conexiones: Map<string, DataConnection>;
 	private readonly deduplicator: MessageDeduplicator;
 	private conectado: boolean = false;
+
+	// Reconnection & queues
+	private reconnectAttempts = 0;
+	private reconnectTimer?: any;
+	private pendingConnectionRequests = new Set<string>();
 
 	constructor(nodoId: NodoId, options: PeerJSTransportOptions) {
 		this.nodoId = nodoId;
 		this.eventTarget = new EventTarget();
 		this.conexiones = new Map();
 		this.deduplicator = new MessageDeduplicator();
+		this.opciones = options;
 
-		this.peer = new Peer(options.peerId, {
-			host: options.host,
-			port: options.port,
-			path: options.path,
-			key: options.key,
-			debug: options.debug,
-			config: options.config,
+		this.iniciarPeer();
+	}
+
+	private iniciarPeer(): void {
+		if (this.peer) {
+			try {
+				this.peer.destroy();
+			} catch {
+				// Ignorar
+			}
+		}
+
+		this.peer = new Peer(this.opciones.peerId, {
+			host: this.opciones.host,
+			port: this.opciones.port,
+			path: this.opciones.path,
+			key: this.opciones.key,
+			debug: this.opciones.debug,
+			config: this.opciones.config,
 		});
 
 		this.peer.on("open", () => {
 			this.conectado = true;
+			this.reconnectAttempts = 0;
 			this.emit("conectado", { nodoId: this.nodoId });
+			this.flushPendingConnections();
 		});
 
 		this.peer.on("connection", (conn: DataConnection) => {
@@ -61,10 +83,82 @@ export class PeerJSTransport implements ITransport {
 		this.peer.on("disconnected", () => {
 			this.conectado = false;
 			this.emit("desconectado", { nodoId: this.nodoId });
+			this.programarReconexion();
 		});
 
-		this.peer.on("error", (error: Error) => {
+		this.peer.on("error", (error: any) => {
 			this.emit("error", { mensaje: error.message, error });
+
+			if (
+				error.type === "unavailable-id" ||
+				(error.message && error.message.includes("unavailable-id"))
+			) {
+				this.conectado = false;
+				this.programarReinit();
+			}
+		});
+	}
+
+	private programarReconexion(): void {
+		if (this.reconnectTimer) return;
+
+		const delay = getReconnectDelay(this.reconnectAttempts, {
+			initialDelayMs: 100, // snappier delay for tests/robustness
+			maxDelayMs: 15000,
+		});
+		this.reconnectAttempts++;
+
+		this.reconnectTimer = setTimeout(() => {
+			this.reconnectTimer = undefined;
+			if (this.peer && !this.peer.destroyed && !this.peer.disconnected) {
+				return;
+			}
+			if (this.peer && !this.peer.destroyed) {
+				try {
+					this.peer.reconnect();
+				} catch {
+					this.iniciarPeer();
+				}
+			} else {
+				this.iniciarPeer();
+			}
+		}, delay);
+	}
+
+	private programarReinit(): void {
+		if (this.reconnectTimer) return;
+
+		const delay = getReconnectDelay(this.reconnectAttempts, {
+			initialDelayMs: 100, // snappier delay for tests/robustness
+			maxDelayMs: 15000,
+		});
+		this.reconnectAttempts++;
+
+		this.reconnectTimer = setTimeout(() => {
+			this.reconnectTimer = undefined;
+			this.iniciarPeer();
+		}, delay);
+	}
+
+	private flushPendingConnections(): void {
+		for (const remotoId of this.pendingConnectionRequests) {
+			this.pendingConnectionRequests.delete(remotoId);
+			this.conectarRemoto(remotoId).catch((error) => {
+				this.emit("error", {
+					mensaje: `No se pudo conectar al peer pendiente ${remotoId}`,
+					error,
+				});
+			});
+		}
+	}
+
+	private broadcastPeerList(): void {
+		const peers = [this.opciones.peerId, ...this.obtenerConexiones()];
+		this.transmitir({ peers }, TIPO_MENSAJE.PEER_LIST_UPDATE).catch((error) => {
+			this.emit("error", {
+				mensaje: "Error al transmitir la lista de peers",
+				error,
+			});
 		});
 	}
 
@@ -99,7 +193,18 @@ export class PeerJSTransport implements ITransport {
 
 	private manejarConexion(conn: DataConnection): void {
 		const nodoRemoto = conn.peer as NodoId;
-		this.conexiones.set(nodoRemoto, conn);
+
+		const alAbrir = () => {
+			this.conexiones.set(nodoRemoto, conn);
+			this.emit("conectado", { nodoId: nodoRemoto });
+			this.broadcastPeerList();
+		};
+
+		if (conn.open) {
+			alAbrir();
+		} else {
+			conn.once("open", alAbrir);
+		}
 
 		conn.on("data", (datos: unknown) => {
 			this.manejarDatos(datos);
@@ -108,6 +213,7 @@ export class PeerJSTransport implements ITransport {
 		conn.on("close", () => {
 			this.conexiones.delete(nodoRemoto);
 			this.emit("desconectado", { nodoId: nodoRemoto });
+			this.broadcastPeerList();
 		});
 
 		conn.on("error", (error: Error) => {
@@ -116,14 +222,33 @@ export class PeerJSTransport implements ITransport {
 				error,
 			});
 		});
-
-		this.emit("conectado", { nodoId: nodoRemoto });
 	}
 
 	private manejarDatos(datos: unknown): void {
 		if (!esEnvolvente(datos)) return;
 
 		if (this.deduplicator.esDuplicado(datos)) return;
+
+		if (datos.tipo === TIPO_MENSAJE.PEER_LIST_UPDATE) {
+			const payload = datos.payload as { peers?: string[] };
+			if (payload && Array.isArray(payload.peers)) {
+				for (const peerId of payload.peers) {
+					if (
+						peerId !== this.opciones.peerId &&
+						peerId !== this.nodoId &&
+						!this.conexiones.has(peerId) &&
+						!this.pendingConnectionRequests.has(peerId)
+					) {
+						this.conectarRemoto(peerId).catch((error) => {
+							this.emit("error", {
+								mensaje: `Error al conectar a peer descubierto ${peerId}`,
+								error,
+							});
+						});
+					}
+				}
+			}
+		}
 
 		this.emit("mensaje", { envolvente: datos });
 	}
@@ -182,6 +307,10 @@ export class PeerJSTransport implements ITransport {
 	}
 
 	async conectarRemoto(remotoId: string): Promise<void> {
+		if (!this.conectado || this.peer.destroyed) {
+			this.pendingConnectionRequests.add(remotoId);
+			return;
+		}
 		const conn = this.peer.connect(remotoId, {
 			reliable: true,
 			serialization: "json",
@@ -200,11 +329,29 @@ export class PeerJSTransport implements ITransport {
 	}
 
 	async cerrar(): Promise<void> {
+		if (this.reconnectTimer) {
+			clearTimeout(this.reconnectTimer);
+			this.reconnectTimer = undefined;
+		}
+		this.reconnectAttempts = 0;
+		this.pendingConnectionRequests.clear();
+
 		for (const conn of this.conexiones.values()) {
-			conn.close();
+			try {
+				conn.close();
+			} catch {
+				// Ignorar
+			}
 		}
 		this.conexiones.clear();
-		this.peer.destroy();
+
+		if (this.peer) {
+			try {
+				this.peer.destroy();
+			} catch {
+				// Ignorar
+			}
+		}
 		this.conectado = false;
 		this.deduplicator.reiniciar();
 	}

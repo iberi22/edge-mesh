@@ -16,6 +16,7 @@ export const TIPO_MENSAJE = {
 	PQC_HANDSHAKE: "pqc_handshake",
 	KEM_REPLY: "kem_reply",
 	PQC_ACK: "pqc_ack",
+	PEER_LIST_UPDATE: "peer_list_update",
 } as const;
 
 export type TipoMensaje = (typeof TIPO_MENSAJE)[keyof typeof TIPO_MENSAJE];
