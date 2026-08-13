@@ -84,6 +84,8 @@ export type {
 } from "./maloca/plugin-registry.js";
 // ─── MALOCA ───────────────────────────────────────────────────────────────
 export { PluginRegistry } from "./maloca/plugin-registry.js";
+export type { MalocaBackofficeOptions } from "./maloca/backoffice.js";
+export { MalocaBackoffice } from "./maloca/backoffice.js";
 export type {
 	EstrategiaFanOut,
 	GossipMessage,
