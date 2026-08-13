@@ -6,6 +6,7 @@ export interface PerfilHumano {
 	readonly alias: string;
 	readonly nodos: readonly NodoId[];
 	readonly proyectos: readonly string[];
+	readonly karma?: number | Karma;
 	readonly metadatos: Readonly<Record<string, unknown>>;
 }
 
@@ -13,7 +14,9 @@ export interface PerfilServicio {
 	readonly id: string;
 	readonly tipo: string;
 	readonly version: string;
+	readonly endpoint?: string;
 	readonly capacidades: readonly string[];
+	readonly capabilidades?: readonly string[];
 }
 
 export interface TransaccionKarma {
@@ -24,6 +27,7 @@ export interface TransaccionKarma {
 	readonly delta: number;
 	readonly razon: string;
 	readonly emisor: NodoId;
+	readonly emitidoPor?: NodoId;
 	readonly timestamp: number;
 	readonly firma: Uint8Array;
 }
@@ -32,7 +36,10 @@ export interface Karma {
 	readonly total: number;
 	readonly historial: readonly TransaccionKarma[];
 	readonly pesosPorProyecto: Readonly<Record<string, number>>;
+	readonly pesos?: Readonly<Record<string, number>>;
 	readonly ultimoDecay: number;
+	readonly ultimaActualizacion?: number;
+	readonly decay?: number;
 }
 
 export interface MetadatosCompartidos {

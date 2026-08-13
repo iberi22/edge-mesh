@@ -25,26 +25,31 @@ export class MalocaKernel extends EdgeMesh {
 	}
 
 	async registerNode(
-		tipo: "humano" | "servicio",
+		tipo: "humano" | "proyecto" | "servicio" | "agente",
 		identidad: Uint8Array,
 		metadatos: Record<string, any>,
 	): Promise<void> {
+		const nodeId = metadatos.id || this.config.nodoId;
 		if (tipo === "humano") {
 			const perfil: Perfil = {
-				id: this.config.nodoId,
+				id: nodeId,
 				identidad,
 				alias: metadatos.alias || "Anónimo",
-				nodos: [this.config.nodoId],
-				proyectos: [],
+				nodos: metadatos.nodos || [nodeId],
+				proyectos: metadatos.proyectos || [],
+				karma: metadatos.karma,
 				metadatos,
 			};
 			await this.profiles.upsertProfile(perfil, this.config.nodoId);
 		} else {
+			const caps = metadatos.capacidades || metadatos.capabilidades || [];
 			const perfil: Perfil = {
-				id: this.config.nodoId,
-				tipo: metadatos.tipo || "servicio",
+				id: nodeId,
+				tipo: metadatos.tipo || tipo,
 				version: metadatos.version || "1.0.0",
-				capacidades: metadatos.capacidades || [],
+				endpoint: metadatos.endpoint || "",
+				capacidades: caps,
+				capabilidades: caps,
 			};
 			await this.profiles.upsertProfile(perfil, this.config.nodoId);
 		}

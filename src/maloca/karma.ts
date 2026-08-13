@@ -69,12 +69,20 @@ export class KarmaManager {
 	 * Emite una transacción de karma firmada con la identidad PQC del nodo.
 	 */
 	async emit(
-		txData: Omit<TransaccionKarma, "id" | "timestamp" | "firma">,
+		txData: Omit<TransaccionKarma, "id" | "timestamp" | "firma"> & { emitidoPor?: NodoId },
 	): Promise<TransaccionKarma> {
 		const timestamp = Date.now();
-		const id = `${txData.emisor}:${timestamp}:${Math.random().toString(36).substring(2, 9)}`;
+		const emisor = txData.emisor || txData.emitidoPor || this.identity.nodoId;
+		const emitidoPor = txData.emitidoPor || txData.emisor || this.identity.nodoId;
+		const id = `${emisor}:${timestamp}:${Math.random().toString(36).substring(2, 9)}`;
 
-		const payloadData = { ...txData, id, timestamp };
+		const payloadData = {
+			...txData,
+			id,
+			timestamp,
+			emisor,
+			emitidoPor,
+		};
 		const payload = canonicalStringify(payloadData);
 		let firma: Uint8Array;
 		try {
@@ -89,19 +97,26 @@ export class KarmaManager {
 			...txData,
 			id,
 			timestamp,
+			emisor,
+			emitidoPor,
 			firma,
 		};
 
 		this.applyTransaction(tx);
-		await this.oplog.append("karma:emit", tx, txData.emisor as any);
+		await this.oplog.append("karma:emit", tx, emisor as any);
 		return tx;
 	}
 
 	/**
 	 * Obtiene el score de karma de un nodo.
 	 */
-	getScore(nodeId: NodoId): number {
-		return this.cache.get(nodeId)?.total ?? 0;
+	getScore(nodeId: NodoId, proyecto?: string): number {
+		const karma = this.cache.get(nodeId);
+		if (!karma) return 0;
+		if (proyecto) {
+			return (karma.pesos?.[proyecto] ?? karma.pesosPorProyecto?.[proyecto] ?? 0);
+		}
+		return karma.total;
 	}
 
 	/**
@@ -112,16 +127,27 @@ export class KarmaManager {
 	}
 
 	/**
-	 * Aplica decay (olvido) al score de un nodo.
+	 * Aplica decay (olvido) al score de un nodo o a todos los scores si no se especifica un nodeId.
 	 * - factor: 0.95 reduce 5%, 0.90 reduce 10%, etc.
 	 */
-	async applyDecay(nodeId: NodoId, factor: number = 0.95): Promise<void> {
-		this.applyDecayToCache(nodeId, factor);
-		await this.oplog.append(
-			"karma:decay",
-			{ sujeto: nodeId, factor },
-			nodeId as any,
-		);
+	async applyDecay(nodeId?: NodoId, factor: number = 0.95): Promise<void> {
+		if (nodeId) {
+			this.applyDecayToCache(nodeId, factor);
+			await this.oplog.append(
+				"karma:decay",
+				{ sujeto: nodeId, factor },
+				nodeId as any,
+			);
+		} else {
+			for (const id of this.cache.keys()) {
+				this.applyDecayToCache(id as NodoId, factor);
+				await this.oplog.append(
+					"karma:decay",
+					{ sujeto: id as NodoId, factor },
+					id as any,
+				);
+			}
+		}
 	}
 
 	/**
@@ -135,6 +161,23 @@ export class KarmaManager {
 			firma,
 			publicKey,
 		);
+	}
+
+	/**
+	 * Verifica firma PQC de la transacción de karma.
+	 */
+	async verifySignature(tx: TransaccionKarma, publicKey?: ParPublico): Promise<boolean> {
+		let pubKey = publicKey;
+		if (!pubKey) {
+			const emisorId = tx.emisor || tx.emitidoPor;
+			if (emisorId === this.identity.nodoId) {
+				pubKey = this.identity.keypair.parPublico;
+			}
+		}
+		if (!pubKey) {
+			return false;
+		}
+		return this.verify(tx, pubKey);
 	}
 
 	// ─── INTERNOS ───────────────────────────────────────────────────────
@@ -160,18 +203,31 @@ export class KarmaManager {
 		const current = this.cache.get(target) ?? {
 			total: 0,
 			historial: [],
+			pesos: {},
 			pesosPorProyecto: {},
 			ultimoDecay: Date.now(),
+			ultimaActualizacion: Date.now(),
+			decay: 0.95,
+		};
+
+		const nextTotal = current.total + tx.delta;
+		const nextPesos = {
+			...current.pesos,
+			[tx.proyecto]: ((current.pesos?.[tx.proyecto] ?? 0) + tx.delta),
+		};
+		const nextPesosPorProyecto = {
+			...current.pesosPorProyecto,
+			[tx.proyecto]: ((current.pesosPorProyecto?.[tx.proyecto] ?? 0) + tx.delta),
 		};
 
 		this.cache.set(target, {
-			total: current.total + tx.delta,
+			total: nextTotal,
 			historial: [...current.historial, tx],
-			pesosPorProyecto: {
-				...current.pesosPorProyecto,
-				[tx.proyecto]: (current.pesosPorProyecto[tx.proyecto] ?? 0) + tx.delta,
-			},
+			pesos: nextPesos,
+			pesosPorProyecto: nextPesosPorProyecto,
 			ultimoDecay: current.ultimoDecay,
+			ultimaActualizacion: Date.now(),
+			decay: current.decay ?? 0.95,
 		});
 	}
 
@@ -183,6 +239,8 @@ export class KarmaManager {
 			...current,
 			total: current.total * factor,
 			ultimoDecay: Date.now(),
+			ultimaActualizacion: Date.now(),
+			decay: factor,
 		});
 	}
 }
