@@ -162,6 +162,8 @@ export {
 	InMemoryStorage,
 	StorageError,
 	StorageManager,
+	YDocPersistence,
+	type YDocPersistenceOptions,
 } from "./storage/index.js";
 export type {
 	SyncDirection,
