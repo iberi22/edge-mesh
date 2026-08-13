@@ -25,6 +25,12 @@ describe("Storage Module", () => {
 			const error = new StorageError("test message");
 			expect(error.codigo).toBe("STORAGE_ERROR");
 		});
+
+		it("should behave like a standard Error instance", () => {
+			const error = new StorageError("another message");
+			expect(error).toBeInstanceOf(Error);
+			expect(error.stack).toBeDefined();
+		});
 	});
 
 	describe("InMemoryStorage", () => {
@@ -39,6 +45,15 @@ describe("Storage Module", () => {
 			const entry = await storage.get("key1");
 			expect(entry?.valor).toBe("value1");
 			expect(entry?.key).toBe("key1");
+			expect(entry?.version).toBe(1);
+			expect(entry?.timestamp).toBeGreaterThan(0);
+		});
+
+		it("should put and get values (put alias)", async () => {
+			await storage.put("key_put", "value_put");
+			const entry = await storage.get("key_put");
+			expect(entry?.valor).toBe("value_put");
+			expect(entry?.key).toBe("key_put");
 			expect(entry?.version).toBe(1);
 		});
 
@@ -79,11 +94,7 @@ describe("Storage Module", () => {
 		});
 
 		it("should list entries with time range filter", async () => {
-			const now = Date.now();
-			// We can't easily control timestamp in InMemoryStorage as it uses Date.now()
-			// But we can test it roughly
 			await storage.set("k1", "v1");
-			const mid = Date.now();
 			await new Promise((r) => setTimeout(r, 10)); // Ensure different timestamp
 			await storage.set("k2", "v2");
 
@@ -109,6 +120,19 @@ describe("Storage Module", () => {
 			expect(list.length).toBe(2);
 		});
 
+		it("should sort listed entries by timestamp ascending", async () => {
+			await storage.set("k1", "v1");
+			await new Promise((r) => setTimeout(r, 5));
+			await storage.set("k2", "v2");
+			await new Promise((r) => setTimeout(r, 5));
+			await storage.set("k3", "v3");
+
+			const list = await storage.list();
+			expect(list[0].key).toBe("k1");
+			expect(list[1].key).toBe("k2");
+			expect(list[2].key).toBe("k3");
+		});
+
 		it("should clear all entries", async () => {
 			await storage.set("k1", "v1");
 			await storage.set("k2", "v2");
@@ -122,6 +146,16 @@ describe("Storage Module", () => {
 			await storage.clear("prefix:");
 			expect(await storage.size()).toBe(1);
 			expect(await storage.get("other:1")).not.toBeNull();
+		});
+
+		it("should return the correct size", async () => {
+			expect(await storage.size()).toBe(0);
+			await storage.set("k1", "v1");
+			expect(await storage.size()).toBe(1);
+			await storage.set("k2", "v2");
+			expect(await storage.size()).toBe(2);
+			await storage.delete("k1");
+			expect(await storage.size()).toBe(1);
 		});
 	});
 
@@ -154,8 +188,18 @@ describe("Storage Module", () => {
 			expect(openDB).toHaveBeenCalledWith("test-db", 1, expect.any(Object));
 		});
 
+		it("should handle custom config values", async () => {
+			const customStorage = new StorageManager({
+				dbName: "custom-db",
+				storeName: "custom-store",
+				version: 5,
+			});
+			await customStorage.get("key");
+			expect(openDB).toHaveBeenCalledWith("custom-db", 5, expect.any(Object));
+		});
+
 		it("should set and get values", async () => {
-			mockDb.get.mockResolvedValueOnce(undefined); // first get in set()
+			mockDb.get.mockResolvedValueOnce(null); // first get in set()
 			mockDb.get.mockResolvedValueOnce({
 				key: "k1",
 				valor: "v1",
@@ -177,34 +221,113 @@ describe("Storage Module", () => {
 			expect(entry?.valor).toBe("v1");
 		});
 
-		it("should delete entry", async () => {
+		it("should put and get values (put alias)", async () => {
+			mockDb.get.mockResolvedValueOnce(null); // first get in set()
+			mockDb.get.mockResolvedValueOnce({
+				key: "k1",
+				valor: "v1_put",
+				version: 1,
+				timestamp: 123,
+			});
+
+			await storage.put("k1", "v1_put");
+			expect(mockDb.put).toHaveBeenCalledWith(
+				"test-store",
+				expect.objectContaining({
+					key: "k1",
+					valor: "v1_put",
+					version: 1,
+				}),
+			);
+
+			const entry = await storage.get("k1");
+			expect(entry?.valor).toBe("v1_put");
+		});
+
+		it("should delete entry if it exists", async () => {
 			mockDb.get.mockResolvedValueOnce({ key: "k1" });
 			const deleted = await storage.delete("k1");
 			expect(deleted).toBe(true);
 			expect(mockDb.delete).toHaveBeenCalledWith("test-store", "k1");
 		});
 
-		it("should list entries", async () => {
+		it("should not delete entry and return false if it does not exist", async () => {
+			mockDb.get.mockResolvedValueOnce(null);
+			const deleted = await storage.delete("k1");
+			expect(deleted).toBe(false);
+			expect(mockDb.delete).not.toHaveBeenCalled();
+		});
+
+		it("should list entries with filters applied", async () => {
 			const entries = [
-				{ key: "a", valor: 1, timestamp: 100 },
-				{ key: "b", valor: 2, timestamp: 200 },
+				{ key: "prefix:1", valor: "v1", timestamp: 100 },
+				{ key: "prefix:2", valor: "v2", timestamp: 200 },
+				{ key: "other:1", valor: "v3", timestamp: 300 },
 			];
 			mockDb.getAll.mockResolvedValue(entries);
 
-			const list = await storage.list();
-			expect(list).toHaveLength(2);
-			expect(mockDb.getAll).toHaveBeenCalledWith("test-store");
+			// test listing with prefijo
+			const listPrefix = await storage.list({ prefijo: "prefix:" });
+			expect(listPrefix).toHaveLength(2);
+			expect(listPrefix[0].key).toBe("prefix:1");
+			expect(listPrefix[1].key).toBe("prefix:2");
+
+			// test listing with desde
+			const listDesde = await storage.list({ desde: 200 });
+			expect(listDesde).toHaveLength(2);
+			expect(listDesde[0].key).toBe("prefix:2");
+
+			// test listing with hasta
+			const listHasta = await storage.list({ hasta: 200 });
+			expect(listHasta).toHaveLength(2);
+			expect(listHasta[1].key).toBe("prefix:2");
+
+			// test listing with limite
+			const listLimite = await storage.list({ limite: 1 });
+			expect(listLimite).toHaveLength(1);
 		});
 
-		it("should clear store", async () => {
+		it("should clear the entire store when no prefix is provided", async () => {
 			await storage.clear();
 			expect(mockDb.clear).toHaveBeenCalledWith("test-store");
+			expect(mockDb.delete).not.toHaveBeenCalled();
+		});
+
+		it("should clear store selectively when prefix is provided", async () => {
+			const entries = [
+				{ key: "prefix:1", valor: "v1", timestamp: 100 },
+				{ key: "prefix:2", valor: "v2", timestamp: 200 },
+				{ key: "other:1", valor: "v3", timestamp: 300 },
+			];
+			mockDb.getAll.mockResolvedValue(entries);
+
+			await storage.clear("prefix:");
+			expect(mockDb.clear).not.toHaveBeenCalled();
+			expect(mockDb.delete).toHaveBeenCalledTimes(2);
+			expect(mockDb.delete).toHaveBeenCalledWith("test-store", "prefix:1");
+			expect(mockDb.delete).toHaveBeenCalledWith("test-store", "prefix:2");
+		});
+
+		it("should return correct size", async () => {
+			mockDb.getAll.mockResolvedValue([{ key: "1" }, { key: "2" }]);
+			const size = await storage.size();
+			expect(size).toBe(2);
+			expect(mockDb.getAll).toHaveBeenCalledWith("test-store");
 		});
 
 		it("should close db", async () => {
 			await storage.get("key"); // trigger init
 			await storage.cerrar();
 			expect(mockDb.close).toHaveBeenCalled();
+		});
+
+		it("should handle error when db open fails", async () => {
+			(openDB as any).mockRejectedValueOnce(new Error("IndexedDB error"));
+			const faultyStorage = new StorageManager({
+				dbName: "faulty-db",
+				storeName: "faulty-store",
+			});
+			await expect(faultyStorage.get("key")).rejects.toThrow("IndexedDB error");
 		});
 	});
 });
