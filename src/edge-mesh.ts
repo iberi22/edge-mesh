@@ -9,6 +9,8 @@ import { createEdgeMeshNode, type EdgeMeshNode } from "./core/node.js";
 import {
 	createGovernanceManager,
 	type GovernanceManager,
+	createAuthorityManager,
+	type AuthorityManager,
 } from "./governance/index.js";
 import {
 	createPostQuantumIdentity,
@@ -26,6 +28,7 @@ import {
 	validateEnvelope,
 	verifyEnvelopeSignature,
 } from "./protocol/index.js";
+import { bytesAHex, hexABytes } from "./protocol/utils.js";
 import {
 	createSnapshotManager,
 	type SnapshotManager,
@@ -37,6 +40,10 @@ import {
 	PeerJSTransport,
 	type PeerJSTransportOptions,
 } from "./transport/peerjs.js";
+import {
+	type PqcChannelState,
+	PqcHandshake,
+} from "./transport/pqc-handshake.js";
 import type { ITransport } from "./transport/types.js";
 import type {
 	EdgeMeshConfig,
@@ -47,8 +54,6 @@ import type {
 	TipoMensaje,
 } from "./types/index.js";
 import { TIPO_MENSAJE } from "./types/index.js";
-import { PqcHandshake, type PqcChannelState } from "./transport/pqc-handshake.js";
-import { bytesAHex, hexABytes } from "./protocol/utils.js";
 
 // ─── YJS ADAPTER ───────────────────────────────────────────────────────────
 
@@ -151,7 +156,10 @@ export class YjsAdapter {
 					}
 				} catch (error) {
 					rejectAll = true;
-					console.error("Mutation guard threw an error, rejecting all changes:", error);
+					console.error(
+						"Mutation guard threw an error, rejecting all changes:",
+						error,
+					);
 				}
 			}
 
@@ -182,7 +190,10 @@ export class YjsAdapter {
 								if (event instanceof Y.YMapEvent) {
 									event.keys.forEach((change: any, key: string) => {
 										if (keysToReject.has(key)) {
-											if (change.action === "update" || change.action === "delete") {
+											if (
+												change.action === "update" ||
+												change.action === "delete"
+											) {
 												event.target.set(key, change.oldValue);
 											} else if (change.action === "add") {
 												event.target.delete(key);
@@ -274,6 +285,7 @@ export class EdgeMesh {
 	readonly deduplicator: MessageDeduplicator;
 	readonly storage: StorageManager | InMemoryStorage;
 	readonly governance: GovernanceManager;
+	readonly authority: AuthorityManager;
 	readonly identity: PostQuantumIdentity;
 	readonly presence: PresenceManager;
 	readonly authorizer: NamespaceAuthorizer;
@@ -343,9 +355,8 @@ export class EdgeMesh {
 		}
 		this.registrarClavePublica(config.nodoId, this.identity.exportarPublico());
 
-		this.pqcHandshake = new PqcHandshake(
-			this.identity,
-			(peerId) => this.obtenerClavePublica(peerId),
+		this.pqcHandshake = new PqcHandshake(this.identity, (peerId) =>
+			this.obtenerClavePublica(peerId),
 		);
 
 		// Yjs — Phase B: optional shared host document (e.g. dbSync.doc)
@@ -359,6 +370,20 @@ export class EdgeMesh {
 		this.presence = new PresenceManager({
 			heartbeatIntervalMs: config.heartbeatIntervalMs ?? 5_000,
 			timeoutMs: config.heartbeatTimeoutMs ?? 15_000,
+		});
+
+		// Authority
+		this.authority = createAuthorityManager(
+			config.nodoId,
+			this.presence,
+			{
+				initialMaster: config.initialMaster,
+			},
+		);
+
+		// Forward authority events
+		this.authority.on("failover", (ev) => {
+			this.emit("failover", ev.detail);
 		});
 		this.presence.registrarClavePublica(
 			config.nodoId,
@@ -375,7 +400,10 @@ export class EdgeMesh {
 		this.offlineQueue = new PersistentOfflineQueue(this.storage);
 		this.presence.addOnlineListener((peerId) => {
 			void this.offlineQueue.handlePeerReconnect(peerId);
-			if (this.config.enablePqcEncryption !== false && this.config.nodoId < peerId) {
+			if (
+				this.config.enablePqcEncryption !== false &&
+				this.config.nodoId < peerId
+			) {
 				void this.iniciarPqcHandshake(peerId as NodoId);
 			}
 			void this.solicitarSyncYjs(peerId as NodoId);
@@ -495,6 +523,9 @@ export class EdgeMesh {
 			this.identity,
 		);
 
+		// Iniciar autoridad
+		this.authority.iniciar();
+
 		// Conectar nodo
 		await this.nodo.conectar();
 		this.iniciado = true;
@@ -503,6 +534,7 @@ export class EdgeMesh {
 	async detener(): Promise<void> {
 		this.iniciado = false;
 		this.presence.detener();
+		this.authority.detener();
 		if (this.unsubYjs) {
 			this.unsubYjs();
 			this.unsubYjs = null;
@@ -551,7 +583,9 @@ export class EdgeMesh {
 		tipoMensaje: TipoMensaje = TIPO_MENSAJE.SYNC,
 	): Promise<void> {
 		if (tipoMensaje === TIPO_MENSAJE.SYNC) {
-			const connections = this.transport ? this.transport.obtenerConexiones() : [];
+			const connections = this.transport
+				? this.transport.obtenerConexiones()
+				: [];
 			if (connections.length > 0) {
 				const promesas = connections.map((peerId) =>
 					this.enviarSyncEnvelope(peerId as NodoId, payload),
@@ -575,7 +609,11 @@ export class EdgeMesh {
 		let finalPayload = rawPayload;
 
 		const secureChannel = this.peerSecureChannels.get(destino);
-		if (secureChannel && secureChannel.status === "ready" && secureChannel.channel) {
+		if (
+			secureChannel &&
+			secureChannel.status === "ready" &&
+			secureChannel.channel
+		) {
 			const plaintext = new TextEncoder().encode(JSON.stringify(rawPayload));
 			const encrypted = secureChannel.channel.encrypt(plaintext);
 			finalPayload = {
@@ -603,7 +641,10 @@ export class EdgeMesh {
 	async iniciarPqcHandshake(destino: NodoId): Promise<void> {
 		if (this.config.enablePqcEncryption === false) return;
 		const existing = this.peerSecureChannels.get(destino);
-		if (existing && (existing.status === "initiating" || existing.status === "ready")) {
+		if (
+			existing &&
+			(existing.status === "initiating" || existing.status === "ready")
+		) {
 			return;
 		}
 
@@ -611,7 +652,8 @@ export class EdgeMesh {
 		this.peerSecureChannels.set(destino, { status: "initiating" });
 
 		try {
-			const { payload, keysA, challengeA } = await this.pqcHandshake.initiate(destino);
+			const { payload, keysA, challengeA } =
+				await this.pqcHandshake.initiate(destino);
 			this.peerSecureChannels.set(destino, {
 				status: "initiating",
 				keysA,
@@ -704,7 +746,8 @@ export class EdgeMesh {
 			const secureChannel = this.peerSecureChannels.get(envolvente.origen);
 			if (
 				secureChannel &&
-				(secureChannel.status === "ready" || secureChannel.status === "responding") &&
+				(secureChannel.status === "ready" ||
+					secureChannel.status === "responding") &&
 				secureChannel.channel
 			) {
 				try {
@@ -806,7 +849,10 @@ export class EdgeMesh {
 			signature: string;
 		};
 		const existing = this.peerSecureChannels.get(env.origen);
-		if (existing && (existing.status === "responding" || existing.status === "ready")) {
+		if (
+			existing &&
+			(existing.status === "responding" || existing.status === "ready")
+		) {
 			return;
 		}
 
@@ -814,8 +860,11 @@ export class EdgeMesh {
 		this.peerSecureChannels.set(env.origen, { status: "responding" });
 
 		try {
-			const { payload: replyPayload, channel, challengeB } =
-				await this.pqcHandshake.respond(env.origen, payload);
+			const {
+				payload: replyPayload,
+				channel,
+				challengeB,
+			} = await this.pqcHandshake.respond(env.origen, payload);
 
 			this.peerSecureChannels.set(env.origen, {
 				status: "responding",

@@ -2,6 +2,7 @@
 
 [![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7.0.2-blue)](https://www.typescriptlang.org/)
+[![Tests](https://img.shields.io/badge/tests-353%20passing-brightgreen)](#)
 
 > **Mesh networking library** with CRDT sync, post-quantum identity, and peer-to-peer transport. Built for real-time P2P collaboration in browsers and PWAs — no backend required.
 
@@ -23,7 +24,7 @@
 
 ## Architecture
 
-`
+```
 edge-mesh/
 ├── src/
 │   ├── index.ts          # Public API (re-exports everything)
@@ -46,11 +47,17 @@ edge-mesh/
 │   └── mesh/             # Scalable mesh with gossip protocol
 ├── dist/                 # Compiled output
 └── package.json
-`
+```
+
+## Workspace Distribution
+
+This project is distributed as a single unified monorepo workspace to coordinate the core library and its consumer applications/adapters seamlessly. Under our Single Source of Truth (SSOT) policy, all packages coexist and reference the core dynamically without local file duplicates.
+
+For more details on workspace organization, build workflows, and integration policies, please read our **[Workspace Distribution & SSOT Policy](./docs/WORKSPACE-DISTRIBUTION.md)** documentation.
 
 ## Quick Start
 
-`	ypescript
+```typescript
 import { EdgeMesh } from "edge-mesh";
 
 const mesh = new EdgeMesh({ nodoId: "nodo-123", peerId: "peer-123" });
@@ -62,7 +69,7 @@ channel.on("mensaje", (ev) => console.log("Mensaje:", ev.detail));
 
 // Send a message
 channel.enviarMensaje("Hola a todos!");
-`
+```
 
 ## Tech Stack
 

@@ -140,7 +140,9 @@ export class EvidentiaManager extends EventTarget {
 
 const sha256Encoder = new TextEncoder();
 
-async function sha256Hex(data: string | Uint8Array<ArrayBuffer>): Promise<string> {
+async function sha256Hex(
+	data: string | Uint8Array<ArrayBuffer>,
+): Promise<string> {
 	const bytes = typeof data === "string" ? sha256Encoder.encode(data) : data;
 	const digest = await crypto.subtle.digest("SHA-256", bytes);
 	return bytesAHex(new Uint8Array(digest));
@@ -302,68 +304,68 @@ export async function mergeMerkleTrees(
 		leavesMap.set(leaf.id, { a: leaf });
 	}
 
-		for (const leaf of originalLeavesB) {
-			const entry = leavesMap.get(leaf.id) || {};
-			entry.b = leaf;
-			leavesMap.set(leaf.id, entry);
-		}
+	for (const leaf of originalLeavesB) {
+		const entry = leavesMap.get(leaf.id) || {};
+		entry.b = leaf;
+		leavesMap.set(leaf.id, entry);
+	}
 
-		const mergedLeaves: Leaf[] = [];
-		const resolvedLeaves: Leaf[] = [];
-		const pendingLeaves: Leaf[] = [];
-		let conflictCount = 0;
+	const mergedLeaves: Leaf[] = [];
+	const resolvedLeaves: Leaf[] = [];
+	const pendingLeaves: Leaf[] = [];
+	let conflictCount = 0;
 
-		for (const [_, entry] of leavesMap.entries()) {
-			if (entry.a && !entry.b) {
-				mergedLeaves.push(entry.a);
-			} else if (!entry.a && entry.b) {
-				mergedLeaves.push(entry.b);
-			} else if (entry.a && entry.b) {
-				const leafA = entry.a;
-				const leafB = entry.b;
+	for (const [_, entry] of leavesMap.entries()) {
+		if (entry.a && !entry.b) {
+			mergedLeaves.push(entry.a);
+		} else if (!entry.a && entry.b) {
+			mergedLeaves.push(entry.b);
+		} else if (entry.a && entry.b) {
+			const leafA = entry.a;
+			const leafB = entry.b;
 
-				if (leafA.hash === leafB.hash) {
-					// No conflict, they are identical
-					mergedLeaves.push(leafA);
+			if (leafA.hash === leafB.hash) {
+				// No conflict, they are identical
+				mergedLeaves.push(leafA);
+			} else {
+				// Conflict!
+				conflictCount++;
+				const diff = Math.abs(leafA.timestamp - leafB.timestamp);
+				const fiveMinutesMs = 5 * 60 * 1000;
+
+				if (diff > fiveMinutesMs) {
+					// Resolve by LWW (Last-Writer-Wins)
+					const winner = leafA.timestamp > leafB.timestamp ? leafA : leafB;
+					resolvedLeaves.push(winner);
+					mergedLeaves.push(winner);
 				} else {
-					// Conflict!
-					conflictCount++;
-					const diff = Math.abs(leafA.timestamp - leafB.timestamp);
-					const fiveMinutesMs = 5 * 60 * 1000;
-
-					if (diff > fiveMinutesMs) {
-						// Resolve by LWW (Last-Writer-Wins)
-						const winner = leafA.timestamp > leafB.timestamp ? leafA : leafB;
-						resolvedLeaves.push(winner);
-						mergedLeaves.push(winner);
-					} else {
-						// Irresoluble conflict, requires governance vote
-						pendingLeaves.push(leafA);
-						pendingLeaves.push(leafB);
-					}
+					// Irresoluble conflict, requires governance vote
+					pendingLeaves.push(leafA);
+					pendingLeaves.push(leafB);
 				}
 			}
 		}
+	}
 
-		// Create merged tree
-		const mergedTree = new MerkleTree(mergedLeaves);
+	// Create merged tree
+	const mergedTree = new MerkleTree(mergedLeaves);
 
-		// El nuevo root se firma con ML-DSA-65
-		if (identity) {
-			const root = await mergedTree.getRoot();
-			if (root) {
-				const encoder = new TextEncoder();
-				const rootBytes = encoder.encode(root);
-				const digest = await crypto.subtle.digest("SHA-256", rootBytes);
-				const signatureBytes = await identity.firmar(new Uint8Array(digest));
-				mergedTree.signature = bytesAHex(signatureBytes);
-			}
+	// El nuevo root se firma con ML-DSA-65
+	if (identity) {
+		const root = await mergedTree.getRoot();
+		if (root) {
+			const encoder = new TextEncoder();
+			const rootBytes = encoder.encode(root);
+			const digest = await crypto.subtle.digest("SHA-256", rootBytes);
+			const signatureBytes = await identity.firmar(new Uint8Array(digest));
+			mergedTree.signature = bytesAHex(signatureBytes);
 		}
+	}
 
-		return {
-			mergedTree,
-			conflictCount,
-			resolvedLeaves,
-			pendingLeaves,
-		};
-		}
+	return {
+		mergedTree,
+		conflictCount,
+		resolvedLeaves,
+		pendingLeaves,
+	};
+}

@@ -224,3 +224,10 @@ export class StorageManager implements IStorage {
 		}
 	}
 }
+
+// ─── Y.DOC PERSISTENCE ─────────────────────────────────────────────────────
+
+export {
+	YDocPersistence,
+	type YDocPersistenceOptions,
+} from "./ydoc-persistence.js";
