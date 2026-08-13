@@ -83,9 +83,41 @@ describe("ProfileManager", () => {
 			alias: "Alice",
 		});
 
-		kernel.profiles.linkToProject("node-alice" as NodoId, "proj-2");
+		await kernel.profiles.linkToProject("node-alice" as NodoId, "proj-2");
 
 		const retrieved = kernel.getProfile("node-alice" as NodoId);
 		expect(retrieved!.proyectos).toContain("proj-2");
+	});
+
+	it("should register, get, update, and search profiles using new ProfileManager methods", async () => {
+		const newProfile = {
+			id: "node-bob" as NodoId,
+			alias: "Bob",
+			identidad: new Uint8Array([4, 5, 6]),
+			nodos: ["node-bob" as NodoId],
+			proyectos: [],
+			karma: 50,
+			metadatos: {},
+		};
+
+		// 1. register
+		await kernel.profiles.register(newProfile);
+
+		// 2. get
+		const fetched = await kernel.profiles.get("node-bob");
+		expect(fetched).toBeDefined();
+		expect(fetched!.alias).toBe("Bob");
+		expect((fetched as any).karma).toBe(50);
+
+		// 3. update
+		await kernel.profiles.update("node-bob", { alias: "Bob Builder", karma: 60 });
+		const updated = await kernel.profiles.get("node-bob");
+		expect(updated!.alias).toBe("Bob Builder");
+		expect((updated as any).karma).toBe(60);
+
+		// 4. search
+		const searchResults = await kernel.profiles.search("Build");
+		expect(searchResults).toHaveLength(1);
+		expect(searchResults[0].id).toBe("node-bob");
 	});
 });

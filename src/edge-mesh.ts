@@ -386,13 +386,9 @@ export class EdgeMesh {
 		});
 
 		// Authority
-		this.authority = createAuthorityManager(
-			config.nodoId,
-			this.presence,
-			{
-				initialMaster: config.initialMaster,
-			},
-		);
+		this.authority = createAuthorityManager(config.nodoId, this.presence, {
+			initialMaster: config.initialMaster,
+		});
 
 		// Forward authority events
 		this.authority.on("failover", (ev) => {
@@ -450,7 +446,11 @@ export class EdgeMesh {
 
 	// ─── PUBLIC KEY REGISTRY ─────────────────────────────────────────────
 
-	registrarClavePublica(nodoId: NodoId, parPublico: ParPublico, origenIp = "127.0.0.1"): void {
+	registrarClavePublica(
+		nodoId: NodoId,
+		parPublico: ParPublico,
+		origenIp = "127.0.0.1",
+	): void {
 		const threshold = this.config.sybilThreshold ?? 10;
 		let registered = this.sybilRegistry.get(origenIp);
 		if (!registered) {
@@ -458,7 +458,9 @@ export class EdgeMesh {
 			this.sybilRegistry.set(origenIp, registered);
 		}
 		if (registered.size >= threshold && !registered.has(nodoId)) {
-			throw new Error(`Sybil attack detected: threshold exceeded for IP ${origenIp}`);
+			throw new Error(
+				`Sybil attack detected: threshold exceeded for IP ${origenIp}`,
+			);
 		}
 		registered.add(nodoId);
 
@@ -1230,11 +1232,17 @@ export class EdgeMesh {
 
 	async generarSnapshotAutomatico(): Promise<Snapshot | null> {
 		try {
-			const latestSnapshotEntry = await this.storage.get<any>("storage:snapshot:latest");
-			const prevSnapshotId = latestSnapshotEntry ? latestSnapshotEntry.valor.id : undefined;
+			const latestSnapshotEntry = await this.storage.get<any>(
+				"storage:snapshot:latest",
+			);
+			const prevSnapshotId = latestSnapshotEntry
+				? latestSnapshotEntry.valor.id
+				: undefined;
 
 			const grants = Array.from(this.authorizer.obtenerGrantsMap().entries());
-			const roleAssignments = Array.from(this.authorizer.obtenerRoleAssignmentsMap().entries());
+			const roleAssignments = Array.from(
+				this.authorizer.obtenerRoleAssignmentsMap().entries(),
+			);
 
 			let profiles: [string, any][] = [];
 			if ((this as any).profiles) {
@@ -1253,7 +1261,10 @@ export class EdgeMesh {
 
 			let lastOpSequence = 0;
 			for (const opLog of this.logsDoc.values()) {
-				lastOpSequence = Math.max(lastOpSequence, opLog.obtenerUltimaSecuencia());
+				lastOpSequence = Math.max(
+					lastOpSequence,
+					opLog.obtenerUltimaSecuencia(),
+				);
 			}
 
 			const id = `snapshot-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
@@ -1275,14 +1286,20 @@ export class EdgeMesh {
 			};
 
 			if (this.identity) {
-				const serialized = canonicalStringify(JSON.parse(JSON.stringify(state)));
-				const signatureBytes = await this.identity.firmar(new TextEncoder().encode(serialized));
+				const serialized = canonicalStringify(
+					JSON.parse(JSON.stringify(state)),
+				);
+				const signatureBytes = await this.identity.firmar(
+					new TextEncoder().encode(serialized),
+				);
 				snapshot.signature = bytesAHex(signatureBytes);
 			}
 
 			await this.storage.set("storage:snapshot:latest", snapshot);
 
-			const historyEntry = await this.storage.get<any[]>("storage:snapshot:history");
+			const historyEntry = await this.storage.get<any[]>(
+				"storage:snapshot:history",
+			);
 			let history = historyEntry ? historyEntry.valor : [];
 			if (!Array.isArray(history)) {
 				history = [];
@@ -1313,7 +1330,9 @@ export class EdgeMesh {
 
 	async restaurarDesdeSnapshot(): Promise<boolean> {
 		try {
-			const latestEntry = await this.storage.get<Snapshot>("storage:snapshot:latest");
+			const latestEntry = await this.storage.get<Snapshot>(
+				"storage:snapshot:latest",
+			);
 			if (!latestEntry) {
 				await this.reconstruirDesdeOpLogCompleto();
 				return false;
@@ -1353,7 +1372,9 @@ export class EdgeMesh {
 	async verificarFirmaSnapshot(snapshot: Snapshot): Promise<boolean> {
 		if (!snapshot.signature) return false;
 		try {
-			const serialized = canonicalStringify(JSON.parse(JSON.stringify(snapshot.state)));
+			const serialized = canonicalStringify(
+				JSON.parse(JSON.stringify(snapshot.state)),
+			);
 			const signatureBytes = hexABytes(snapshot.signature);
 			const pubKey = this.identity.exportarPublico();
 			return await this.identity.verificar(

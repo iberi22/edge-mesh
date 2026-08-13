@@ -1,49 +1,78 @@
 import type * as Y from "yjs";
 import type { YjsAdapter } from "../edge-mesh.js";
 import type { PresenceManager } from "../presence/index.js";
+import type { OpLog } from "../op-log/index.js";
 import type { MetadatosCompartidos } from "./types.js";
 
 export class MetadataManager {
 	private readonly yjs: YjsAdapter;
 	private readonly presence: PresenceManager;
 	private readonly metadataMap: Y.Map<any>;
+	private readonly oplog?: OpLog;
 
-	constructor(yjs: YjsAdapter, presence: PresenceManager) {
+	constructor(yjs: YjsAdapter, presence: PresenceManager, oplog?: OpLog) {
 		this.yjs = yjs;
 		this.presence = presence;
 		this.metadataMap = this.yjs.getMap("maloca:metadata");
+		this.oplog = oplog;
 	}
 
 	getNetworkStatus() {
 		const nodosActivos = this.presence.obtenerNodosActivos();
 		const totalNodos = this.presence.obtenerTotalNodos();
 
-		// Topology and latency could be derived from presence as well
 		const latencias = nodosActivos.map((id) => ({
 			id,
 			latencia: this.presence.obtenerLatencia(id),
 		}));
 
+		const validLatencies = latencias
+			.map((l) => l.latencia)
+			.filter((lat): lat is number => typeof lat === "number" && lat >= 0);
+		const latenciaPromedio =
+			validLatencies.length > 0
+				? validLatencies.reduce((a: number, b: number) => a + b, 0) /
+					validLatencies.length
+				: 0;
+
 		return {
 			nodosActivos: nodosActivos.length,
 			totalNodos,
 			latencias,
+			latenciaPromedio,
+			topologia: "mesh-p2p" as const,
 			timestamp: Date.now(),
 		};
 	}
 
 	getProfileCache() {
-		// Distributed cache of profiles is already handled by ProfileManager via Yjs.
-		// Here we could return some stats or a subset.
 		const profiles = this.yjs.getMap("maloca:profiles");
 		return {
 			count: profiles.size,
-			lastUpdate: Date.now(), // Ideally we'd track this
+			lastUpdate: Date.now(),
 		};
 	}
 
-	syncMetadata(key: string, value: any): void {
-		this.metadataMap.set(key, value);
+	async syncMetadata(key?: string, value?: any): Promise<void> {
+		if (key !== undefined) {
+			this.metadataMap.set(key, value);
+			if (this.oplog) {
+				await this.oplog.append(
+					"metadata:sync",
+					{ key, value },
+					"metadata-manager" as any,
+				);
+			}
+		} else if (this.oplog) {
+			await this.oplog.cargarDesdeStorage();
+			const ops = await this.oplog.obtenerTodas();
+			for (const op of ops) {
+				if (op.tipo === "metadata:sync") {
+					const data = op.datos as { key: string; value: any };
+					this.metadataMap.set(data.key, data.value);
+				}
+			}
+		}
 	}
 
 	getProjectInfo(projectId: string) {

@@ -2,10 +2,12 @@ import { EdgeMesh } from "../edge-mesh.js";
 import type { EdgeMeshConfig, NodoId } from "../types/index.js";
 import { KarmaManager, type TransaccionKarma } from "./karma.js";
 import { type Perfil, ProfileManager } from "./perfil.js";
+import { MetadataManager } from "./metadata.js";
 
 export class MalocaKernel extends EdgeMesh {
 	readonly profiles: ProfileManager;
 	readonly karma: KarmaManager;
+	readonly metadata: MetadataManager;
 	private adapters: Map<string, any> = new Map();
 
 	constructor(config: EdgeMeshConfig) {
@@ -15,13 +17,23 @@ export class MalocaKernel extends EdgeMesh {
 		this.profiles = new ProfileManager(profileOpLog);
 
 		const karmaOpLog = this.obtenerOLog("maloca_karma");
-		this.karma = new KarmaManager(karmaOpLog, this.identity);
+		this.karma = new KarmaManager(karmaOpLog, this.identity, (nodeId) =>
+			this.obtenerClavePublica(nodeId),
+		);
+
+		const metadataOpLog = this.obtenerOLog("maloca_metadata");
+		this.metadata = new MetadataManager(
+			this.yjsAdapter,
+			this.presence,
+			metadataOpLog,
+		);
 	}
 
 	override async iniciar(): Promise<void> {
 		await super.iniciar();
 		await this.profiles.loadProfiles(this.snapshotRestored);
 		await this.karma.loadFromOpLog(this.snapshotRestored);
+		await this.metadata.syncMetadata();
 	}
 
 	async registerNode(

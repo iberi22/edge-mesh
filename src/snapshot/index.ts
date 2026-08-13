@@ -1,5 +1,9 @@
 import { InMemoryStorage, type IStorage } from "../storage/index.js";
-import type { NodoId, PayloadSnapshot, NamespaceCapabilityGrant } from "../types/index.js";
+import type {
+	NodoId,
+	PayloadSnapshot,
+	NamespaceCapabilityGrant,
+} from "../types/index.js";
 import type { RoleAssignment } from "../authz/index.js";
 import type { Perfil as Profile } from "../maloca/perfil.js";
 import { MerkleTree } from "../maloca/evidentia.js";
@@ -17,9 +21,9 @@ export interface Subscription {
 }
 
 export interface SnapshotConfig {
-	intervalMs: number;        // Default: cada 5 minutos
-	maxSnapshots: number;      // Default: mantener últimos 3
-	include: string[];         // Namespaces a incluir
+	intervalMs: number; // Default: cada 5 minutos
+	maxSnapshots: number; // Default: mantener últimos 3
+	include: string[]; // Namespaces a incluir
 }
 
 export interface Snapshot {

@@ -35,4 +35,27 @@ describe("MetadataManager", () => {
 		expect(profile).toBeDefined();
 		expect(profile!.alias).toBe("Alice");
 	});
+
+	it("should verify specialized MetadataManager methods and OpLog syncing", async () => {
+		// 1. getNetworkStatus
+		const status = kernel.metadata.getNetworkStatus();
+		expect(status.topologia).toBe("mesh-p2p");
+		expect(status.latenciaPromedio).toBeDefined();
+
+		// 2. getProfileCache
+		const profileCache = kernel.metadata.getProfileCache();
+		expect(profileCache).toHaveProperty("count");
+
+		// 3. syncMetadata with key and value
+		await kernel.metadata.syncMetadata("repositorios", ["repo1", "repo2"]);
+
+		const shared = kernel.metadata.getSharedMetadata();
+		expect(shared.repositorios).toContain("repo1");
+
+		// 4. syncMetadata (OpLog replay check)
+		// We can trigger an implicit sync via OpLog
+		await kernel.metadata.syncMetadata();
+		const sharedAfter = kernel.metadata.getSharedMetadata();
+		expect(sharedAfter.repositorios).toContain("repo1");
+	});
 });
