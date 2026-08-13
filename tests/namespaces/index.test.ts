@@ -100,4 +100,21 @@ describe("NamespaceManager", () => {
 
 		expect(manager.obtenerNodosEnEspacio("dup-test").length).toBe(1);
 	});
+
+	it("debería garantizar el aislamiento de namespaces", () => {
+		const espacioA = manager.crearEspacio("espacio-A");
+		const espacioB = manager.crearEspacio("espacio-B");
+		const nodoId = "peer-1" as NodoId;
+
+		manager.unirNodo(espacioA.id, nodoId);
+
+		// El nodo debe estar en espacioA, pero no en espacioB
+		expect(manager.obtenerNodosEnEspacio("espacio-A")).toContain(nodoId);
+		expect(manager.obtenerNodosEnEspacio("espacio-B")).not.toContain(nodoId);
+
+		// Las búsquedas por nodo deben devolver solo el espacio en el que está unido
+		const espaciosDeNodo = manager.obtenerEspaciosDeNodo(nodoId);
+		expect(espaciosDeNodo.some((e) => e.nombre === "espacio-A")).toBe(true);
+		expect(espaciosDeNodo.some((e) => e.nombre === "espacio-B")).toBe(false);
+	});
 });

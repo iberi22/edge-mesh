@@ -110,6 +110,38 @@ describe("SyncEngine Module", () => {
 
 			expect(result.conflictos).toBe(1);
 			expect(conflictHandler).toHaveBeenCalled();
+			const event = conflictHandler.mock.calls[0][0];
+			expect(event.detail.docId).toBe(docId);
+			expect(event.detail.operacionLocal).toEqual(remoteOps[0]);
+			expect(event.detail.operacionRemota).toEqual(remoteOps[0]);
+		});
+
+		it("should filter out invalid remote operations", async () => {
+			// Garbage data that doesn't pass esOperacionValida
+			const remoteOps = [
+				{
+					id: "remote:1",
+					tipo: "t1",
+					// missing secuencia, timestamp, etc.
+				},
+				{
+					id: "remote:2",
+					tipo: "t2",
+					datos: {},
+					timestamp: Date.now(),
+					autor: peerId,
+					secuencia: 2,
+				},
+			];
+
+			const enviar = vi.fn().mockResolvedValue(undefined);
+			const recibir = vi.fn().mockResolvedValue(remoteOps);
+
+			const result = await engine.sincronizar(peerId, enviar, recibir);
+
+			// Only remote:2 should have been validated and applied
+			expect(result.operacionesRecibidas).toBe(1);
+			expect(oplog.obtenerUltimaSecuencia()).toBe(2);
 		});
 
 		it("should prevent concurrent syncs for same document", async () => {
@@ -130,6 +162,58 @@ describe("SyncEngine Module", () => {
 
 			await promise1;
 		});
+
+		it("should emit syncIniciado and syncCompletado events", async () => {
+			const iniciadoHandler = vi.fn();
+			const completadoHandler = vi.fn();
+
+			engine.on("syncIniciado", iniciadoHandler);
+			engine.on("syncCompletado", completadoHandler);
+
+			const result = await engine.sincronizar(
+				peerId,
+				async () => {},
+				async () => [],
+			);
+
+			expect(iniciadoHandler).toHaveBeenCalled();
+			expect(iniciadoHandler.mock.calls[0][0].detail).toEqual({
+				docId,
+				peerId,
+				direction: "bidireccional",
+			});
+
+			expect(completadoHandler).toHaveBeenCalled();
+			expect(completadoHandler.mock.calls[0][0].detail.resultado).toEqual(result);
+			expect(completadoHandler.mock.calls[0][0].detail.peerId).toBe(peerId);
+		});
+
+		it("should handle sync error and emit syncError event", async () => {
+			const errorHandler = vi.fn();
+			engine.on("syncError", errorHandler);
+
+			// Append local op so enviar is actually called and can fail
+			await oplog.append("local", { val: 1 }, "local" as NodoId);
+
+			const enviar = vi.fn().mockRejectedValue(new Error("Network disconnect"));
+
+			const result = await engine.sincronizar(
+				peerId,
+				enviar,
+				async () => [],
+			);
+
+			expect(result.exito).toBe(false);
+			expect(result.operacionesEnviadas).toBe(0);
+			expect(result.operacionesRecibidas).toBe(0);
+
+			expect(errorHandler).toHaveBeenCalled();
+			expect(errorHandler.mock.calls[0][0].detail).toEqual({
+				docId,
+				peerId,
+				error: "Network disconnect",
+			});
+		});
 	});
 
 	describe("clocks", () => {
@@ -138,11 +222,14 @@ describe("SyncEngine Module", () => {
 			expect(engine.obtenerClockLocal()).toBe(10);
 			engine.actualizarClockLocal(5); // Should not go backwards
 			expect(engine.obtenerClockLocal()).toBe(10);
+			engine.actualizarClockLocal(15);
+			expect(engine.obtenerClockLocal()).toBe(15);
 		});
 
 		it("should update and get remote clock", () => {
 			engine.actualizarClockRemoto(peerId, 20);
 			expect(engine.obtenerClockRemoto(peerId)).toBe(20);
+			expect(engine.obtenerClockRemoto("another-peer" as NodoId)).toBe(0);
 		});
 	});
 
@@ -156,5 +243,18 @@ describe("SyncEngine Module", () => {
 		expect(engine.estaSincronizando()).toBe(true);
 		await promise;
 		expect(engine.estaSincronizando()).toBe(false);
+	});
+
+	it("should support off to remove event listeners", async () => {
+		const handler = vi.fn();
+		engine.on("syncIniciado", handler);
+		engine.off("syncIniciado", handler);
+
+		await engine.sincronizar(
+			peerId,
+			async () => {},
+			async () => [],
+		);
+		expect(handler).not.toHaveBeenCalled();
 	});
 });
