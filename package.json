@@ -1,6 +1,10 @@
 {
 	"name": "@iberi22/edge-mesh",
 	"version": "1.0.0",
+	"workspaces": [
+		".",
+		"packages/*"
+	],
 	"description": "Mesh networking library with CRDT sync, post-quantum identity, and peer-to-peer transport",
 	"publishConfig": {
 		"registry": "https://npm.pkg.github.com"
