@@ -33,6 +33,60 @@ describe("SalonVirtual", () => {
 		expect(salon.obtenerInfo().nombre).toBe("Mi Salon");
 	});
 
+	it("debería soportar diferentes tipos de salón (TIPO_SALON)", () => {
+		const configExamen: SalonConfig = {
+			creatorId,
+			nombre: "Salon Examen",
+			tipo: TIPO_SALON.EXAMEN,
+			maxParticipantes: 10,
+			yjsAdapter: edgeMesh.yjsAdapter,
+			edgeMesh,
+		};
+		const salonExamen = new SalonVirtual(configExamen);
+		expect(salonExamen.obtenerInfo().tipo).toBe(TIPO_SALON.EXAMEN);
+
+		const configReunion: SalonConfig = {
+			creatorId,
+			nombre: "Salon Reunion",
+			tipo: TIPO_SALON.REUNION,
+			maxParticipantes: 10,
+			yjsAdapter: edgeMesh.yjsAdapter,
+			edgeMesh,
+		};
+		const salonReunion = new SalonVirtual(configReunion);
+		expect(salonReunion.obtenerInfo().tipo).toBe(TIPO_SALON.REUNION);
+	});
+
+	it("debería manejar múltiples participantes y respetar el límite máximo", async () => {
+		const config: SalonConfig = {
+			creatorId,
+			nombre: "Salon Limitado",
+			tipo: TIPO_SALON.CHAT,
+			maxParticipantes: 3,
+			yjsAdapter: edgeMesh.yjsAdapter,
+			edgeMesh,
+		};
+		const salon = new SalonVirtual(config);
+
+		const peer2 = "peer2" as NodoId;
+		const peer3 = "peer3" as NodoId;
+		const peer4 = "peer4" as NodoId;
+
+		// Unir participantes
+		await salon.unirse(creatorId);
+		await salon.unirse(peer2);
+		await salon.unirse(peer3);
+
+		const participantes = await salon.obtenerParticipantes();
+		expect(participantes.length).toBe(3);
+		expect(participantes).toContain(creatorId);
+		expect(participantes).toContain(peer2);
+		expect(participantes).toContain(peer3);
+
+		// Intentar unir a un cuarto participante debería fallar debido al límite
+		await expect(salon.unirse(peer4)).rejects.toThrow(/ha alcanzado el maximo/);
+	});
+
 	it("debería permitir que un participante se una y salga", async () => {
 		const config: SalonConfig = {
 			creatorId,
