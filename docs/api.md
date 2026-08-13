@@ -1,215 +1,370 @@
-# API Reference
+# API Reference - @iberi22/edge-mesh
 
-## Core
+This document provides a comprehensive API reference for **`edge-mesh`**, covering all public exports from `src/index.ts` and detailing modules like `core`, `identity`, `yjsAdapter`, `presence`, `authz`, `maloca`, `adapters`, and more.
+
+---
+
+## 1. Core Module
+
 ### `createEdgeMeshNode(nodoId: NodoId): EdgeMeshNode`
 Creates a low-level Edge Mesh node.
+- **Parameters**: `nodoId: NodoId` - The unique node identifier.
+- **Returns**: `EdgeMeshNode` - A low-level peer node interface.
+
+### `EdgeMeshNode` (Interface)
+Low-level node representing a peer in the network.
 - `conectar(): Promise<void>`: Transitions node to online state.
 - `desconectar(): Promise<void>`: Disconnects the node.
-- `enviar(destino, payload): Promise<void>`: Sends a direct message.
-- `transmitir(payload): Promise<void>`: Broadcasts a message.
+- `enviar(destino: NodoId, payload: unknown, tipo?: TipoMensaje): Promise<void>`: Sends a direct message.
+- `transmitir(payload: unknown, tipo?: TipoMensaje): Promise<void>`: Broadcasts a message.
+- `on(evento: string, listener: Function): void`: Adds an event listener.
+- `off(evento: string, listener: Function): void`: Removes an event listener.
 
 ### `ESTADO_TRANSICIONES`
-Defines valid transitions between node states: `offline`, `conectando`, `online`, `suspendido`, `reconectando`, `eliminado`.
+Defines valid state transitions for low-level nodes:
+`offline` ➔ `conectando` ➔ `online` ➔ `suspendido` ➔ `reconectando` ➔ `eliminado`.
 
 ---
 
-## Types
+## 2. Main EdgeMesh Module & Yjs Adapter
+
+### `EdgeMesh` (Class)
+The central orchestrator of the library. It coordinates low-level transport, presence tracking, authorization, namespaces, and document synchronization.
+
+- **Constructor**: `new EdgeMesh(config: EdgeMeshConfig)`
+- **Properties**:
+  - `config: EdgeMeshConfig`: Configuration object.
+  - `nodo: EdgeMeshNode`: Low-level node manager.
+  - `yjsAdapter: YjsAdapter`: Integrated Yjs state synchronizer.
+  - `storage: StorageManager | InMemoryStorage`: Persistence engine.
+  - `governance: GovernanceManager`: Local voting and proposal manager.
+  - `presence: PresenceManager`: Live status and heartbeat manager.
+  - `authorizer: NamespaceAuthorizer`: Capability-based access control manager.
+  - `namespaces: NamespaceManager`: Isolation boundary manager.
+  - `offlineQueue: PersistentOfflineQueue`: FIFO queue for offline chat messages.
+  - `pqcHandshake: PqcHandshake`: Post-quantum crypto handshake driver.
+- **Methods**:
+  - `iniciar(): Promise<void>`: Boots up the identity validation, loads capability grants, attaches configured transports, and starts presence heartbeats.
+  - `detener(): Promise<void>`: Gracefully stops heartbeats, detaches listeners, and terminates connections.
+  - `usarTransport(transport: ITransport): void`: Connects an external transport engine (WebRTC PeerJS, Memory, etc.).
+  - `detachTransport(): void`: Detaches current transport without closing host-level connections.
+  - `enviar(destino: NodoId, payload: unknown, tipoMensaje?: TipoMensaje): Promise<void>`: Wraps and transmits direct encrypted/cleartext payload.
+  - `transmitir(payload: unknown, tipoMensaje?: TipoMensaje): Promise<void>`: Gossip broadcasts or multi-unicasts sync data.
+  - `iniciarPqcHandshake(destino: NodoId): Promise<void>`: Triggers a secure post-quantum key exchange (ML-KEM-768/ML-DSA-65) with a peer.
+  - `solicitarSyncYjs(destino: NodoId, docId?: string): Promise<void>`: Requests a remote peer's Yjs state vector.
+  - `broadcastYjsUpdate(update: Uint8Array, docId?: string): Promise<void>`: Transmits local Yjs mutations to connected peers.
+  - `registrarClavePublica(nodoId: NodoId, parPublico: ParPublico): void`: Maps a Node ID to its public key.
+  - `obtenerClavePublica(nodoId: NodoId): ParPublico | undefined`: Returns a peer's public key.
+  - `obtenerOLog(docId: string): OpLog`: Retrieves or instantiates an operations ledger.
+  - `obtenerSyncEngine(docId: string): SyncEngine`: Instantiates a sequential synchronization engine.
+  - `obtenerSnapshotManager(docId: string): SnapshotManager`: Instantiates a document state snapshot manager.
+  - `on(tipo: keyof EdgeMeshEventMap, handler: Function): void`: Adds mesh event listeners.
+  - `off(tipo: keyof EdgeMeshEventMap, handler: Function): void`: Removes mesh event listeners.
+
+### `YjsAdapter` (Class)
+The bridge facilitating Yjs document updates and self-healing validation.
+
+- **Constructor**: `new YjsAdapter(existingDoc?: Y.Doc, ownsDoc?: boolean)`
+- **Methods**:
+  - `registerMutationGuard(fn: MutationGuardFn): () => void`: Registers a validation guard. Returns an unsubscribe function.
+  - `onUpdate(handler: (update: Uint8Array, origin: unknown) => void): () => void`: Attaches an update listener.
+  - `applyUpdate(update: Uint8Array, origin?: unknown): void`: Surgically applies updates.
+  - `getState(): Uint8Array`: Encodes whole document as state.
+  - `getStateVector(): Uint8Array`: Encodes state vector.
+  - `getMap(name: string): Y.Map<unknown>`: Returns a shared Y.Map.
+  - `getArray(name: string): Y.Array<unknown>`: Returns a shared Y.Array.
+  - `getText(name: string): Y.Text`: Returns a shared Y.Text.
+  - `destroy(): void`: Clears listeners and cleans up the document.
+
+### `MUTATION_REVERT_ORIGIN`
+String constant (`"mutation-guard-revert"`) used as transaction origin when reverting rejected mutations, preventing infinite loops.
+
+### `MutationGuardFn` (Type)
+`type MutationGuardFn = (origin: unknown, touched: Map<string, Set<string>>) => boolean | Map<string, Set<string>> | void;`
+
+---
+
+## 3. General Types & Config
+
 ### `TIPO_MENSAJE`
-Constants for core message types: `SYNC`, `ACK`, `HEARTBEAT`, `HALLazGO`, `VOTACION`, `SNAPSHOT`, `OP_LOG`, `AUTHZ`, `NAMESPACE`, `GOVERNANCE`, `IDENTITY`, `ERROR`.
+Standard packet identifiers:
+`SYNC`, `ACK`, `HEARTBEAT`, `HALLazGO`, `VOTACION`, `SNAPSHOT`, `OP_LOG`, `AUTHZ`, `NAMESPACE`, `GOVERNANCE`, `IDENTITY`, `ERROR`, `PQC_HANDSHAKE`, `KEM_REPLY`, `PQC_ACK`.
 
 ### `ESTADO_NODO`
-Possible states for a node: `OFFLINE`, `CONECTANDO`, `ONLINE`, `SUSPENDIDO`, `RECONECTANDO`, `ELIMINADO`.
+Active states: `offline`, `conectando`, `online`, `suspendido`, `reconectando`, `eliminado`.
 
-### `POLITICA_GOBERNANZA` (requested as `POLITICA_VOTO`)
-Supported governance models: `DEMOCRATICA`, `AUTORITARIA`, `CONSENSO`, `PLURALIDAD`.
+### `POLITICA_GOBERNANZA`
+Supported voting modes: `DEMOCRATICA`, `AUTORITARIA`, `CONSENSO`, `PLURALIDAD`.
+
+### `ESTADO_SALUD`
+Presence health: `saludable`, `lento`, `fallando`, `desconocido`.
+
+### `TIPO_TRANSPORTE`
+Supported networking backends: `peerjs`, `websocket`, `memoria`.
+
+### `NodoId` (Type)
+`string & { readonly __brand: "NodoId" }`
+
+### `ParPublico` (Type)
+`Uint8Array`
+
+### `Envolvente` (Interface)
+Encloses the payload with transmission metadata:
+- `id: string`
+- `tipo: TipoMensaje`
+- `origen: NodoId`
+- `destino: NodoId | "*"`
+- `timestamp: number`
+- `firma: Uint8Array | null`
+- `payload: unknown`
+- `nonce: string`
+- `version: number`
+
+### `EdgeMeshConfig` (Interface)
+Initialization config for `EdgeMesh`:
+- `nodoId: NodoId`
+- `peerId?: string`
+- `identitySecret?: Uint8Array`
+- `heartbeatIntervalMs?: number`
+- `heartbeatTimeoutMs?: number`
+- `snapshotInterval?: number`
+- `storageBackend?: "mem" | "idb"`
+- `requireAuthz?: boolean`
+- `requireSignedEnvelopes?: boolean`
+- `defaultSyncNamespace?: string`
+- `enablePqcEncryption?: boolean`
+- `yDoc?: Y.Doc`
+- `relayLocalYjs?: boolean`
 
 ---
 
-## Protocol
-### `createEnvelope(tipo, origen, destino, payload, firma?)`
-Wraps a payload into a secure transmission envelope with metadata (ID, timestamp, nonce, version).
+## 4. Protocol & Serialization
 
-### `validateEnvelope(envolvente): boolean`
-Validates the structure and integrity of an envelope.
+### Encryption and Signature Utilities
+- `createEnvelope(tipo, origen, destino, payload, firma?)`: Builds a secure envelope.
+- `signEnvelope(env, identity)`: Cryptographically signs an envelope with ML-DSA-65.
+- `validateEnvelope(env)`: Structural validation of the envelope.
+- `verifyEnvelopeSignature(env, pubKey, identity)`: Verifies ML-DSA-65 signatures.
+- `canonicalEnvelopeBytes(env)`: Returns alphabetical sorted byte representation.
+- `canonicalStringify(obj)`: Alphabetically sorts keys recursively and formats binary buffers as hex.
 
-### `MessageDeduplicator`
-Class to prevent processing duplicate messages.
-- `esDuplicado(envolvente): boolean`: Checks if the envelope has been seen within the sliding window.
+### MessageDeduplicator (Class)
+Filters duplicates within a sliding time window.
+- `esDuplicado(envolvente: Envolvente): boolean`
+
+### Binary Converters & Utilities
+- `bytesAHex(bytes: Uint8Array): string`
+- `hexABytes(hex: string): Uint8Array`
+- `generarId(): string`
+- `generarNonce(): string`
 
 ---
 
-## Transport
-### `PeerJSTransport`
-Implements WebRTC transport via PeerJS.
-- **Options**: `peerId`, `host`, `port`, `path`, `key`, `debug`, `config` (RTCConfiguration).
-- **Methods**:
-  - `enviar(destino, payload)`: Direct send.
-  - `transmitir(payload)`: Broadcast to all connected peers.
-  - `conectarRemoto(remotoId)`: Initiates connection to another peer.
-  - `cerrar()`: Shuts down transport.
+## 5. Transport Engines
+
+### `ITransport` (Interface)
+- `enviar(destino, payload, tipoMensaje)`
+- `transmitir(payload, tipoMensaje)`
+- `obtenerConexiones(): string[]`
+- `cerrar(): Promise<void>`
+
+### `PeerJSTransport` (Class)
+WebRTC implementation wrapper over PeerJS.
+- **Options**: `PeerJSTransportOptions` (`peerId`, `host`, `port`, `path`, `key`, `debug`, `config`).
 - **Events**: `conectado`, `desconectado`, `mensaje`, `error`.
 
----
-
-## Identity
-### `createPostQuantumIdentity(nodoId, keypair?)`
-Creates a PQ-secure identity using ML-DSA-65.
-- `firmar(datos)`: Produces a PQ signature.
-- `verificar(datos, firma, parPublico)`: Validates a signature.
-
-### `generateKeypair(tipo?)`
-Generates a new ML-DSA-65 keypair. `tipo` can be `MAESTRA`, `EPHEMERA`, or `SERVICIO`.
-
-### `serializeKeypair` / `deserializeKeypair`
-Helpers to encode/decode keypairs for storage.
+### `MemoryTransport` (Class)
+Loopback in-memory transport useful for fast integration tests.
 
 ---
 
-## Chat
-### `ChatChannel`
-High-level P2P chat channel synced via Yjs.
+## 6. Identity Module (Post-Quantum)
+
+Provides identity key generation and signature validation utilizing post-quantum ML-DSA-65.
+
+- `createPostQuantumIdentity(nodoId, keypair)`: Builds a post-quantum secure identity wrapper.
+- `generateKeypair(tipo?)`: Generates keypairs with `tipo` as `MAESTRA`, `EPHEMERA` or `SERVICIO`.
+- `identityFromSecret(nodoId, secret, tipo)`: Restores identity from serialized secret.
+- `serializeKeypair(kp)` / `deserializeKeypair(json)`: Binary serialization helpers.
+- `TIPO_IDENTIDAD`: Identifiers for `MAESTRA`, `EPHEMERA`, `SERVICIO`.
+
+---
+
+## 7. Chat Module & Shared Exams
+
+### `ChatChannel` (Class)
+Coordinates real-time P2P chat messages backed by a shared Yjs array.
 - **Constants**: `TIPO_MENSAJE_CHAT` (`TEXTO`, `SISTEMA`, `ARCHIVO`, `EXAMEN`, `SALON`), `TIPO_CANAL` (`PUBLICO`, `PRIVADO`, `SALON_VIRTUAL`).
 - **Methods**:
-  - `enviarMensaje(texto, tipo?, metadata?)`: Sends a message.
-  - `unirseAlCanal()`: Joins the channel (adds node to Yjs array).
-  - `abandonarCanal()`: Leaves the channel.
-  - `obtenerHistorial(limite?)`: Retrieves past messages.
-  - `obtenerUsuariosConectados()`: Lists active peers in the channel.
-- **Events**: `mensaje`, `historial`, `usuarioConectado`, `usuarioDesconectado`.
+  - `enviarMensaje(texto, tipo?, metadata?)`
+  - `unirseAlCanal()`
+  - `abandonarCanal()`
+  - `obtenerHistorial(limite?)`
+  - `obtenerUsuariosConectados()`
 
-### `ExamenCompartido`
-Shared state synchronization for exams.
+### `PersistentOfflineQueue` (Class)
+A FIFO message buffer storing unsent packets in `IStorage`.
+- `handlePeerReconnect(peerId: NodoId)`: Automatically triggers queue flushes when a peer reconvenes.
+
+### `ExamenCompartido` (Class)
+CRDT document mapping questions and answers for virtual exams.
 - **Constants**: `TIPO_PREGUNTA` (`OPCION_MULTIPLE`, `VERDADERO_FALSO`, `RESPUESTA_CORTA`, `ENSAYO`).
 - **Methods**:
-  - `cargarPreguntas(preguntas)`: Sets the exam questions.
-  - `enviarRespuesta(estudianteId, preguntaId, respuesta)`: Submits an answer.
-  - `iniciarExamen()` / `finalizarExamen()`: Controls exam lifecycle.
-- **Events**: `preguntaAgregada`, `preguntaCambiada`, `respuestaNueva`, `examenIniciado`, `examenFinalizado`.
+  - `cargarPreguntas(preguntas)`
+  - `enviarRespuesta(estudianteId, preguntaId, respuesta)`
+  - `iniciarExamen()` / `finalizarExamen()`
 
 ---
 
-## Salones
-### `SalonVirtual`
-A virtual room combining chat and shared content.
+## 8. Salones (Virtual Rooms)
+
+### `SalonVirtual` (Class)
+Combines P2P chat channels and shared document maps.
 - **Constants**: `TIPO_SALON` (`EXAMEN`, `REUNION`, `CHAT`), `ESTADO_SALON` (`CREANDO`, `ACTIVO`, `CERRADO`).
 - **Methods**:
-  - `unirse(participanteId)` / `abandonar(participanteId)`.
-  - `enviarMensaje(texto)`: Sends a chat message to the salon's channel.
-  - `compartirContenido(clave, valor)`: Syncs data in the salon's Yjs doc.
-  - `obtenerInfo()`: Returns metadata.
-- **Events**: `participanteUnido`, `participanteSalio`, `mensaje`, `contenidoSincronizado`, `estadoCambiado`.
+  - `unirse(participanteId)`
+  - `abandonar(participanteId)`
+  - `enviarMensaje(texto)`
+  - `compartirContenido(clave, valor)`
+  - `obtenerInfo()`
 
-### `SalonesManager`
-Manager for multiple virtual rooms.
-- `crearSalon(nombre, tipo?, maxParticipantes?)`.
-- `unirseSalon(salonId)`.
-- `cerrarSalon(salonId)`.
+### `SalonesManager` (Class)
+- `crearSalon(nombre, tipo?, maxParticipantes?)`
+- `unirseSalon(salonId)`
+- `cerrarSalon(salonId)`
 
 ---
 
-## Mesh
-### `MeshManager`
-Handles the gossip protocol, fan-out, and peer discovery.
+## 9. Mesh Scalability (Gossip)
+
+### `MeshManager` (Class)
+Propagates messages via localized gossip.
 - **Constants**: `ESTRATEGIA_FAN_OUT` (`ALEATORIA`, `POR_SALUD`, `POR_LATENCIA`).
 - **Methods**:
-  - `transmitirConGossip(namespace, payload, fanOut?)`: Propagates a message through the mesh.
-  - `unirANamespace(namespace)` / `abandonarNamespace(namespace)`.
-  - `obtenerPeersEnNamespace(namespace)`.
+  - `transmitirConGossip(namespace, payload, fanOut?)`
+  - `unirANamespace(namespace)`
+  - `abandonarNamespace(namespace)`
+  - `obtenerPeersEnNamespace(namespace)`
 
 ---
 
-## Governance
-### `GovernanceManager`
-Manages proposals and voting lifecycles.
+## 10. Governance & Network Partition Merge
+
+### `GovernanceManager` (Class)
+Controls proposal logs and validates votes.
 - **Constants**: `ESTADO_PROPUESTA` (`ABIERTA`, `APROBADA`, `RECHAZADA`, `EXPIRADA`).
 - **Methods**:
-  - `crearPropuesta(id, tipo, proponente, datos)`: Starts a new vote.
-  - `votar(id, voto)`: Casts a vote.
-  - `actualizarPolitica(politica)`: Changes voting thresholds and rules.
+  - `crearPropuesta(id, tipo, proponente, datos)`
+  - `votar(id, voto)`
+  - `actualizarPolitica(politica)`
+  - `importarPropuestas(propuestas)`: Sequentially imports state from another merged network partition.
 
 ---
 
-## Presence
-### `PresenceManager`
-Tracks node health and latency using heartbeats.
-- **Methods**:
-  - `obtenerNodosActivos()`: Currently healthy nodes.
-  - `obtenerSalud(nodoId)`: Health status details (LATENCY, etc.).
+## 11. Presence Module
 
-### `HealthChecker`
-Lower-level monitoring of heartbeat signals.
+### `PresenceManager` (Class)
+Drives quantum-signed heartbeat generation and tracks peer latency.
+- `obtenerNodosActivos(): NodoId[]`
+- `obtenerSalud(nodoId): HealthStatus`
+- `procesarHeartbeat(payload): Promise<void>`
+
+### `HealthChecker` (Class)
+Tracks interval heartbeats and schedules fallback timeouts.
+
+### Peer Health Monitor
+- `createPeerHealthMonitor(opts)`: Configures reconnection retry delays and tracking.
+- `getReconnectDelay(attempt, opts)`: Computes progressive delays.
 
 ---
 
-## Authz
-### `NamespaceAuthorizer`
-Capability-based access control.
+## 12. Capability Authorization
+
+### `NamespaceAuthorizer` (Class)
+Capability-based granular access control.
 - **Constants**: `CAPACIDAD_ESTANDAR` (`LEER`, `ESCRIBIR`, `ADMIN`, `SINC`, `PRESENCIA`, `GOBERNANZA`).
 - **Methods**:
-  - `concederCapacidad(espacio, sujeto, capacidad)`.
-  - `revocarCapacidad(espacio, sujeto, capacidad)`.
-  - `verificarCapacidad(espacio, sujeto, capacidad)`.
+  - `concederCapacidad(espacio, sujeto, capacidad, expiracion?, firma?)`
+  - `revocarCapacidad(espacio, sujeto, capacidad)`
+  - `verificarCapacidad(espacio, sujeto, capacidad)`
 
 ---
 
-## Namespaces
-### `NamespaceManager`
-Handles logical partitioning of nodes.
-- **Constants**: `NAMESPACE_POR_DEFECTO` ("global").
+## 13. Logical Namespaces
+
+### `NamespaceManager` (Class)
+Handles partition boundaries.
+- **Constants**: `NAMESPACE_POR_DEFECTO` (`"global"`).
 - **Methods**:
-  - `crearEspacio(nombre, metadatos?)`.
-  - `unirNodo(espacioId, nodoId)`.
-  - `obtenerNodosEnEspacio(nombre)`.
+  - `crearEspacio(nombre, metadatos?)`
+  - `unirNodo(espacioId, nodoId)`
+  - `abandonarNodo(espacioId, nodoId)`
+  - `obtenerNodosEnEspacio(nombre)`
 
 ---
 
-## Storage
-### `StorageManager`
-Persistent IndexedDB-backed key-value store.
-- `get(key)`, `set(key, valor)`, `delete(key)`, `list(filter?)`.
+## 14. Persistence (Storage Engine)
 
-### `InMemoryStorage`
-Transient in-memory storage.
+### `StorageManager` (Class)
+Persistent IndexedDB manager.
+- `get(key)` / `set(key, valor)` / `delete(key)` / `list(filter)`
 
----
-
-## Op Log
-### `OpLog`
-Sequential log of operations for a document.
-- `append(tipo, datos, autor)`.
-- `obtenerRango(desde, hasta)`.
-- `aplicarOperaciones(operaciones)`: Merges remote operations.
+### `InMemoryStorage` (Class)
+Saves records to memory. Implements `IStorage`.
 
 ---
 
-## Sync
-### `SyncEngine`
-Orchestrates synchronization of OpLogs between peers.
-- `sincronizar(peerId, enviar, recibir)`: Performs a sync cycle.
+## 15. Op Log & Snapshots
+
+### `OpLog` (Class)
+Sequential transactional ledger.
+- `append(tipo, datos, autor)` / `obtenerRango(desde, hasta)` / `aplicarOperaciones(ops)`
+
+### `SnapshotManager` (Class)
+Periodically serializes complete document states.
+- `crearSnapshot(datos, nodos)` / `restaurarSnapshot(version)` / `recibirSnapshot(snap)`
 
 ---
 
-## Snapshot
-### `SnapshotManager`
-Manages full state snapshots of documents.
-- `crearSnapshot(datos?, nodos?)`.
-- `restaurarSnapshot(version)`.
-- `recibirSnapshot(snapshot)`: Applies a remote snapshot.
+## 16. Offline-First Semantic Memory (Node Memory)
+
+### `createNodeMemory(options)`
+Creates a secure offline-first node memory adapter that logs Yjs CRDT mutations, performs SHA-256 content deduplication, and schedules syncing with Xavier's agent store.
+- **Options**: `NodeMemoryOptions` (`appId`, `instanceId`, `storage`, `edgeMesh`, `xavierApiUrl`).
 
 ---
 
-## Edge Mesh Main Class
-### `EdgeMesh`
-The central hub of the library.
-- **Properties**: `nodo`, `identity`, `yjsAdapter`, `storage`, `governance`, `presence`, `authorizer`, `namespaces`.
-- **Methods**:
-  - `iniciar()`: Boots up transport and presence.
-  - `detener()`: Gracefully shuts down everything.
-  - `enviar(destino, payload)` / `transmitir(payload)`.
-  - `obtenerOLog(docId)` / `obtenerSyncEngine(docId)` / `obtenerSnapshotManager(docId)`.
+## 17. Maloca Services
 
-### `YjsAdapter`
-Bridge for Yjs integration.
-- `onUpdate(handler)`: Listens for Yjs updates.
-- `applyUpdate(update, origin?)`: Applies Yjs updates.
-- `getMap(name)`, `getArray(name)`, `getText(name)`.
+### `MalocaKernel` (Class)
+Extends `EdgeMesh` to act as the core of a decentralized profile and reputation system.
+- `profiles: ProfileManager`: Logical profile registry mapping human/service details.
+- `karma: KarmaManager`: Peer reputation and trust scorer, supporting dynamic score decays calculated at runtime.
+
+### `EventBus` (Class)
+Enqueues mesh events with an 1-hour TTL using Gossip replaying and `PersistentEventQueue` over `IStorage` to guarantee zero event loss.
+- **Constants**: `TIPO_EVENTO_MALOCA` (`PERFIL_ACTUALIZADO`, `TRANSACCION_KARMA`, `PLUGIN_REGISTRADO`, `EVENTO_SISTEMA`).
+
+### `EvidentiaManager` (Class)
+Verifiable notarization system integrating SHA-256 and ML-DSA-65 signatures.
+- `createProof(datos)`: Signs data to generate cryptographic proof.
+- `verifyProof(proof)`: Validates integrity proof of notary data.
+
+### `PluginRegistry` (Class)
+Gossip-driven directory mapping capabilities of active plugins.
+
+### `PolygonBridge` (Class)
+Submits Evidentia notary proofs to a Polygon testnet smart contract (`EvidentiaAnchor`) with offline buffer retries.
+
+---
+
+## 18. Domain Adapters
+
+### `LLMRouterAdapter` (Maloca Xavier)
+Routes prompts to LLM nodes in the mesh. Selects the healthiest node matching the capability profile with the lowest active latency.
+
+### `ContractBridge` (Maloca VeedurIA)
+Synchronizes bidding contracts, candidate lists, and public trust scores over Yjs maps prefixed with `veeduria:`.
+
+### `CitasDistribuidas` (Maloca Salud)
+Schedules medical consultations offline, resolving reservation double-booking conflicts deterministically.
