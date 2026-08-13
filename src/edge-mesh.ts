@@ -11,6 +11,7 @@ import {
 	type GovernanceManager,
 	createAuthorityManager,
 	type AuthorityManager,
+	type GovernanceSnapshot,
 } from "./governance/index.js";
 import {
 	createPostQuantumIdentity,
@@ -311,6 +312,7 @@ export class EdgeMesh {
 	snapshotRestored = false;
 	/** Registered peer public keys for envelope verification. */
 	private readonly peerPublicKeys: Map<NodoId, ParPublico>;
+	private readonly sybilRegistry: Map<string, Set<NodoId>>;
 	private readonly requireAuthz: boolean;
 	private readonly requireSignedEnvelopes: boolean;
 	private readonly defaultSyncNamespace: string;
@@ -329,6 +331,7 @@ export class EdgeMesh {
 		this.syncs = new Map();
 		this.snapshots = new Map();
 		this.peerPublicKeys = new Map();
+		this.sybilRegistry = new Map();
 		this.requireAuthz = config.requireAuthz !== false;
 		this.requireSignedEnvelopes = config.requireSignedEnvelopes === true;
 		this.defaultSyncNamespace = config.defaultSyncNamespace ?? "global";
@@ -447,7 +450,18 @@ export class EdgeMesh {
 
 	// ─── PUBLIC KEY REGISTRY ─────────────────────────────────────────────
 
-	registrarClavePublica(nodoId: NodoId, parPublico: ParPublico): void {
+	registrarClavePublica(nodoId: NodoId, parPublico: ParPublico, origenIp = "127.0.0.1"): void {
+		const threshold = this.config.sybilThreshold ?? 10;
+		let registered = this.sybilRegistry.get(origenIp);
+		if (!registered) {
+			registered = new Set();
+			this.sybilRegistry.set(origenIp, registered);
+		}
+		if (registered.size >= threshold && !registered.has(nodoId)) {
+			throw new Error(`Sybil attack detected: threshold exceeded for IP ${origenIp}`);
+		}
+		registered.add(nodoId);
+
 		this.peerPublicKeys.set(nodoId, new Uint8Array(parPublico));
 		if (this.presence) {
 			this.presence.registrarClavePublica(nodoId, new Uint8Array(parPublico));

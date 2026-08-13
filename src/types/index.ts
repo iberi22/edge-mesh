@@ -328,4 +328,5 @@ export interface EdgeMeshConfig {
 	readonly enablePqcEncryption?: boolean;
 	readonly initialMaster?: NodoId;
 	readonly authorityTimeoutMs?: number;
+	readonly sybilThreshold?: number;
 }
