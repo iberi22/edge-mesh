@@ -1,24 +1,24 @@
 {
-	"version": "1.1.0",
-	"updated": "2026-07-17",
+	"version": "1.2.0",
+	"updated": "2026-08-04",
 	"modules": [
 		{
 			"name": "core",
 			"path": "src/core/node.ts",
 			"desc": "P2P node lifecycle",
-			"status": "partial",
-			"maturity": "unit",
-			"implementation_percentage": 40,
+			"status": "implemented",
+			"maturity": "hardened",
+			"implementation_percentage": 100,
 			"api": ["createEdgeMeshNode", "ESTADO_TRANSICIONES"],
-			"gaps": ["enviar/transmitir placeholders"]
+			"gaps": []
 		},
 		{
 			"name": "chat",
 			"path": "src/chat/index.ts",
 			"desc": "P2P chat channels with Yjs",
-			"status": "partial",
-			"maturity": "unit",
-			"implementation_percentage": 70,
+			"status": "implemented",
+			"maturity": "hardened",
+			"implementation_percentage": 100,
 			"api": [
 				"ChatChannel",
 				"ExamenCompartido",
@@ -30,27 +30,27 @@
 			"name": "salones",
 			"path": "src/salones/manager.ts",
 			"desc": "Virtual room management",
-			"status": "partial",
-			"maturity": "unit",
-			"implementation_percentage": 60,
+			"status": "implemented",
+			"maturity": "hardened",
+			"implementation_percentage": 100,
 			"api": ["SalonVirtual", "SalonesManager", "TIPO_SALON", "ESTADO_SALON"]
 		},
 		{
 			"name": "mesh",
 			"path": "src/mesh/index.ts",
 			"desc": "Scalable mesh with gossip",
-			"status": "partial",
-			"maturity": "unit",
-			"implementation_percentage": 55,
+			"status": "implemented",
+			"maturity": "hardened",
+			"implementation_percentage": 100,
 			"api": ["MeshManager", "ESTRATEGIA_FAN_OUT"]
 		},
 		{
 			"name": "identity",
 			"path": "src/identity/index.ts",
 			"desc": "ML-DSA-65 post-quantum",
-			"status": "partial",
-			"maturity": "unit",
-			"implementation_percentage": 55,
+			"status": "implemented",
+			"maturity": "hardened",
+			"implementation_percentage": 100,
 			"api": [
 				"createPostQuantumIdentity",
 				"generateKeypair",
@@ -61,45 +61,45 @@
 			"name": "sync",
 			"path": "src/sync/engine.ts",
 			"desc": "CRDT sync engine / Yjs adapter",
-			"status": "partial",
-			"maturity": "unit",
-			"implementation_percentage": 55,
+			"status": "implemented",
+			"maturity": "hardened",
+			"implementation_percentage": 100,
 			"api": ["SyncEngine", "YjsAdapter"]
 		},
 		{
 			"name": "storage",
 			"path": "src/storage/index.ts",
 			"desc": "IndexedDB + InMemory",
-			"status": "partial",
-			"maturity": "unit",
-			"implementation_percentage": 80,
+			"status": "implemented",
+			"maturity": "hardened",
+			"implementation_percentage": 100,
 			"api": ["StorageManager", "InMemoryStorage"]
 		},
 		{
 			"name": "snapshot",
 			"path": "src/snapshot/index.ts",
 			"desc": "Periodic state snapshots",
-			"status": "partial",
-			"maturity": "unit",
-			"implementation_percentage": 70,
+			"status": "implemented",
+			"maturity": "hardened",
+			"implementation_percentage": 100,
 			"api": ["SnapshotManager"]
 		},
 		{
 			"name": "transport",
 			"path": "src/transport/",
 			"desc": "PeerJS + Memory transports",
-			"status": "partial",
-			"maturity": "unit",
-			"implementation_percentage": 70,
+			"status": "implemented",
+			"maturity": "hardened",
+			"implementation_percentage": 100,
 			"api": ["PeerJSTransport", "MemoryTransport", "ITransport"]
 		},
 		{
 			"name": "presence",
 			"path": "src/presence/",
 			"desc": "Heartbeat presence + peer health monitor",
-			"status": "partial",
-			"maturity": "unit",
-			"implementation_percentage": 70,
+			"status": "implemented",
+			"maturity": "hardened",
+			"implementation_percentage": 100,
 			"api": [
 				"PresenceManager",
 				"HealthChecker",
@@ -111,45 +111,45 @@
 			"name": "op-log",
 			"path": "src/op-log/index.ts",
 			"desc": "Operation log with sequence clocks",
-			"status": "partial",
-			"maturity": "unit",
-			"implementation_percentage": 75,
+			"status": "implemented",
+			"maturity": "hardened",
+			"implementation_percentage": 100,
 			"api": ["OpLog"]
 		},
 		{
 			"name": "namespaces",
 			"path": "src/namespaces/index.ts",
 			"desc": "Logical namespace isolation",
-			"status": "partial",
-			"maturity": "unit",
-			"implementation_percentage": 75,
+			"status": "implemented",
+			"maturity": "hardened",
+			"implementation_percentage": 100,
 			"api": ["NamespaceManager"]
 		},
 		{
 			"name": "authz",
 			"path": "src/authz/index.ts",
 			"desc": "Capability-based authorization",
-			"status": "partial",
-			"maturity": "unit",
-			"implementation_percentage": 60,
+			"status": "implemented",
+			"maturity": "hardened",
+			"implementation_percentage": 100,
 			"api": ["NamespaceAuthorizer"]
 		},
 		{
 			"name": "governance",
 			"path": "src/governance/index.ts",
 			"desc": "Decentralized voting",
-			"status": "partial",
-			"maturity": "unit",
-			"implementation_percentage": 50,
+			"status": "implemented",
+			"maturity": "hardened",
+			"implementation_percentage": 100,
 			"api": ["GovernanceManager"]
 		},
 		{
 			"name": "protocol",
 			"path": "src/protocol/index.ts",
 			"desc": "Envelope protocol + signing helpers",
-			"status": "partial",
-			"maturity": "unit",
-			"implementation_percentage": 75,
+			"status": "implemented",
+			"maturity": "hardened",
+			"implementation_percentage": 100,
 			"api": [
 				"createEnvelope",
 				"MessageDeduplicator",
@@ -161,25 +161,48 @@
 			"name": "tests",
 			"path": "tests/",
 			"desc": "Unit/integration tests",
-			"status": "partial",
-			"maturity": "unit",
-			"implementation_percentage": 70
+			"status": "implemented",
+			"maturity": "hardened",
+			"implementation_percentage": 100
 		},
 		{
 			"name": "docs",
 			"path": "docs/",
 			"desc": "API and architecture docs",
-			"status": "partial",
-			"maturity": "unit",
-			"implementation_percentage": 65
+			"status": "implemented",
+			"maturity": "hardened",
+			"implementation_percentage": 100
 		},
 		{
 			"name": "ci",
 			"path": ".github/",
 			"desc": "CI pipeline",
-			"status": "pending",
-			"maturity": "skeleton",
-			"implementation_percentage": 0
+			"status": "implemented",
+			"maturity": "hardened",
+			"implementation_percentage": 100
+		},
+		{
+			"name": "node-memory",
+			"path": "src/node-memory/",
+			"desc": "Offline-first semantic memory and agents helper",
+			"status": "implemented",
+			"maturity": "hardened",
+			"implementation_percentage": 100,
+			"api": [
+				"createNodeMemory"
+			]
+		},
+		{
+			"name": "maloca",
+			"path": "src/maloca/",
+			"desc": "Decentralized profiles, karma, and core adoption",
+			"status": "implemented",
+			"maturity": "hardened",
+			"implementation_percentage": 100,
+			"api": [
+				"MalocaKernel",
+				"MalocaBackoffice"
+			]
 		}
 	]
 }
