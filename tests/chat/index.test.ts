@@ -117,6 +117,42 @@ describe("ChatChannel", () => {
 		const historial = await channel.obtenerHistorial();
 		expect(historial.length).toBe(0);
 	});
+
+	it("debería sincronizar el historial entre dos canales que comparten el mismo documento Yjs", async () => {
+		const doc1 = new Y.Doc();
+		const doc2 = new Y.Doc();
+		const adapter1 = new YjsAdapter(doc1);
+		const adapter2 = new YjsAdapter(doc2);
+
+		const channel1 = new ChatChannel("peer1" as NodoId, "sinc-test", adapter1);
+		const channel2 = new ChatChannel("peer2" as NodoId, "sinc-test", adapter2);
+
+		// Simular sincronización de Yjs aplicando los updates de uno a otro
+		doc1.on("update", (update) => {
+			Y.applyUpdate(doc2, update);
+		});
+		doc2.on("update", (update) => {
+			Y.applyUpdate(doc1, update);
+		});
+
+		// Enviar mensaje en canal 1
+		await channel1.enviarMensaje("hola desde peer1");
+
+		// Comprobar que canal 2 recibió el mensaje
+		const historial2 = await channel2.obtenerHistorial();
+		expect(historial2.length).toBe(1);
+		expect(historial2[0].text).toBe("hola desde peer1");
+		expect(historial2[0].sender).toBe("peer1");
+
+		// Enviar mensaje de vuelta en canal 2
+		await channel2.enviarMensaje("hola desde peer2");
+
+		// Comprobar que canal 1 recibió el mensaje
+		const historial1 = await channel1.obtenerHistorial();
+		expect(historial1.length).toBe(2);
+		expect(historial1[1].text).toBe("hola desde peer2");
+		expect(historial1[1].sender).toBe("peer2");
+	});
 });
 
 describe("ExamenCompartido", () => {
