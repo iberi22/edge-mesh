@@ -80,7 +80,7 @@ export class ProfileManager {
 	/**
 	 * Vincula un perfil humano a un proyecto.
 	 */
-	linkToProject(profileId: string, projectId: string): void {
+	async linkToProject(profileId: string, projectId: string): Promise<void> {
 		const perfil = this.cache.get(profileId);
 		if (!perfil) throw new Error(`Profile ${profileId} not found`);
 		if (!("proyectos" in perfil))
@@ -91,5 +91,45 @@ export class ProfileManager {
 			proyectos: [...new Set([...perfil.proyectos, projectId])],
 		} as PerfilHumano;
 		this.cache.set(profileId, updated as Perfil);
+		await this.upsertProfile(updated, profileId);
+	}
+
+	/**
+	 * Registra o actualiza un perfil en la mesh.
+	 */
+	async register(profile: Perfil): Promise<void> {
+		await this.upsertProfile(profile, profile.id);
+	}
+
+	/**
+	 * Obtiene un perfil por su ID (cache local + lookup en la mesh/OpLog).
+	 */
+	async get(id: string): Promise<Perfil | undefined> {
+		let profile = this.getProfile(id);
+		if (!profile) {
+			await this.loadProfiles(true);
+			profile = this.getProfile(id);
+		}
+		return profile;
+	}
+
+	/**
+	 * Actualiza un perfil con sync.
+	 */
+	async update(id: string, delta: Partial<Perfil>): Promise<void> {
+		const existing = this.getProfile(id);
+		if (!existing) {
+			throw new Error(`Profile ${id} not found`);
+		}
+		const updated = { ...existing, ...delta } as Perfil;
+		await this.upsertProfile(updated, id);
+	}
+
+	/**
+	 * Búsqueda distribuida de perfiles (recargando opLog).
+	 */
+	async search(query: string): Promise<Perfil[]> {
+		await this.loadProfiles(true);
+		return this.searchProfiles(query);
 	}
 }

@@ -6,6 +6,7 @@ export interface PerfilHumano {
 	readonly alias: string;
 	readonly nodos: readonly NodoId[];
 	readonly proyectos: readonly string[];
+	readonly karma?: Karma | number;
 	readonly metadatos: Readonly<Record<string, unknown>>;
 }
 

@@ -38,10 +38,16 @@ export class KarmaManager {
 	private readonly oplog: OpLog;
 	private readonly identity: PostQuantumIdentity;
 	private cache: Map<string, Karma> = new Map();
+	private readonly getPublicKey?: (nodeId: NodoId) => ParPublico | undefined;
 
-	constructor(oplog: OpLog, identity: PostQuantumIdentity) {
+	constructor(
+		oplog: OpLog,
+		identity: PostQuantumIdentity,
+		getPublicKey?: (nodeId: NodoId) => ParPublico | undefined,
+	) {
 		this.oplog = oplog;
 		this.identity = identity;
+		this.getPublicKey = getPublicKey;
 	}
 
 	/**
@@ -69,20 +75,36 @@ export class KarmaManager {
 	 * Emite una transacción de karma firmada con la identidad PQC del nodo.
 	 */
 	async emit(
-		txData: Omit<TransaccionKarma, "id" | "timestamp" | "firma">,
+		txData: Omit<TransaccionKarma, "id" | "timestamp" | "firma"> &
+			Partial<Pick<TransaccionKarma, "id" | "timestamp" | "firma">>,
 	): Promise<TransaccionKarma> {
-		const timestamp = Date.now();
-		const id = `${txData.emisor}:${timestamp}:${Math.random().toString(36).substring(2, 9)}`;
+		const timestamp = txData.timestamp ?? Date.now();
+		const id =
+			txData.id ??
+			`${txData.emisor}:${timestamp}:${Math.random().toString(36).substring(2, 9)}`;
 
-		const payloadData = { ...txData, id, timestamp };
+		const payloadData = {
+			tipo: txData.tipo,
+			proyecto: txData.proyecto,
+			sujeto: txData.sujeto,
+			delta: txData.delta,
+			razon: txData.razon,
+			emisor: txData.emisor,
+			id,
+			timestamp,
+		};
 		const payload = canonicalStringify(payloadData);
 		let firma: Uint8Array;
-		try {
-			firma = await this.identity.firmar(new TextEncoder().encode(payload));
-		} catch {
-			// Si la identidad PQC no está completamente inicializada (ej. entorno test),
-			// usar firma vacía en lugar de fallar.
-			firma = new Uint8Array(0);
+		if (txData.firma) {
+			firma = txData.firma;
+		} else {
+			try {
+				firma = await this.identity.firmar(new TextEncoder().encode(payload));
+			} catch {
+				// Si la identidad PQC no está completamente inicializada (ej. entorno test),
+				// usar firma vacía en lugar de fallar.
+				firma = new Uint8Array(0);
+			}
 		}
 
 		const tx: TransaccionKarma = {
@@ -112,28 +134,46 @@ export class KarmaManager {
 	}
 
 	/**
-	 * Aplica decay (olvido) al score de un nodo.
+	 * Aplica decay (olvido) al score de un nodo, o a todos si no se especifica.
 	 * - factor: 0.95 reduce 5%, 0.90 reduce 10%, etc.
 	 */
-	async applyDecay(nodeId: NodoId, factor: number = 0.95): Promise<void> {
-		this.applyDecayToCache(nodeId, factor);
-		await this.oplog.append(
-			"karma:decay",
-			{ sujeto: nodeId, factor },
-			nodeId as any,
-		);
+	async applyDecay(nodeId?: NodoId, factor: number = 0.95): Promise<void> {
+		if (nodeId) {
+			this.applyDecayToCache(nodeId, factor);
+			await this.oplog.append(
+				"karma:decay",
+				{ sujeto: nodeId, factor },
+				nodeId as any,
+			);
+		} else {
+			for (const id of this.cache.keys()) {
+				const nid = id as NodoId;
+				this.applyDecayToCache(nid, factor);
+				await this.oplog.append(
+					"karma:decay",
+					{ sujeto: nid, factor },
+					nid as any,
+				);
+			}
+		}
 	}
 
 	/**
 	 * Verifica una firma de transacción contra una clave pública.
 	 */
-	async verify(tx: TransaccionKarma, publicKey: ParPublico): Promise<boolean> {
+	async verify(tx: TransaccionKarma, publicKey?: ParPublico): Promise<boolean> {
+		const pub =
+			publicKey ??
+			(this.getPublicKey ? this.getPublicKey(tx.emisor) : undefined);
+		if (!pub) {
+			return false;
+		}
 		const { firma, ...rest } = tx;
 		const payload = canonicalStringify(rest);
 		return this.identity.verificar(
 			new TextEncoder().encode(payload),
 			firma,
-			publicKey,
+			pub,
 		);
 	}
 

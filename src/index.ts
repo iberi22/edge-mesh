@@ -86,6 +86,18 @@ export type {
 export { PluginRegistry } from "./maloca/plugin-registry.js";
 export type { MalocaBackofficeOptions } from "./maloca/backoffice.js";
 export { MalocaBackoffice } from "./maloca/backoffice.js";
+export { MalocaKernel } from "./maloca/kernel.js";
+export { ProfileManager } from "./maloca/perfil.js";
+export type { Perfil } from "./maloca/perfil.js";
+export { KarmaManager } from "./maloca/karma.js";
+export { MetadataManager } from "./maloca/metadata.js";
+export type {
+	PerfilHumano,
+	PerfilServicio,
+	Karma,
+	TransaccionKarma,
+	MetadatosCompartidos,
+} from "./maloca/types.js";
 export type {
 	EstrategiaFanOut,
 	GossipMessage,

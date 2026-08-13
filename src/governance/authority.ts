@@ -42,7 +42,8 @@ export class AuthorityManager {
 		nodosActivos: readonly NodoId[],
 		masterActual?: NodoId | null,
 	): NodoId | null {
-		const master = masterActual !== undefined ? masterActual : this.currentMaster;
+		const master =
+			masterActual !== undefined ? masterActual : this.currentMaster;
 		const candidatos = nodosActivos.filter((id) => id !== master);
 		if (candidatos.length === 0) {
 			return null;

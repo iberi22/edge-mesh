@@ -212,7 +212,10 @@ export class OpLog {
 			this.cache.delete(op.id);
 		}
 
-		this.totalOperaciones = Math.max(0, this.totalOperaciones - aEliminar.length);
+		this.totalOperaciones = Math.max(
+			0,
+			this.totalOperaciones - aEliminar.length,
+		);
 
 		this.emit("logComprimido", { desde, hasta });
 	}
