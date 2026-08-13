@@ -169,7 +169,18 @@ Filters duplicates within a sliding time window.
 - `cerrar(): Promise<void>`
 
 ### `PeerJSTransport` (Class)
-WebRTC implementation wrapper over PeerJS.
+Robust WebRTC implementation wrapper over PeerJS featuring automatic self-healing and mesh discovery.
+
+#### Robustness Features:
+- **Exponential Backoff Reconnection**: Upon sudden network disconnects (`disconnected`), the transport attempts progressive reconnection using the canonical exponential backoff helper (`getReconnectDelay`) to avoid overwhelming the signalling server.
+- **Pending Connection Requests**: Any connection attempts (`conectarRemoto`) requested while offline or during reconnection are securely queued in a `pendingConnectionRequests` queue. They are automatically flushed and initiated once the transport re-establishes its connection (`open` state) to the signalling server.
+- **Unavailable ID Recovery**: If the chosen ID is already in use (`unavailable-id` error) — often due to stale sessions on the signaling server —, the transport automatically destroys the current PeerJS instance, waits for backoff, and re-initializes a new instance under the same ID.
+
+#### Gossip-based Peer Discovery:
+- When a peer-to-peer data connection successfully opens, `PeerJSTransport` triggers a **`PEER_LIST_UPDATE`** broadcast containing its own ID and list of active connections.
+- When any connection closes, an updated list is also broadcasted.
+- Upon receiving a `PEER_LIST_UPDATE` envelope, the transport compares the list with its active connections and automatically dials any newly discovered, unknown peers to maintain a highly-connected mesh topology.
+
 - **Options**: `PeerJSTransportOptions` (`peerId`, `host`, `port`, `path`, `key`, `debug`, `config`).
 - **Events**: `conectado`, `desconectado`, `mensaje`, `error`.
 
