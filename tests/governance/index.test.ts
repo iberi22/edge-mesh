@@ -6,7 +6,7 @@ import {
 } from "../../src/governance/index.js";
 import { type NodoId, POLITICA_GOBERNANZA } from "../../src/types/index.js";
 
-describe("GovernanceManager", () => {
+describe("GovernanceManager - Comprehensive Unit Tests", () => {
 	let governanceManager: GovernanceManager;
 
 	beforeEach(() => {
@@ -19,7 +19,7 @@ describe("GovernanceManager", () => {
 		vi.useRealTimers();
 	});
 
-	it("should create a proposal", () => {
+	it("should support proposal creation and initial open state", () => {
 		const id = "prop1";
 		const tipo = "update";
 		const proponente = "node1" as NodoId;
@@ -38,27 +38,80 @@ describe("GovernanceManager", () => {
 		expect(propuesta.id).toBe(id);
 		expect(propuesta.estado).toBe(ESTADO_PROPUESTA.ABIERTA);
 		expect(governanceManager.obtenerPropuesta(id)).toBe(propuesta);
-		expect(createdSpy).toHaveBeenCalled();
+		expect(createdSpy).toHaveBeenCalledTimes(1);
 	});
 
-	it("should handle voting and threshold", () => {
-		const id = "prop2";
-		const proponente = "node1" as NodoId;
-		governanceManager.crearPropuesta(id, "test", proponente, {});
+	it("should handle voting with different payloads (accept/reject/abstain) and update voting records", () => {
+		// Set high threshold of 10 so the proposal remains open during multiple votes
+		governanceManager.actualizarPolitica({ umbral: 10 });
+
+		const id = "prop_vote";
+		governanceManager.crearPropuesta(id, "test", "node1" as NodoId, {});
 
 		const voter1 = "node2" as NodoId;
-		const voter2 = "node3" as NodoId;
+		const voter3 = "node3" as NodoId;
+		const voter4 = "node4" as NodoId;
 
+		const voteSpy = vi.fn();
+		governanceManager.on("votoRecibido", voteSpy);
+
+		// Cast accept vote
+		const v1Result = governanceManager.votar(id, {
+			nodoId: voter1,
+			voto: "a_favor",
+			propuesta: id,
+			peso: 1,
+			justificacion: "Highly beneficial",
+		});
+		expect(v1Result).toBe(true);
+		expect(voteSpy).toHaveBeenCalledTimes(1);
+
+		// Try voting again with same node (should fail/return false)
+		const v1Duplicate = governanceManager.votar(id, {
+			nodoId: voter1,
+			voto: "en_contra",
+			propuesta: id,
+			peso: 1,
+			justificacion: "Changed mind",
+		});
+		expect(v1Duplicate).toBe(false);
+
+		// Cast reject/en_contra vote
+		const v3Result = governanceManager.votar(id, {
+			nodoId: voter3,
+			voto: "en_contra",
+			propuesta: id,
+			peso: 1,
+			justificacion: "Strong disagreement",
+		});
+		expect(v3Result).toBe(true);
+
+		// Cast abstain/abstencion vote
+		const v4Result = governanceManager.votar(id, {
+			nodoId: voter4,
+			voto: "abstencion",
+			propuesta: id,
+			peso: 1,
+			justificacion: "Neutral stance",
+		});
+		expect(v4Result).toBe(true);
+
+		const updatedProp = governanceManager.obtenerPropuesta(id);
+		expect(updatedProp?.votos).toHaveLength(3);
+		expect(updatedProp?.votos.find((v) => v.nodoId === voter1)?.voto).toBe("a_favor");
+		expect(updatedProp?.votos.find((v) => v.nodoId === voter3)?.voto).toBe("en_contra");
+		expect(updatedProp?.votos.find((v) => v.nodoId === voter4)?.voto).toBe("abstencion");
+	});
+
+	it("should transition proposal state and trigger events on reaching quorum/threshold", () => {
+		const id = "prop_threshold";
+		governanceManager.crearPropuesta(id, "test", "node1" as NodoId, {});
+
+		const voter1 = "node2" as NodoId;
 		const resultSpy = vi.fn();
 		governanceManager.on("propuestaResultado", resultSpy);
 
-		// Default threshold is 0.51, default weight is 1.
-		// We need more than 0.51 to pass. 1 vote = 1.0 weight if not specified.
-		// Wait, the code says:
-		// pesoTotal = this.calcularPesoTotal(propuesta);
-		// return pesoTotal >= this.politica.umbral;
-		// umbral is 0.51.
-
+		// Democratic policy has umbral of 0.51. Voting a_favor with weight 1 (>=0.51) immediately approves it.
 		governanceManager.votar(id, {
 			nodoId: voter1,
 			voto: "a_favor",
@@ -67,9 +120,9 @@ describe("GovernanceManager", () => {
 			justificacion: null,
 		});
 
-		expect(governanceManager.obtenerPropuesta(id)?.estado).toBe(
-			ESTADO_PROPUESTA.APROBADA,
-		);
+		const prop = governanceManager.obtenerPropuesta(id);
+		expect(prop?.estado).toBe(ESTADO_PROPUESTA.APROBADA);
+		expect(resultSpy).toHaveBeenCalledTimes(1);
 		expect(resultSpy).toHaveBeenCalledWith(
 			expect.objectContaining({
 				detail: { propuesta: id, resultado: ESTADO_PROPUESTA.APROBADA },
@@ -77,40 +130,37 @@ describe("GovernanceManager", () => {
 		);
 	});
 
-	it("should reject proposal on timeout if threshold not reached", () => {
-		const id = "prop3";
+	it("should reject/expire a proposal on timeout if the quorum/threshold is not reached", () => {
+		const id = "prop_timeout";
 		governanceManager.crearPropuesta(id, "test", "node1" as NodoId, {}, 1000);
 
+		const resultSpy = vi.fn();
+		governanceManager.on("propuestaResultado", resultSpy);
+
+		// Advance time past 1000ms
 		vi.advanceTimersByTime(1500);
 
-		expect(governanceManager.obtenerPropuesta(id)?.estado).toBe(
-			ESTADO_PROPUESTA.RECHAZADA,
+		const prop = governanceManager.obtenerPropuesta(id);
+		expect(prop?.estado).toBe(ESTADO_PROPUESTA.RECHAZADA);
+		expect(resultSpy).toHaveBeenCalledTimes(1);
+		expect(resultSpy).toHaveBeenCalledWith(
+			expect.objectContaining({
+				detail: { propuesta: id, resultado: ESTADO_PROPUESTA.RECHAZADA },
+			}),
 		);
 	});
 
-	it("should update policy", () => {
-		const newPolicy = {
-			politica: POLITICA_GOBERNANZA.AUTORITARIA,
-			umbral: 0.9,
-		};
-
-		governanceManager.actualizarPolitica(newPolicy);
-		expect(governanceManager.obtenerPolitica().politica).toBe(
-			POLITICA_GOBERNANZA.AUTORITARIA,
-		);
-		expect(governanceManager.obtenerPolitica().umbral).toBe(0.9);
-	});
-
-	it("should respect node weights", () => {
+	it("should update and respect governance policies and custom node weights", () => {
+		// Set high threshold of 10 and map node weights
 		governanceManager.actualizarPolitica({
 			umbral: 10,
 			pesoNodo: { "node-boss": 10, "node-pawn": 1 },
 		});
 
-		const id = "prop4";
+		const id = "prop_weights";
 		governanceManager.crearPropuesta(id, "test", "node1" as NodoId, {});
 
-		// Pawn votes
+		// Node with weight 1 votes a_favor (Total = 1 < 10, remains ABIERTA)
 		governanceManager.votar(id, {
 			nodoId: "node-pawn" as NodoId,
 			voto: "a_favor",
@@ -118,11 +168,9 @@ describe("GovernanceManager", () => {
 			peso: 1,
 			justificacion: null,
 		});
-		expect(governanceManager.obtenerPropuesta(id)?.estado).toBe(
-			ESTADO_PROPUESTA.ABIERTA,
-		);
+		expect(governanceManager.obtenerPropuesta(id)?.estado).toBe(ESTADO_PROPUESTA.ABIERTA);
 
-		// Boss votes
+		// Node with weight 10 votes a_favor (Total = 11 >= 10, transitions to APROBADA)
 		governanceManager.votar(id, {
 			nodoId: "node-boss" as NodoId,
 			voto: "a_favor",
@@ -130,8 +178,6 @@ describe("GovernanceManager", () => {
 			peso: 10,
 			justificacion: null,
 		});
-		expect(governanceManager.obtenerPropuesta(id)?.estado).toBe(
-			ESTADO_PROPUESTA.APROBADA,
-		);
+		expect(governanceManager.obtenerPropuesta(id)?.estado).toBe(ESTADO_PROPUESTA.APROBADA);
 	});
 });

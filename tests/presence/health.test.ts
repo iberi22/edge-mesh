@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HealthChecker } from "../../src/presence/health.js";
 import { ESTADO_SALUD, type NodoId } from "../../src/types/index.js";
 
-describe("HealthChecker", () => {
+describe("HealthChecker - Comprehensive Unit Tests", () => {
 	let healthChecker: HealthChecker;
 	const peerId = "peer1" as NodoId;
 
@@ -21,23 +21,23 @@ describe("HealthChecker", () => {
 		vi.useRealTimers();
 	});
 
-	it("should generate heartbeat", () => {
+	it("should generate heartbeat payload with correct interval details", () => {
 		const hb = healthChecker.generarHeartbeat(peerId);
 		expect(hb.nodoId).toBe(peerId);
 		expect(hb.timestamp).toBeTypeOf("number");
 		expect(hb.secuencia).toBe(1);
+		expect(hb.intervaloMs).toBe(1000);
 	});
 
-	it("should transition to SALUDABLE", () => {
+	it("should support transition to SALUDABLE (healthy) status", () => {
 		const statusSpy = vi.fn();
 		healthChecker.on("saludCambiada", statusSpy);
 
 		const now = Date.now();
 		healthChecker.recibirHeartbeat(peerId, now - 100);
 
-		expect(healthChecker.obtenerSalud(peerId)?.estado).toBe(
-			ESTADO_SALUD.SALUDABLE,
-		);
+		expect(healthChecker.obtenerSalud(peerId)?.estado).toBe(ESTADO_SALUD.SALUDABLE);
+		expect(statusSpy).toHaveBeenCalledTimes(1);
 		expect(statusSpy).toHaveBeenCalledWith(
 			expect.objectContaining({
 				detail: expect.objectContaining({
@@ -47,37 +47,47 @@ describe("HealthChecker", () => {
 		);
 	});
 
-	it("should transition to LENTO when latency is high", () => {
+	it("should transition to LENTO (latency-degraded) when latency exceeds threshold", () => {
 		healthChecker.recibirHeartbeat(peerId, Date.now() - 100);
 
 		const statusSpy = vi.fn();
 		healthChecker.on("saludCambiada", statusSpy);
 
-		healthChecker.recibirHeartbeat(peerId, Date.now() - 600); // > 500ms
+		// Latency is 600ms (> latenciaAltaMs of 500ms)
+		healthChecker.recibirHeartbeat(peerId, Date.now() - 600);
 		expect(healthChecker.obtenerSalud(peerId)?.estado).toBe(ESTADO_SALUD.LENTO);
-		expect(statusSpy).toHaveBeenCalled();
+		expect(statusSpy).toHaveBeenCalledTimes(1);
 	});
 
-	it("should transition to FALLANDO and eventually emit nodoCaido on multiple failures", () => {
+	it("should track missed heartbeat counts (fallosConsecutivos) and transition to FALLANDO (unhealthy)", () => {
+		healthChecker.recibirHeartbeat(peerId, Date.now() - 100);
+
+		// 1st failure: latency > timeoutMs (4000ms latency)
+		healthChecker.recibirHeartbeat(peerId, Date.now() - 4000);
+		let salud = healthChecker.obtenerSalud(peerId);
+		expect(salud?.estado).toBe(ESTADO_SALUD.FALLANDO);
+		expect(salud?.fallosConsecutivos).toBe(1);
+
+		// 2nd failure
+		healthChecker.recibirHeartbeat(peerId, Date.now() - 4000);
+		salud = healthChecker.obtenerSalud(peerId);
+		expect(salud?.fallosConsecutivos).toBe(2);
+	});
+
+	it("should transition to dead (nodoCaido) on exceeding maximum consecutive missed heartbeats", () => {
 		healthChecker.recibirHeartbeat(peerId, Date.now() - 100);
 
 		const caidoSpy = vi.fn();
 		healthChecker.on("nodoCaido", caidoSpy);
 
-		// 1st failure: latency > timeout (3000ms)
-		healthChecker.recibirHeartbeat(peerId, Date.now() - 4000);
-		expect(healthChecker.obtenerSalud(peerId)?.estado).toBe(
-			ESTADO_SALUD.FALLANDO,
-		);
-		expect(healthChecker.obtenerSalud(peerId)?.fallosConsecutivos).toBe(1);
+		// Receive 3 consecutive heartbeats with invalid latency (> timeoutMs)
+		healthChecker.recibirHeartbeat(peerId, Date.now() - 4000); // 1
+		healthChecker.recibirHeartbeat(peerId, Date.now() - 4000); // 2
+		healthChecker.recibirHeartbeat(peerId, Date.now() - 4000); // 3 -> node dead
 
-		// 2nd failure
-		healthChecker.recibirHeartbeat(peerId, Date.now() - 4000);
-		expect(healthChecker.obtenerSalud(peerId)?.fallosConsecutivos).toBe(2);
-
-		// 3rd failure
-		healthChecker.recibirHeartbeat(peerId, Date.now() - 4000);
-		expect(healthChecker.obtenerSalud(peerId)?.fallosConsecutivos).toBe(3);
+		const salud = healthChecker.obtenerSalud(peerId);
+		expect(salud?.fallosConsecutivos).toBe(3);
+		expect(caidoSpy).toHaveBeenCalledTimes(1);
 		expect(caidoSpy).toHaveBeenCalledWith(
 			expect.objectContaining({
 				detail: { nodoId: peerId },
@@ -85,7 +95,7 @@ describe("HealthChecker", () => {
 		);
 	});
 
-	it("should emit timeout and nodoCaido on inactivity", async () => {
+	it("should emit timeout and nodoCaido on lack of heartbeat activity (inactivity timeout detection)", async () => {
 		healthChecker.iniciar();
 		healthChecker.recibirHeartbeat(peerId, Date.now());
 
@@ -94,10 +104,10 @@ describe("HealthChecker", () => {
 		const timeoutSpy = vi.fn();
 		healthChecker.on("timeout", timeoutSpy);
 
-		// Advance time past timeout
+		// Advance time by 4000ms (exceeding timeoutMs of 3000ms)
 		await vi.advanceTimersByTimeAsync(4000);
 
-		expect(timeoutSpy).toHaveBeenCalled();
-		expect(caidoSpy).toHaveBeenCalled();
+		expect(timeoutSpy).toHaveBeenCalledTimes(1);
+		expect(caidoSpy).toHaveBeenCalledTimes(1);
 	});
 });

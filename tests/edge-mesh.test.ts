@@ -18,7 +18,7 @@ vi.mock("idb", () => ({
 	}),
 }));
 
-describe("YjsAdapter", () => {
+describe("YjsAdapter - Comprehensive Unit Tests", () => {
 	let adapter: YjsAdapter;
 
 	beforeEach(() => {
@@ -29,31 +29,33 @@ describe("YjsAdapter", () => {
 		adapter.destroy();
 	});
 
-	it("should support basic Map operations", () => {
+	it("should support basic Map operations (getMap, set, get)", () => {
 		const map = adapter.getMap("test-map");
 		map.set("key1", "value1");
 		expect(map.get("key1")).toBe("value1");
 	});
 
-	it("should support basic Array operations", () => {
+	it("should support basic Array operations (getArray, push, get)", () => {
 		const array = adapter.getArray("test-array");
 		array.push(["item1"]);
 		expect(array.get(0)).toBe("item1");
 	});
 
-	it("should support basic Text operations", () => {
+	it("should support basic Text operations (getText, insert, toString)", () => {
 		const text = adapter.getText("test-text");
 		text.insert(0, "Hello World");
 		expect(text.toString()).toBe("Hello World");
 	});
 
-	it("should apply updates and sync state", () => {
+	it("should apply updates, sync state, and retrieve raw state (getState, applyUpdate)", () => {
 		const adapter2 = new YjsAdapter();
 
 		const map1 = adapter.getMap("sync-map");
 		map1.set("a", 1);
 
 		const update = adapter.getState();
+		expect(update).toBeInstanceOf(Uint8Array);
+
 		adapter2.applyUpdate(update);
 
 		const map2 = adapter2.getMap("sync-map");
@@ -62,13 +64,15 @@ describe("YjsAdapter", () => {
 		adapter2.destroy();
 	});
 
-	it("should handle state vectors and merging", () => {
+	it("should handle state vectors and merging (getStateVector, merge)", () => {
 		const adapter2 = new YjsAdapter();
 
 		adapter.getMap("m").set("x", 1);
 		adapter2.getMap("m").set("y", 2);
 
 		const sv1 = adapter.getStateVector();
+		expect(sv1).toBeInstanceOf(Uint8Array);
+
 		const update1 = Y.encodeStateAsUpdate(adapter2.doc, sv1);
 
 		adapter.merge(update1);
@@ -77,9 +81,27 @@ describe("YjsAdapter", () => {
 
 		adapter2.destroy();
 	});
+
+	it("should completely unsubscribe and clean up resources on destroy()", () => {
+		const updateSpy = vi.fn();
+		adapter.onUpdate(updateSpy);
+
+		const map = adapter.getMap("destroy-map");
+		map.set("a", 1);
+		expect(updateSpy).toHaveBeenCalledTimes(1);
+
+		// Destroy the adapter
+		adapter.destroy();
+
+		updateSpy.mockClear();
+
+		// Setting a value on the doc shouldn't trigger the listener anymore
+		map.set("a", 2);
+		expect(updateSpy).not.toHaveBeenCalled();
+	});
 });
 
-describe("EdgeMesh", () => {
+describe("EdgeMesh - Lifecycle & Full Integration Tests", () => {
 	let edgeMesh: EdgeMesh;
 	const nodoId = "edge-node" as NodoId;
 
@@ -97,21 +119,25 @@ describe("EdgeMesh", () => {
 		vi.useRealTimers();
 	});
 
-	it("should initialize and stop", async () => {
+	it("should complete full lifecycle transitions (iniciar -> detener) correctly", async () => {
 		// Mock transmitir to avoid actual network calls
 		vi.spyOn(edgeMesh, "transmitir").mockResolvedValue(undefined);
 
-		await edgeMesh.iniciar();
+		// Verify initial offline state
 		expect(edgeMesh.presence).toBeDefined();
+		expect(edgeMesh.authority).toBeDefined();
 
-		// Test transition from online to offline
-		// Initial state is offline. iniciar calls nodo.conectar()
-		// Let's check node state if possible, but EdgeMesh wraps it.
+		// Iniciar EdgeMesh
+		await edgeMesh.iniciar();
 
+		// Presence and Authority should be active/initialized
+		expect(edgeMesh.presence.peerId).toBe(nodoId);
+
+		// Stop/Detener EdgeMesh
 		await edgeMesh.detener();
 	});
 
-	it("should handle sync events through YjsAdapter", async () => {
+	it("should handle sync events and updates through integrated YjsAdapter", async () => {
 		await edgeMesh.iniciar();
 
 		const updateSpy = vi.fn();
@@ -120,7 +146,7 @@ describe("EdgeMesh", () => {
 		const map = edgeMesh.yjsAdapter.getMap("data");
 		map.set("key", "value");
 
-		expect(updateSpy).toHaveBeenCalled();
+		expect(updateSpy).toHaveBeenCalledTimes(1);
 	});
 });
 
@@ -140,7 +166,7 @@ describe("YjsAdapter Mutation Guard and Self-Healing", () => {
 		map.set("theme", "light");
 
 		// Register a mutation guard that rejects any updates from "untrusted-peer"
-		adapter.registerMutationGuard((origin, touched) => {
+		adapter.registerMutationGuard((origin) => {
 			if (origin === "untrusted-peer") {
 				return false; // Reject all
 			}
