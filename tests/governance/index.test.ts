@@ -33,32 +33,112 @@ describe("GovernanceManager", () => {
 			tipo,
 			proponente,
 			datos,
+			5000,
 		);
 
 		expect(propuesta.id).toBe(id);
 		expect(propuesta.estado).toBe(ESTADO_PROPUESTA.ABIERTA);
+		expect(propuesta.expiracion).toBe(propuesta.timestamp + 5000);
 		expect(governanceManager.obtenerPropuesta(id)).toBe(propuesta);
 		expect(createdSpy).toHaveBeenCalled();
 	});
 
-	it("should handle voting and threshold", () => {
+	it("should handle voting outcomes: a_favor, en_contra, and abstencion", () => {
+		const id = "prop_votes";
+		governanceManager.crearPropuesta(id, "test", "node1" as NodoId, {});
+
+		const vote1 = {
+			nodoId: "node2" as NodoId,
+			voto: "a_favor" as const,
+			propuesta: id,
+			peso: 1,
+			justificacion: null,
+		};
+		const vote2 = {
+			nodoId: "node3" as NodoId,
+			voto: "en_contra" as const,
+			propuesta: id,
+			peso: 1,
+			justificacion: "no like",
+		};
+		const vote3 = {
+			nodoId: "node4" as NodoId,
+			voto: "abstencion" as const,
+			propuesta: id,
+			peso: 1,
+			justificacion: "neutral",
+		};
+
+		// Set high threshold so votes don't trigger immediate approval
+		governanceManager.actualizarPolitica({ umbral: 5.0 });
+
+		const success1 = governanceManager.votar(id, vote1);
+		const success2 = governanceManager.votar(id, vote2);
+		const success3 = governanceManager.votar(id, vote3);
+
+		expect(success1).toBe(true);
+		expect(success2).toBe(true);
+		expect(success3).toBe(true);
+
+		const propuesta = governanceManager.obtenerPropuesta(id);
+		expect(propuesta?.votos.length).toBe(3);
+		expect(propuesta?.votos.map(v => v.voto)).toEqual(["a_favor", "en_contra", "abstencion"]);
+		expect(propuesta?.estado).toBe(ESTADO_PROPUESTA.ABIERTA);
+	});
+
+	it("should prevent duplicate voting from the same node", () => {
+		const id = "prop_dup";
+		governanceManager.crearPropuesta(id, "test", "node1" as NodoId, {});
+		governanceManager.actualizarPolitica({ umbral: 5.0 });
+
+		const vote = {
+			nodoId: "node2" as NodoId,
+			voto: "a_favor" as const,
+			propuesta: id,
+			peso: 1,
+			justificacion: null,
+		};
+
+		const successFirst = governanceManager.votar(id, vote);
+		const successSecond = governanceManager.votar(id, vote);
+
+		expect(successFirst).toBe(true);
+		expect(successSecond).toBe(false); // Duplicate vote should fail
+		expect(governanceManager.obtenerPropuesta(id)?.votos.length).toBe(1);
+	});
+
+	it("should prevent voting on closed or expired proposals", () => {
+		const id = "prop_closed";
+		governanceManager.crearPropuesta(id, "test", "node1" as NodoId, {}, 1000);
+
+		// Expire the proposal
+		vi.advanceTimersByTime(1500);
+		expect(governanceManager.obtenerPropuesta(id)?.estado).toBe(ESTADO_PROPUESTA.RECHAZADA);
+
+		const vote = {
+			nodoId: "node2" as NodoId,
+			voto: "a_favor" as const,
+			propuesta: id,
+			peso: 1,
+			justificacion: null,
+		};
+
+		const success = governanceManager.votar(id, vote);
+		expect(success).toBe(false);
+	});
+
+	it("should handle voting and threshold (state transitions & quorum)", () => {
 		const id = "prop2";
 		const proponente = "node1" as NodoId;
 		governanceManager.crearPropuesta(id, "test", proponente, {});
 
 		const voter1 = "node2" as NodoId;
-		const voter2 = "node3" as NodoId;
 
 		const resultSpy = vi.fn();
 		governanceManager.on("propuestaResultado", resultSpy);
 
 		// Default threshold is 0.51, default weight is 1.
-		// We need more than 0.51 to pass. 1 vote = 1.0 weight if not specified.
-		// Wait, the code says:
-		// pesoTotal = this.calcularPesoTotal(propuesta);
-		// return pesoTotal >= this.politica.umbral;
-		// umbral is 0.51.
-
+		// Positive vote (a_favor) of weight 1 will cross 0.51 threshold.
 		governanceManager.votar(id, {
 			nodoId: voter1,
 			voto: "a_favor",
@@ -101,7 +181,7 @@ describe("GovernanceManager", () => {
 		expect(governanceManager.obtenerPolitica().umbral).toBe(0.9);
 	});
 
-	it("should respect node weights", () => {
+	it("should respect node weights for quorum calculation", () => {
 		governanceManager.actualizarPolitica({
 			umbral: 10,
 			pesoNodo: { "node-boss": 10, "node-pawn": 1 },

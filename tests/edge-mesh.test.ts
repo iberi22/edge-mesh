@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 import { EdgeMesh, YjsAdapter } from "../src/edge-mesh.js";
-import type { NodoId } from "../src/types/index.js";
+import { MemoryTransport } from "../src/transport/memory.js";
+import { TIPO_MENSAJE, type NodoId } from "../src/types/index.js";
 
 // Mock idb to avoid "indexedDB is not defined" error in Node environment
 vi.mock("idb", () => ({
@@ -29,25 +30,25 @@ describe("YjsAdapter", () => {
 		adapter.destroy();
 	});
 
-	it("should support basic Map operations", () => {
+	it("should support basic Map operations (CRUD: getMap)", () => {
 		const map = adapter.getMap("test-map");
 		map.set("key1", "value1");
 		expect(map.get("key1")).toBe("value1");
 	});
 
-	it("should support basic Array operations", () => {
+	it("should support basic Array operations (CRUD: getArray)", () => {
 		const array = adapter.getArray("test-array");
 		array.push(["item1"]);
 		expect(array.get(0)).toBe("item1");
 	});
 
-	it("should support basic Text operations", () => {
+	it("should support basic Text operations (CRUD: getText)", () => {
 		const text = adapter.getText("test-text");
 		text.insert(0, "Hello World");
 		expect(text.toString()).toBe("Hello World");
 	});
 
-	it("should apply updates and sync state", () => {
+	it("should apply updates and sync state (CRUD: applyUpdate, getState)", () => {
 		const adapter2 = new YjsAdapter();
 
 		const map1 = adapter.getMap("sync-map");
@@ -62,7 +63,7 @@ describe("YjsAdapter", () => {
 		adapter2.destroy();
 	});
 
-	it("should handle state vectors and merging", () => {
+	it("should handle state vectors and merging (CRUD: getStateVector, merge)", () => {
 		const adapter2 = new YjsAdapter();
 
 		adapter.getMap("m").set("x", 1);
@@ -89,6 +90,8 @@ describe("EdgeMesh", () => {
 			nodoId,
 			heartbeatIntervalMs: 1000,
 			heartbeatTimeoutMs: 3000,
+			storageBackend: "mem",
+			requireAuthz: false,
 		});
 	});
 
@@ -97,16 +100,13 @@ describe("EdgeMesh", () => {
 		vi.useRealTimers();
 	});
 
-	it("should initialize and stop", async () => {
-		// Mock transmitir to avoid actual network calls
+	it("should initialize, stop, and support full lifecycle", async () => {
 		vi.spyOn(edgeMesh, "transmitir").mockResolvedValue(undefined);
 
 		await edgeMesh.iniciar();
 		expect(edgeMesh.presence).toBeDefined();
-
-		// Test transition from online to offline
-		// Initial state is offline. iniciar calls nodo.conectar()
-		// Let's check node state if possible, but EdgeMesh wraps it.
+		expect(edgeMesh.governance).toBeDefined();
+		expect(edgeMesh.authority).toBeDefined();
 
 		await edgeMesh.detener();
 	});
@@ -121,6 +121,67 @@ describe("EdgeMesh", () => {
 		map.set("key", "value");
 
 		expect(updateSpy).toHaveBeenCalled();
+	});
+
+	it("should wire and forward node lifecycle events correctly", async () => {
+		const conectadoSpy = vi.fn();
+		const desconectadoSpy = vi.fn();
+		const estadoCambiadoSpy = vi.fn();
+
+		edgeMesh.on("nodoConectado", conectadoSpy);
+		edgeMesh.on("nodoDesconectado", desconectadoSpy);
+		edgeMesh.on("estadoCambiado", estadoCambiadoSpy);
+
+		// Trigger events via internal node object
+		edgeMesh.nodo.emit("nodoConectado", { nodoId: "peer-test" as NodoId });
+		edgeMesh.nodo.emit("nodoDesconectado", { nodoId: "peer-test" as NodoId });
+		edgeMesh.nodo.emit("estadoCambiado", { estado: "online" });
+
+		expect(conectadoSpy).toHaveBeenCalled();
+		expect(desconectadoSpy).toHaveBeenCalled();
+		expect(estadoCambiadoSpy).toHaveBeenCalled();
+	});
+
+	it("should process valid SYNC envelopes and emit syncCompletado", async () => {
+		await edgeMesh.iniciar();
+
+		const syncCompletadoSpy = vi.fn();
+		edgeMesh.on("syncCompletado", syncCompletadoSpy);
+
+		// Construct a dummy Yjs update
+		const remoteAdapter = new YjsAdapter();
+		remoteAdapter.getMap("data").set("foo", "bar");
+		const stateUpdate = remoteAdapter.getState();
+
+		const envelope = {
+			id: "env-1",
+			tipo: TIPO_MENSAJE.SYNC,
+			origen: "remote-peer" as NodoId,
+			destino: "edge-node" as NodoId,
+			timestamp: Date.now(),
+			version: 1,
+			nonce: "dummy-nonce",
+			payload: {
+				docId: "default",
+				tipoSync: "delta",
+				datos: Array.from(stateUpdate),
+				clock: Date.now(),
+			},
+		};
+
+		await edgeMesh.recibirEnvelope(envelope);
+
+		// Assert sync is completed and data is updated locally
+		expect(edgeMesh.yjsAdapter.getMap("data").get("foo")).toBe("bar");
+		expect(syncCompletadoSpy).toHaveBeenCalledWith(
+			expect.objectContaining({
+				detail: expect.objectContaining({
+					docId: "default",
+				}),
+			}),
+		);
+
+		remoteAdapter.destroy();
 	});
 });
 
