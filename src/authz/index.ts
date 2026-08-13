@@ -342,6 +342,24 @@ export class NamespaceAuthorizer {
 		return this.capabilities.get(espacio);
 	}
 
+	obtenerGrantsMap(): Map<string, NamespaceCapabilityGrant> {
+		return this.grants;
+	}
+
+	obtenerRoleAssignmentsMap(): Map<string, RoleAssignment> {
+		return this.roleAssignments;
+	}
+
+	cargarGrantsMap(grants: [string, NamespaceCapabilityGrant][]): void {
+		this.grants = new Map(grants);
+		void this.saveGrants();
+	}
+
+	cargarRoleAssignmentsMap(roleAssignments: [string, RoleAssignment][]): void {
+		this.roleAssignments = new Map(roleAssignments);
+		void this.saveRoleAssignments();
+	}
+
 	// ─── EVENTOS ─────────────────────────────────────────────────────────
 
 	on<K extends keyof AuthzEventMap>(

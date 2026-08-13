@@ -48,8 +48,11 @@ export class KarmaManager {
 	 * Carga el estado de karma desde el OpLog.
 	 * Debe llamarse después de crear la instancia.
 	 */
-	async loadFromOpLog(): Promise<void> {
-		this.cache.clear();
+	async loadFromOpLog(keepExistingCache = false): Promise<void> {
+		await this.oplog.cargarDesdeStorage();
+		if (!keepExistingCache) {
+			this.cache.clear();
+		}
 		const ops = await this.oplog.obtenerTodas();
 		for (const op of ops) {
 			if (op.tipo === "karma:emit") {

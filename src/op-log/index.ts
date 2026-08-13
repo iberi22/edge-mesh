@@ -45,6 +45,23 @@ export class OpLog {
 		this.maxEnMemoria = config.maxEnMemoria ?? MAX_OPERACIONES_EN_MEMORIA;
 	}
 
+	async cargarDesdeStorage(): Promise<void> {
+		const enStorage = await this.storage.list({
+			prefijo: `op:${this.docId}:`,
+		});
+
+		let maxSeq = 0;
+		for (const entry of enStorage) {
+			const op = entry.valor as Operacion;
+			if (op && typeof op.secuencia === "number") {
+				maxSeq = Math.max(maxSeq, op.secuencia);
+				this.cache.set(op.id, op);
+			}
+		}
+		this.ultimaSecuencia = maxSeq;
+		this.totalOperaciones = enStorage.length;
+	}
+
 	// ─── APPEND ──────────────────────────────────────────────────────────
 
 	async append(
@@ -178,6 +195,24 @@ export class OpLog {
 			await this.storage.delete(this.crearClave(op.secuencia));
 			this.cache.delete(op.id);
 		}
+
+		this.emit("logComprimido", { desde, hasta });
+	}
+
+	async compactar(secuencia: number): Promise<void> {
+		const todas = await this.obtenerTodas();
+		const aEliminar = todas.filter((op) => op.secuencia <= secuencia);
+		if (aEliminar.length === 0) return;
+
+		const desde = aEliminar[0].secuencia;
+		const hasta = aEliminar[aEliminar.length - 1].secuencia;
+
+		for (const op of aEliminar) {
+			await this.storage.delete(this.crearClave(op.secuencia));
+			this.cache.delete(op.id);
+		}
+
+		this.totalOperaciones = Math.max(0, this.totalOperaciones - aEliminar.length);
 
 		this.emit("logComprimido", { desde, hasta });
 	}

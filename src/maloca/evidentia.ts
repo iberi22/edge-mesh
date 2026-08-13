@@ -175,6 +175,13 @@ export class MerkleTree {
 		return [...this.leaves];
 	}
 
+	toJSON(): { leaves: Leaf[]; signature?: string } {
+		return {
+			leaves: this.leaves,
+			signature: this.signature,
+		};
+	}
+
 	async add(leaf: Leaf): Promise<void> {
 		this.leaves.push(leaf);
 		this.buildPromise = this.rebuild();
