@@ -266,3 +266,4 @@ export function createGovernanceManager(
 }
 
 export * from "./merge.js";
+export * from "./authority.js";

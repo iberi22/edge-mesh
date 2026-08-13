@@ -241,6 +241,11 @@ export interface EdgeMeshEventMap {
 		readonly nodoId: NodoId;
 		readonly salud: EstadoSalud;
 	}>;
+	failover: CustomEvent<{
+		readonly antiguoMaster: NodoId | null;
+		readonly nuevoMaster: NodoId;
+		readonly razon: "timeout" | "forced" | "manual";
+	}>;
 }
 
 export type EdgeMeshEvent = EdgeMeshEventMap[keyof EdgeMeshEventMap];
@@ -319,4 +324,6 @@ export interface EdgeMeshConfig {
 	 * Set to false to disable/simulate fallback behavior.
 	 */
 	readonly enablePqcEncryption?: boolean;
+	readonly initialMaster?: NodoId;
+	readonly authorityTimeoutMs?: number;
 }

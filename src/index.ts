@@ -37,12 +37,15 @@ export type {
 	EstadoPropuesta,
 	GovernanceEventMap,
 	Propuesta,
+	AuthorityEventMap,
 } from "./governance/index.js";
 // ─── GOVERNANCE ───────────────────────────────────────────────────────────
 export {
 	createGovernanceManager,
 	ESTADO_PROPUESTA,
 	GovernanceManager,
+	AuthorityManager,
+	createAuthorityManager,
 } from "./governance/index.js";
 export type {
 	PostQuantumIdentity,

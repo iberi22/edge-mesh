@@ -9,6 +9,8 @@ import { createEdgeMeshNode, type EdgeMeshNode } from "./core/node.js";
 import {
 	createGovernanceManager,
 	type GovernanceManager,
+	createAuthorityManager,
+	type AuthorityManager,
 } from "./governance/index.js";
 import {
 	createPostQuantumIdentity,
@@ -274,6 +276,7 @@ export class EdgeMesh {
 	readonly deduplicator: MessageDeduplicator;
 	readonly storage: StorageManager | InMemoryStorage;
 	readonly governance: GovernanceManager;
+	readonly authority: AuthorityManager;
 	readonly identity: PostQuantumIdentity;
 	readonly presence: PresenceManager;
 	readonly authorizer: NamespaceAuthorizer;
@@ -359,6 +362,20 @@ export class EdgeMesh {
 		this.presence = new PresenceManager({
 			heartbeatIntervalMs: config.heartbeatIntervalMs ?? 5_000,
 			timeoutMs: config.heartbeatTimeoutMs ?? 15_000,
+		});
+
+		// Authority
+		this.authority = createAuthorityManager(
+			config.nodoId,
+			this.presence,
+			{
+				initialMaster: config.initialMaster,
+			},
+		);
+
+		// Forward authority events
+		this.authority.on("failover", (ev) => {
+			this.emit("failover", ev.detail);
 		});
 		this.presence.registrarClavePublica(
 			config.nodoId,
@@ -495,6 +512,9 @@ export class EdgeMesh {
 			this.identity,
 		);
 
+		// Iniciar autoridad
+		this.authority.iniciar();
+
 		// Conectar nodo
 		await this.nodo.conectar();
 		this.iniciado = true;
@@ -503,6 +523,7 @@ export class EdgeMesh {
 	async detener(): Promise<void> {
 		this.iniciado = false;
 		this.presence.detener();
+		this.authority.detener();
 		if (this.unsubYjs) {
 			this.unsubYjs();
 			this.unsubYjs = null;
