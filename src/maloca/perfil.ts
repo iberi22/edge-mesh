@@ -20,8 +20,11 @@ export class ProfileManager {
 	 * Carga todos los perfiles desde el OpLog hacia el cache en memoria.
 	 * Debe llamarse después de crear la instancia y antes de usar.
 	 */
-	async loadProfiles(): Promise<void> {
-		this.cache.clear();
+	async loadProfiles(keepExistingCache = false): Promise<void> {
+		await this.oplog.cargarDesdeStorage();
+		if (!keepExistingCache) {
+			this.cache.clear();
+		}
 		const ops = await this.oplog.obtenerTodas();
 		for (const op of ops) {
 			if (op.tipo === "profile:upsert") {
@@ -29,6 +32,14 @@ export class ProfileManager {
 				this.cache.set(perfil.id, perfil);
 			}
 		}
+	}
+
+	exportCache(): [string, Perfil][] {
+		return Array.from(this.cache.entries());
+	}
+
+	importCache(entries: [string, Perfil][]): void {
+		this.cache = new Map(entries);
 	}
 
 	/**

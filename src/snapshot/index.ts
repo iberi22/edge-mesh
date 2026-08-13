@@ -1,5 +1,42 @@
 import { InMemoryStorage, type IStorage } from "../storage/index.js";
-import type { NodoId, PayloadSnapshot } from "../types/index.js";
+import type { NodoId, PayloadSnapshot, NamespaceCapabilityGrant } from "../types/index.js";
+import type { RoleAssignment } from "../authz/index.js";
+import type { Perfil as Profile } from "../maloca/perfil.js";
+import { MerkleTree } from "../maloca/evidentia.js";
+import type { GovernanceSnapshot } from "../governance/merge.js";
+
+// ─── SNAPSHOT SYSTEM TYPES & INTERFACES ──────────────────────────────────────
+
+export type Grant = NamespaceCapabilityGrant;
+
+export interface Subscription {
+	id: string;
+	topic: string;
+	subscriber: string;
+	timestamp: number;
+}
+
+export interface SnapshotConfig {
+	intervalMs: number;        // Default: cada 5 minutos
+	maxSnapshots: number;      // Default: mantener últimos 3
+	include: string[];         // Namespaces a incluir
+}
+
+export interface Snapshot {
+	id: string;
+	timestamp: number;
+	state: {
+		grants: [string, Grant][];
+		roleAssignments: [string, RoleAssignment][];
+		profiles: [string, Profile][];
+		merkleTree: MerkleTree;
+		governance: GovernanceSnapshot;
+		subscriptions: [string, Subscription][];
+		lastOpSequence?: number;
+	};
+	signature?: string; // ML-DSA-65
+	prevSnapshotId?: string; // Chain de snapshots
+}
 
 // ─── CONSTANTS ─────────────────────────────────────────────────────────────
 

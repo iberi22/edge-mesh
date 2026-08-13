@@ -32,7 +32,12 @@ import { bytesAHex, hexABytes } from "./protocol/utils.js";
 import {
 	createSnapshotManager,
 	type SnapshotManager,
+	type SnapshotConfig,
+	type Snapshot,
+	type Subscription,
 } from "./snapshot/index.js";
+import { MerkleTree } from "./maloca/evidentia.js";
+import { canonicalStringify } from "./protocol/canonical.js";
 import { InMemoryStorage, StorageManager } from "./storage/index.js";
 import { SyncEngine } from "./sync/engine.js";
 import { MemoryTransport } from "./transport/memory.js";
@@ -299,6 +304,11 @@ export class EdgeMesh {
 	private readonly logsDoc: Map<string, OpLog>;
 	private readonly syncs: Map<string, SyncEngine>;
 	private readonly snapshots: Map<string, SnapshotManager>;
+	readonly subscriptions: Map<string, Subscription>;
+	merkleTree: MerkleTree;
+	snapshotConfig!: SnapshotConfig;
+	private snapshotTimer: any = null;
+	snapshotRestored = false;
 	/** Registered peer public keys for envelope verification. */
 	private readonly peerPublicKeys: Map<NodoId, ParPublico>;
 	private readonly requireAuthz: boolean;
@@ -392,6 +402,16 @@ export class EdgeMesh {
 
 		// Authz
 		this.authorizer = createNamespaceAuthorizer(this.storage);
+
+		this.subscriptions = new Map();
+		this.merkleTree = new MerkleTree();
+
+		const defaultSnapConfig: SnapshotConfig = {
+			intervalMs: 5 * 60 * 1000, // 5 min
+			maxSnapshots: 3,
+			include: [],
+		};
+		this.snapshotConfig = { ...defaultSnapConfig, ...config.snapshotConfig };
 
 		// Namespaces
 		this.namespaces = new NamespaceManager();
@@ -496,6 +516,9 @@ export class EdgeMesh {
 		await this.authorizer.loadRoleAssignments();
 		await this.authorizer.loadCapabilities();
 
+		// Intentar restaurar desde snapshot al iniciar
+		await this.restaurarDesdeSnapshot();
+
 		// Optional built-in PeerJS — skip when host provides transport or omits peerId
 		if (this.transport === null && this.config.peerId !== undefined) {
 			const opts: PeerJSTransportOptions = {
@@ -529,10 +552,21 @@ export class EdgeMesh {
 		// Conectar nodo
 		await this.nodo.conectar();
 		this.iniciado = true;
+
+		// Programar snapshot automático
+		if (this.snapshotTimer === null) {
+			this.snapshotTimer = setInterval(() => {
+				void this.generarSnapshotAutomatico();
+			}, this.snapshotConfig.intervalMs);
+		}
 	}
 
 	async detener(): Promise<void> {
 		this.iniciado = false;
+		if (this.snapshotTimer !== null) {
+			clearInterval(this.snapshotTimer);
+			this.snapshotTimer = null;
+		}
 		this.presence.detener();
 		this.authority.detener();
 		if (this.unsubYjs) {
@@ -1176,6 +1210,198 @@ export class EdgeMesh {
 
 		this.snapshots.set(docId, snap);
 		return snap;
+	}
+
+	// ─── SNAPSHOT RECOVERY & COMPACTION ──────────────────────────────────
+
+	async generarSnapshotAutomatico(): Promise<Snapshot | null> {
+		try {
+			const latestSnapshotEntry = await this.storage.get<any>("storage:snapshot:latest");
+			const prevSnapshotId = latestSnapshotEntry ? latestSnapshotEntry.valor.id : undefined;
+
+			const grants = Array.from(this.authorizer.obtenerGrantsMap().entries());
+			const roleAssignments = Array.from(this.authorizer.obtenerRoleAssignmentsMap().entries());
+
+			let profiles: [string, any][] = [];
+			if ((this as any).profiles) {
+				profiles = (this as any).profiles.exportCache();
+			}
+
+			const merkleTree = this.merkleTree;
+
+			const propuestas = this.governance.obtenerPropuestas();
+			const governance: GovernanceSnapshot = {
+				propuestas: [...propuestas],
+				timestamp: Date.now(),
+			};
+
+			const subscriptions = Array.from(this.subscriptions.entries());
+
+			let lastOpSequence = 0;
+			for (const opLog of this.logsDoc.values()) {
+				lastOpSequence = Math.max(lastOpSequence, opLog.obtenerUltimaSecuencia());
+			}
+
+			const id = `snapshot-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+			const state = {
+				grants,
+				roleAssignments,
+				profiles,
+				merkleTree,
+				governance,
+				subscriptions,
+				lastOpSequence,
+			};
+
+			const snapshot: Snapshot = {
+				id,
+				timestamp: Date.now(),
+				state,
+				prevSnapshotId,
+			};
+
+			if (this.identity) {
+				const serialized = canonicalStringify(JSON.parse(JSON.stringify(state)));
+				const signatureBytes = await this.identity.firmar(new TextEncoder().encode(serialized));
+				snapshot.signature = bytesAHex(signatureBytes);
+			}
+
+			await this.storage.set("storage:snapshot:latest", snapshot);
+
+			const historyEntry = await this.storage.get<any[]>("storage:snapshot:history");
+			let history = historyEntry ? historyEntry.valor : [];
+			if (!Array.isArray(history)) {
+				history = [];
+			}
+			history.push(snapshot);
+
+			const maxSnaps = this.snapshotConfig.maxSnapshots || 3;
+			if (history.length > maxSnaps) {
+				history = history.slice(-maxSnaps);
+			}
+
+			await this.storage.set("storage:snapshot:history", history);
+
+			if (lastOpSequence > 0) {
+				for (const opLog of this.logsDoc.values()) {
+					await opLog.compactar(lastOpSequence);
+				}
+			}
+
+			return snapshot;
+		} catch (err) {
+			this.emit("error", {
+				mensaje: `Error al generar snapshot automático: ${(err as Error).message}`,
+			});
+			return null;
+		}
+	}
+
+	async restaurarDesdeSnapshot(): Promise<boolean> {
+		try {
+			const latestEntry = await this.storage.get<Snapshot>("storage:snapshot:latest");
+			if (!latestEntry) {
+				await this.reconstruirDesdeOpLogCompleto();
+				return false;
+			}
+
+			const snapshot = latestEntry.valor;
+
+			if (snapshot.signature) {
+				const isValid = await this.verificarFirmaSnapshot(snapshot);
+				if (!isValid) {
+					throw new Error("Firma del snapshot invalida o corrupta");
+				}
+			}
+
+			await this.aplicarEstadoSnapshot(snapshot);
+			this.snapshotRestored = true;
+
+			const lastSeq = snapshot.state.lastOpSequence ?? 0;
+			for (const [docId, opLog] of this.logsDoc.entries()) {
+				if (docId === "maloca_profiles" && (this as any).profiles) {
+					await (this as any).profiles.loadProfiles(true);
+				} else if (docId === "maloca_karma" && (this as any).karma) {
+					await (this as any).karma.loadFromOpLog(true);
+				}
+			}
+
+			return true;
+		} catch (err) {
+			this.emit("error", {
+				mensaje: `Recuperacion desde snapshot fallida, cayendo a OpLog completo: ${(err as Error).message}`,
+			});
+			await this.reconstruirDesdeOpLogCompleto();
+			return false;
+		}
+	}
+
+	async verificarFirmaSnapshot(snapshot: Snapshot): Promise<boolean> {
+		if (!snapshot.signature) return false;
+		try {
+			const serialized = canonicalStringify(JSON.parse(JSON.stringify(snapshot.state)));
+			const signatureBytes = hexABytes(snapshot.signature);
+			const pubKey = this.identity.exportarPublico();
+			return await this.identity.verificar(
+				new TextEncoder().encode(serialized),
+				signatureBytes,
+				pubKey,
+			);
+		} catch {
+			return false;
+		}
+	}
+
+	private async aplicarEstadoSnapshot(snapshot: Snapshot): Promise<void> {
+		if (snapshot.state.grants) {
+			this.authorizer.cargarGrantsMap(snapshot.state.grants);
+		}
+		if (snapshot.state.roleAssignments) {
+			this.authorizer.cargarRoleAssignmentsMap(snapshot.state.roleAssignments);
+		}
+		if (snapshot.state.profiles && (this as any).profiles) {
+			(this as any).profiles.importCache(snapshot.state.profiles);
+		}
+		if (snapshot.state.merkleTree) {
+			const mtData = snapshot.state.merkleTree as any;
+			if (Array.isArray(mtData.leaves)) {
+				const mt = new MerkleTree(mtData.leaves);
+				if (mtData.signature) {
+					mt.signature = mtData.signature;
+				}
+				this.merkleTree = mt;
+			} else if (mtData instanceof MerkleTree) {
+				this.merkleTree = mtData;
+			}
+		}
+		if (snapshot.state.governance && snapshot.state.governance.propuestas) {
+			this.governance.importarPropuestas(snapshot.state.governance.propuestas);
+		}
+		if (snapshot.state.subscriptions) {
+			this.subscriptions.clear();
+			for (const [k, v] of snapshot.state.subscriptions) {
+				this.subscriptions.set(k, v);
+			}
+		}
+	}
+
+	async reconstruirDesdeOpLogCompleto(): Promise<void> {
+		this.snapshotRestored = false;
+		this.authorizer.cargarGrantsMap([]);
+		this.authorizer.cargarRoleAssignmentsMap([]);
+		if ((this as any).profiles) {
+			(this as any).profiles.importCache([]);
+		}
+		this.merkleTree = new MerkleTree();
+		this.governance.destruir();
+		this.subscriptions.clear();
+
+		if ((this as any).profiles) {
+			await (this as any).profiles.loadProfiles(false);
+		}
+		if ((this as any).karma) {
+			await (this as any).karma.loadFromOpLog(false);
+		}
 	}
 
 	// ─── EVENTOS ─────────────────────────────────────────────────────────

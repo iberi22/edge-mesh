@@ -20,8 +20,8 @@ export class MalocaKernel extends EdgeMesh {
 
 	override async iniciar(): Promise<void> {
 		await super.iniciar();
-		await this.profiles.loadProfiles();
-		await this.karma.loadFromOpLog();
+		await this.profiles.loadProfiles(this.snapshotRestored);
+		await this.karma.loadFromOpLog(this.snapshotRestored);
 	}
 
 	async registerNode(
