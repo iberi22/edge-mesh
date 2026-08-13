@@ -182,7 +182,13 @@ export class NamespaceAuthorizer {
 		expiracionMs?: number,
 		firma?: Uint8Array,
 	): NamespaceCapabilityGrant {
-		return this.concederCapacidad(espacio, sujeto, capacidad, expiracionMs, firma);
+		return this.concederCapacidad(
+			espacio,
+			sujeto,
+			capacidad,
+			expiracionMs,
+			firma,
+		);
 	}
 
 	revocarCapacidad(
@@ -205,11 +211,7 @@ export class NamespaceAuthorizer {
 		return true;
 	}
 
-	revoke(
-		espacio: string,
-		sujeto: NodoId,
-		capacidad: string,
-	): boolean {
+	revoke(espacio: string, sujeto: NodoId, capacidad: string): boolean {
 		return this.revocarCapacidad(espacio, sujeto, capacidad);
 	}
 
@@ -380,6 +382,8 @@ export class NamespaceAuthorizer {
 
 // ─── FACTORY ───────────────────────────────────────────────────────────────
 
-export function createNamespaceAuthorizer(storage?: IStorage): NamespaceAuthorizer {
+export function createNamespaceAuthorizer(
+	storage?: IStorage,
+): NamespaceAuthorizer {
 	return new NamespaceAuthorizer(storage);
 }

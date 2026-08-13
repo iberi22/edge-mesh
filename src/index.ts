@@ -1,6 +1,18 @@
 // ─── EDGE MESH ─────────────────────────────────────────────────────────────
 // Re-export completo de todo el paquete
 
+// ─── GPU AGENT ────────────────────────────────────────────────────────────
+export type {
+	GpuKernelType,
+	GpuTask,
+	GpuTaskResult,
+} from "./adapters/gpu-agent/index.js";
+export {
+	GpuAgentPlugin,
+	runCpuDot,
+	runCpuMatrixScale,
+	runCpuVectorSum,
+} from "./adapters/gpu-agent/index.js";
 export type { AuthzEventMap, CapacidadEstandar } from "./authz/index.js";
 // ─── AUTHZ ────────────────────────────────────────────────────────────────
 export {
@@ -30,9 +42,9 @@ export {
 } from "./chat/index.js";
 export type { EdgeMeshNode } from "./core/node.js";
 export { createEdgeMeshNode, ESTADO_TRANSICIONES } from "./core/node.js";
-// ─── CORE ─────────────────────────────────────────────────────────────────
-export { EdgeMesh, YjsAdapter, MUTATION_REVERT_ORIGIN } from "./edge-mesh.js";
 export type { MutationGuardFn } from "./edge-mesh.js";
+// ─── CORE ─────────────────────────────────────────────────────────────────
+export { EdgeMesh, MUTATION_REVERT_ORIGIN, YjsAdapter } from "./edge-mesh.js";
 export type {
 	EstadoPropuesta,
 	GovernanceEventMap,

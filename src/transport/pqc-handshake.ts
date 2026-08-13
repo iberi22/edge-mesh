@@ -1,14 +1,18 @@
 /// <reference types="node" />
-import { ml_kem768 } from "@noble/post-quantum/ml-kem.js";
-import { EncryptedChannel } from "../namespaces/encrypted-plugin.js";
-import type { PostQuantumIdentity } from "../identity/index.js";
-import type { NodoId } from "../types/index.js";
-import { bytesAHex, hexABytes } from "../protocol/utils.js";
+
 import crypto from "node:crypto";
+import { ml_kem768 } from "@noble/post-quantum/ml-kem.js";
+import type { PostQuantumIdentity } from "../identity/index.js";
+import { EncryptedChannel } from "../namespaces/encrypted-plugin.js";
+import { bytesAHex, hexABytes } from "../protocol/utils.js";
+import type { NodoId } from "../types/index.js";
 
 export interface PqcChannelState {
 	status: "initiating" | "responding" | "ready";
-	readonly keysA?: { readonly publicKey: Uint8Array; readonly secretKey: Uint8Array };
+	readonly keysA?: {
+		readonly publicKey: Uint8Array;
+		readonly secretKey: Uint8Array;
+	};
 	readonly challengeA?: string;
 	readonly challengeB?: string;
 	readonly channel?: EncryptedChannel;
@@ -38,7 +42,10 @@ export class PqcHandshake {
 			readonly challenge: string;
 			readonly signature: string;
 		};
-		readonly keysA: { readonly publicKey: Uint8Array; readonly secretKey: Uint8Array };
+		readonly keysA: {
+			readonly publicKey: Uint8Array;
+			readonly secretKey: Uint8Array;
+		};
 		readonly challengeA: string;
 	}> {
 		const keysA = ml_kem768.keygen();
@@ -160,7 +167,10 @@ export class PqcHandshake {
 
 		// Verify Bob's signature
 		const signData = new TextEncoder().encode(
-			state.challengeA + replyPayload.challenge + replyPayload.cipherText + this.identity.nodoId,
+			state.challengeA +
+				replyPayload.challenge +
+				replyPayload.cipherText +
+				this.identity.nodoId,
 		);
 		const verified = await this.identity.verificar(
 			signData,
@@ -173,11 +183,16 @@ export class PqcHandshake {
 
 		// Decapsulate to get shared secret
 		const cipherTextBytes = hexABytes(replyPayload.cipherText);
-		const sharedSecret = ml_kem768.decapsulate(cipherTextBytes, state.keysA.secretKey);
+		const sharedSecret = ml_kem768.decapsulate(
+			cipherTextBytes,
+			state.keysA.secretKey,
+		);
 		const channel = new EncryptedChannel(sharedSecret);
 
 		// Sign Bob's challenge + fromPeerId (ACK)
-		const ackSignData = new TextEncoder().encode(replyPayload.challenge + fromPeerId);
+		const ackSignData = new TextEncoder().encode(
+			replyPayload.challenge + fromPeerId,
+		);
 		const ackSignatureBytes = await this.identity.firmar(ackSignData);
 		const ackSignature = bytesAHex(ackSignatureBytes);
 
@@ -209,7 +224,9 @@ export class PqcHandshake {
 		}
 
 		// Verify Alice's ACK signature
-		const ackSignData = new TextEncoder().encode(state.challengeB + this.identity.nodoId);
+		const ackSignData = new TextEncoder().encode(
+			state.challengeB + this.identity.nodoId,
+		);
 		const verified = await this.identity.verificar(
 			ackSignData,
 			hexABytes(ackPayload.signature),
