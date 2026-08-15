@@ -210,15 +210,12 @@
    "id": "feat-ivn-proofs",
    "name": "E2E Encrypted Identity Proofs (multi-recipient ML-KEM-768)",
    "module": "namespaces",
-   "status": "planned",
-   "maturity": "skeleton",
-   "implementation_percentage": 0,
+   "status": "implemented",
+   "maturity": "unit",
+   "implementation_percentage": 100,
    "gaps": [
-    "uploadProof multi-recipient",
-    "decryptProof per-validator",
-    "metadata sin contenido",
-    "firma ML-DSA-65",
-    "test 5 validators"
+    "storage real (IVN-3)",
+    "integration with API"
    ],
    "github_issue": 95,
    "spec": "specs/FEATURE-feat-ivn-proofs.md"
