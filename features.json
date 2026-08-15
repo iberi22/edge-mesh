@@ -222,6 +222,52 @@
    ],
    "github_issue": 95,
    "spec": "specs/FEATURE-feat-ivn-proofs.md"
+  },
+  {
+   "id": "feat-mesh-relay",
+   "name": "Self-Hosted WebRTC Relay (signaling-only)",
+   "module": "transport",
+   "status": "in_progress",
+   "maturity": "unit",
+   "implementation_percentage": 60,
+   "gaps": [
+    "tests CI",
+    "config env var docs"
+   ],
+   "github_issue": 90,
+   "spec": null,
+   "pr": 93
+  },
+  {
+   "id": "feat-offers-gossip",
+   "name": "Market Offers Gossip (swal/data-commons/offers, signed ML-DSA-65)",
+   "module": "namespaces",
+   "status": "in_progress",
+   "maturity": "unit",
+   "implementation_percentage": 60,
+   "gaps": [
+    "tests CI",
+    "TTL prune review"
+   ],
+   "github_issue": 91,
+   "spec": null,
+   "pr": 94
+  },
+  {
+   "id": "feat-tor-onion",
+   "name": "Tor Onion v3 Opt-In Transport",
+   "module": "transport",
+   "status": "planned",
+   "maturity": "skeleton",
+   "implementation_percentage": 0,
+   "gaps": [
+    "TorConfig/TorService port",
+    "persistent key",
+    "opt-in wiring",
+    "tests"
+   ],
+   "github_issue": 92,
+   "spec": null
   }
  ]
 }
