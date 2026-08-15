@@ -2,6 +2,7 @@ import { generarNonce } from "../protocol/utils.js";
 import type { NamespacePartition, NodoId } from "../types/index.js";
 
 export * from "./offers-gossip.js";
+export * from "./ivn-proofs.js";
 
 // ─── CONSTANTS ─────────────────────────────────────────────────────────────
 
