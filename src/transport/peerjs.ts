@@ -8,6 +8,7 @@ import type {
 	TipoTransporte,
 } from "../types/index.js";
 import { TIPO_MENSAJE, TIPO_TRANSPORTE } from "../types/index.js";
+import { parseRelayUrl, resolveRelayUrl } from "./relay-config.js";
 import type { ITransport, TransportEventMap } from "./types.js";
 
 // ─── TYPES ─────────────────────────────────────────────────────────────────
@@ -20,6 +21,8 @@ export interface PeerJSTransportOptions {
 	readonly key?: string;
 	readonly debug?: number;
 	readonly config?: RTCConfiguration;
+	readonly relayUrl?: string;
+	readonly secure?: boolean;
 }
 
 export type { TransportEventMap };
@@ -60,10 +63,25 @@ export class PeerJSTransport implements ITransport {
 			}
 		}
 
+		let host = this.opciones.host;
+		let port = this.opciones.port;
+		let path = this.opciones.path;
+		let secure = this.opciones.secure;
+
+		if (this.opciones.relayUrl || process.env.SWAL_RELAY_URL || process.env.SWAL_RELAY_PORT) {
+			const resolvedUrl = resolveRelayUrl(this.opciones.relayUrl);
+			const parsed = parseRelayUrl(resolvedUrl);
+			if (!host) host = parsed.host;
+			if (port === undefined) port = parsed.port;
+			if (!path) path = parsed.path;
+			if (secure === undefined) secure = parsed.secure;
+		}
+
 		this.peer = new Peer(this.opciones.peerId, {
-			host: this.opciones.host,
-			port: this.opciones.port,
-			path: this.opciones.path,
+			host,
+			port,
+			path,
+			secure,
 			key: this.opciones.key,
 			debug: this.opciones.debug,
 			config: this.opciones.config,

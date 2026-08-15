@@ -212,6 +212,10 @@ export type {
 	TransportEventMap,
 } from "./transport/peerjs.js";
 export { PeerJSTransport } from "./transport/peerjs.js";
+export { parseRelayUrl, resolveRelayUrl, getRelayConfig } from "./transport/relay-config.js";
+export type { ParsedRelayConfig } from "./transport/relay-config.js";
+export { RelayServer } from "./transport/relay-server.js";
+export type { RelayServerOptions, IceServerConfig } from "./transport/relay-server.js";
 export type { ITransport } from "./transport/types.js";
 // ─── TYPES ────────────────────────────────────────────────────────────────
 export * from "./types/index.js";
