@@ -1,210 +1,227 @@
 {
-	"version": "1.2.0",
-	"updated": "2026-08-04",
-	"status_model": {
-		"skeleton": "Module surface exists; critical methods are placeholders or unwired",
-		"unit": "Local unit behavior works; not multi-peer / not security-hardened",
-		"integrated": "Wired into EdgeMesh data path for multi-peer use",
-		"hardened": "Authz + signature checks on wire + CI green"
-	},
-	"summary": {
-		"total_features": 21,
-		"implemented": 21,
-		"partial": 0,
-		"skeleton": 0,
-		"pending": 0,
-		"implementation_percentage": 100,
-		"notes": "Ecosystem and Node Memory unifications fully completed. EdgeMesh and Maloca successfully adopt unified core and canonical namespaces."
-	},
-	"features": [
-		{
-			"id": "F-001",
-			"name": "P2P Node Lifecycle",
-			"module": "core",
-			"status": "implemented",
-			"maturity": "hardened",
-			"implementation_percentage": 100,
-			"gaps": []
-		},
-		{
-			"id": "F-002",
-			"name": "PeerJS Transport",
-			"module": "transport",
-			"status": "implemented",
-			"maturity": "hardened",
-			"implementation_percentage": 100,
-			"gaps": []
-		},
-		{
-			"id": "F-003",
-			"name": "CRDT Sync (Yjs)",
-			"module": "sync",
-			"status": "implemented",
-			"maturity": "hardened",
-			"implementation_percentage": 100,
-			"gaps": []
-		},
-		{
-			"id": "F-004",
-			"name": "Post-Quantum Identity",
-			"module": "identity",
-			"status": "implemented",
-			"maturity": "hardened",
-			"implementation_percentage": 100,
-			"gaps": []
-		},
-		{
-			"id": "F-005",
-			"name": "Operation Log",
-			"module": "op-log",
-			"status": "implemented",
-			"maturity": "hardened",
-			"implementation_percentage": 100,
-			"gaps": []
-		},
-		{
-			"id": "F-006",
-			"name": "Snapshot Manager",
-			"module": "snapshot",
-			"status": "implemented",
-			"maturity": "hardened",
-			"implementation_percentage": 100,
-			"gaps": []
-		},
-		{
-			"id": "F-007",
-			"name": "IndexedDB Storage",
-			"module": "storage",
-			"status": "implemented",
-			"maturity": "hardened",
-			"implementation_percentage": 100,
-			"gaps": []
-		},
-		{
-			"id": "F-008",
-			"name": "Presence & Heartbeat",
-			"module": "presence",
-			"status": "implemented",
-			"maturity": "hardened",
-			"implementation_percentage": 100,
-			"gaps": []
-		},
-		{
-			"id": "F-009",
-			"name": "Decentralized Governance",
-			"module": "governance",
-			"status": "implemented",
-			"maturity": "hardened",
-			"implementation_percentage": 100,
-			"gaps": []
-		},
-		{
-			"id": "F-010",
-			"name": "P2P Chat Channels",
-			"module": "chat",
-			"status": "implemented",
-			"maturity": "hardened",
-			"implementation_percentage": 100,
-			"gaps": []
-		},
-		{
-			"id": "F-011",
-			"name": "Virtual Rooms",
-			"module": "salones",
-			"status": "implemented",
-			"maturity": "hardened",
-			"implementation_percentage": 100,
-			"gaps": []
-		},
-		{
-			"id": "F-012",
-			"name": "Scalable Mesh Gossip",
-			"module": "mesh",
-			"status": "implemented",
-			"maturity": "hardened",
-			"implementation_percentage": 100,
-			"gaps": []
-		},
-		{
-			"id": "F-013",
-			"name": "Protocol Envelope",
-			"module": "protocol",
-			"status": "implemented",
-			"maturity": "hardened",
-			"implementation_percentage": 100,
-			"gaps": []
-		},
-		{
-			"id": "F-014",
-			"name": "Namespace Authorization",
-			"module": "authz",
-			"status": "implemented",
-			"maturity": "hardened",
-			"implementation_percentage": 100,
-			"gaps": []
-		},
-		{
-			"id": "F-015",
-			"name": "Namespace Manager",
-			"module": "namespaces",
-			"status": "implemented",
-			"maturity": "hardened",
-			"implementation_percentage": 100,
-			"gaps": []
-		},
-		{
-			"id": "F-016",
-			"name": "Unit Tests",
-			"module": "tests",
-			"status": "implemented",
-			"maturity": "hardened",
-			"implementation_percentage": 100,
-			"gaps": []
-		},
-		{
-			"id": "F-017",
-			"name": "Documentation",
-			"module": "docs",
-			"status": "implemented",
-			"maturity": "hardened",
-			"implementation_percentage": 100,
-			"gaps": []
-		},
-		{
-			"id": "F-018",
-			"name": "CI Pipeline",
-			"module": "ci",
-			"status": "implemented",
-			"maturity": "hardened",
-			"implementation_percentage": 100,
-			"gaps": []
-		},
-		{
-			"id": "F-019",
-			"name": "EdgeMesh Node Memory Helper",
-			"module": "node-memory",
-			"status": "implemented",
-			"maturity": "hardened",
-			"implementation_percentage": 100,
-			"gaps": []
-		},
-		{
-			"id": "F-020",
-			"name": "Maloca Unified Adoption Core",
-			"module": "maloca",
-			"status": "implemented",
-			"maturity": "hardened",
-			"implementation_percentage": 100,
-			"gaps": []
-		},
-		{
-			"id": "F-021",
-			"name": "NODE_MEMORY.md Canonical Docs",
-			"module": "docs",
-			"status": "implemented",
-			"maturity": "hardened",
-			"implementation_percentage": 100,
-			"gaps": []
-		}
-	]
+ "version": "1.2.0",
+ "updated": "2026-08-04",
+ "status_model": {
+  "skeleton": "Module surface exists; critical methods are placeholders or unwired",
+  "unit": "Local unit behavior works; not multi-peer / not security-hardened",
+  "integrated": "Wired into EdgeMesh data path for multi-peer use",
+  "hardened": "Authz + signature checks on wire + CI green"
+ },
+ "summary": {
+  "total_features": 21,
+  "implemented": 21,
+  "partial": 0,
+  "skeleton": 0,
+  "pending": 0,
+  "implementation_percentage": 100,
+  "notes": "Ecosystem and Node Memory unifications fully completed. EdgeMesh and Maloca successfully adopt unified core and canonical namespaces."
+ },
+ "features": [
+  {
+   "id": "F-001",
+   "name": "P2P Node Lifecycle",
+   "module": "core",
+   "status": "implemented",
+   "maturity": "hardened",
+   "implementation_percentage": 100,
+   "gaps": []
+  },
+  {
+   "id": "F-002",
+   "name": "PeerJS Transport",
+   "module": "transport",
+   "status": "implemented",
+   "maturity": "hardened",
+   "implementation_percentage": 100,
+   "gaps": []
+  },
+  {
+   "id": "F-003",
+   "name": "CRDT Sync (Yjs)",
+   "module": "sync",
+   "status": "implemented",
+   "maturity": "hardened",
+   "implementation_percentage": 100,
+   "gaps": []
+  },
+  {
+   "id": "F-004",
+   "name": "Post-Quantum Identity",
+   "module": "identity",
+   "status": "implemented",
+   "maturity": "hardened",
+   "implementation_percentage": 100,
+   "gaps": []
+  },
+  {
+   "id": "F-005",
+   "name": "Operation Log",
+   "module": "op-log",
+   "status": "implemented",
+   "maturity": "hardened",
+   "implementation_percentage": 100,
+   "gaps": []
+  },
+  {
+   "id": "F-006",
+   "name": "Snapshot Manager",
+   "module": "snapshot",
+   "status": "implemented",
+   "maturity": "hardened",
+   "implementation_percentage": 100,
+   "gaps": []
+  },
+  {
+   "id": "F-007",
+   "name": "IndexedDB Storage",
+   "module": "storage",
+   "status": "implemented",
+   "maturity": "hardened",
+   "implementation_percentage": 100,
+   "gaps": []
+  },
+  {
+   "id": "F-008",
+   "name": "Presence & Heartbeat",
+   "module": "presence",
+   "status": "implemented",
+   "maturity": "hardened",
+   "implementation_percentage": 100,
+   "gaps": []
+  },
+  {
+   "id": "F-009",
+   "name": "Decentralized Governance",
+   "module": "governance",
+   "status": "implemented",
+   "maturity": "hardened",
+   "implementation_percentage": 100,
+   "gaps": []
+  },
+  {
+   "id": "F-010",
+   "name": "P2P Chat Channels",
+   "module": "chat",
+   "status": "implemented",
+   "maturity": "hardened",
+   "implementation_percentage": 100,
+   "gaps": []
+  },
+  {
+   "id": "F-011",
+   "name": "Virtual Rooms",
+   "module": "salones",
+   "status": "implemented",
+   "maturity": "hardened",
+   "implementation_percentage": 100,
+   "gaps": []
+  },
+  {
+   "id": "F-012",
+   "name": "Scalable Mesh Gossip",
+   "module": "mesh",
+   "status": "implemented",
+   "maturity": "hardened",
+   "implementation_percentage": 100,
+   "gaps": []
+  },
+  {
+   "id": "F-013",
+   "name": "Protocol Envelope",
+   "module": "protocol",
+   "status": "implemented",
+   "maturity": "hardened",
+   "implementation_percentage": 100,
+   "gaps": []
+  },
+  {
+   "id": "F-014",
+   "name": "Namespace Authorization",
+   "module": "authz",
+   "status": "implemented",
+   "maturity": "hardened",
+   "implementation_percentage": 100,
+   "gaps": []
+  },
+  {
+   "id": "F-015",
+   "name": "Namespace Manager",
+   "module": "namespaces",
+   "status": "implemented",
+   "maturity": "hardened",
+   "implementation_percentage": 100,
+   "gaps": []
+  },
+  {
+   "id": "F-016",
+   "name": "Unit Tests",
+   "module": "tests",
+   "status": "implemented",
+   "maturity": "hardened",
+   "implementation_percentage": 100,
+   "gaps": []
+  },
+  {
+   "id": "F-017",
+   "name": "Documentation",
+   "module": "docs",
+   "status": "implemented",
+   "maturity": "hardened",
+   "implementation_percentage": 100,
+   "gaps": []
+  },
+  {
+   "id": "F-018",
+   "name": "CI Pipeline",
+   "module": "ci",
+   "status": "implemented",
+   "maturity": "hardened",
+   "implementation_percentage": 100,
+   "gaps": []
+  },
+  {
+   "id": "F-019",
+   "name": "EdgeMesh Node Memory Helper",
+   "module": "node-memory",
+   "status": "implemented",
+   "maturity": "hardened",
+   "implementation_percentage": 100,
+   "gaps": []
+  },
+  {
+   "id": "F-020",
+   "name": "Maloca Unified Adoption Core",
+   "module": "maloca",
+   "status": "implemented",
+   "maturity": "hardened",
+   "implementation_percentage": 100,
+   "gaps": []
+  },
+  {
+   "id": "F-021",
+   "name": "NODE_MEMORY.md Canonical Docs",
+   "module": "docs",
+   "status": "implemented",
+   "maturity": "hardened",
+   "implementation_percentage": 100,
+   "gaps": []
+  },
+  {
+   "id": "feat-ivn-proofs",
+   "name": "E2E Encrypted Identity Proofs (multi-recipient ML-KEM-768)",
+   "module": "namespaces",
+   "status": "planned",
+   "maturity": "skeleton",
+   "implementation_percentage": 0,
+   "gaps": [
+    "uploadProof multi-recipient",
+    "decryptProof per-validator",
+    "metadata sin contenido",
+    "firma ML-DSA-65",
+    "test 5 validators"
+   ],
+   "github_issue": 95,
+   "spec": "specs/FEATURE-feat-ivn-proofs.md"
+  }
+ ]
 }
