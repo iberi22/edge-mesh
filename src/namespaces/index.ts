@@ -1,6 +1,8 @@
 import { generarNonce } from "../protocol/utils.js";
 import type { NamespacePartition, NodoId } from "../types/index.js";
 
+export * from "./offers-gossip.js";
+
 // ─── CONSTANTS ─────────────────────────────────────────────────────────────
 
 export const NAMESPACE_POR_DEFECTO = "global" as const;

@@ -107,7 +107,7 @@ export type {
 } from "./mesh/index.js";
 // ─── MESH ESCALABLE ───────────────────────────────────────────────────────
 export { ESTRATEGIA_FAN_OUT, MeshManager } from "./mesh/index.js";
-export type { NamespaceEventMap } from "./namespaces/index.js";
+export type { DataOffer, OffersGossipConfig, NamespaceEventMap } from "./namespaces/index.js";
 // ─── NAMESPACES ───────────────────────────────────────────────────────────
 export {
 	NAMESPACE_POR_DEFECTO,
@@ -115,6 +115,10 @@ export {
 	swalNamespace,
 	parseSwalNamespace,
 	namespacesAreIsolated,
+	OffersGossip,
+	OFFERS_TOPIC,
+	SWAL_DATA_COMMONS_OFFERS,
+	getOfferSigningString,
 } from "./namespaces/index.js";
 // ─── NODE MEMORY ──────────────────────────────────────────────────────────
 export type {
