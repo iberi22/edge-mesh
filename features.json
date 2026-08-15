@@ -224,12 +224,12 @@
    "id": "feat-mesh-relay",
    "name": "Self-Hosted WebRTC Relay (signaling-only)",
    "module": "transport",
-   "status": "in_progress",
+   "status": "implemented",
    "maturity": "unit",
-   "implementation_percentage": 60,
+   "implementation_percentage": 100,
    "gaps": [
-    "tests CI",
-    "config env var docs"
+    "integration E2E con relay público fuera",
+    "review final"
    ],
    "github_issue": 90,
    "spec": null,
@@ -239,12 +239,12 @@
    "id": "feat-offers-gossip",
    "name": "Market Offers Gossip (swal/data-commons/offers, signed ML-DSA-65)",
    "module": "namespaces",
-   "status": "in_progress",
+   "status": "implemented",
    "maturity": "unit",
-   "implementation_percentage": 60,
+   "implementation_percentage": 100,
    "gaps": [
-    "tests CI",
-    "TTL prune review"
+    "integration E2E con relay público fuera",
+    "review final"
    ],
    "github_issue": 91,
    "spec": null,
