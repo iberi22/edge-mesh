@@ -46,18 +46,18 @@ export type { MutationGuardFn } from "./edge-mesh.js";
 // ─── CORE ─────────────────────────────────────────────────────────────────
 export { EdgeMesh, MUTATION_REVERT_ORIGIN, YjsAdapter } from "./edge-mesh.js";
 export type {
+	AuthorityEventMap,
 	EstadoPropuesta,
 	GovernanceEventMap,
 	Propuesta,
-	AuthorityEventMap,
 } from "./governance/index.js";
 // ─── GOVERNANCE ───────────────────────────────────────────────────────────
 export {
+	AuthorityManager,
+	createAuthorityManager,
 	createGovernanceManager,
 	ESTADO_PROPUESTA,
 	GovernanceManager,
-	AuthorityManager,
-	createAuthorityManager,
 } from "./governance/index.js";
 export type {
 	PostQuantumIdentity,
@@ -73,10 +73,17 @@ export {
 	serializeKeypair,
 	TIPO_IDENTIDAD,
 } from "./identity/index.js";
+export type { MalocaBackofficeOptions } from "./maloca/backoffice.js";
+export { MalocaBackoffice } from "./maloca/backoffice.js";
 export type { EventoMaloca, TipoEventoMaloca } from "./maloca/event-bus.js";
 export { EventBus, TIPO_EVENTO_MALOCA } from "./maloca/event-bus.js";
 export type { Evidentia } from "./maloca/evidentia.js";
 export { EvidentiaManager } from "./maloca/evidentia.js";
+export { KarmaManager } from "./maloca/karma.js";
+export { MalocaKernel } from "./maloca/kernel.js";
+export { MetadataManager } from "./maloca/metadata.js";
+export type { Perfil } from "./maloca/perfil.js";
+export { ProfileManager } from "./maloca/perfil.js";
 export type {
 	EstadoPlugin,
 	PluginInfo,
@@ -84,19 +91,12 @@ export type {
 } from "./maloca/plugin-registry.js";
 // ─── MALOCA ───────────────────────────────────────────────────────────────
 export { PluginRegistry } from "./maloca/plugin-registry.js";
-export type { MalocaBackofficeOptions } from "./maloca/backoffice.js";
-export { MalocaBackoffice } from "./maloca/backoffice.js";
-export { MalocaKernel } from "./maloca/kernel.js";
-export { ProfileManager } from "./maloca/perfil.js";
-export type { Perfil } from "./maloca/perfil.js";
-export { KarmaManager } from "./maloca/karma.js";
-export { MetadataManager } from "./maloca/metadata.js";
 export type {
+	Karma,
+	MetadatosCompartidos,
 	PerfilHumano,
 	PerfilServicio,
-	Karma,
 	TransaccionKarma,
-	MetadatosCompartidos,
 } from "./maloca/types.js";
 export type {
 	EstrategiaFanOut,
@@ -107,18 +107,22 @@ export type {
 } from "./mesh/index.js";
 // ─── MESH ESCALABLE ───────────────────────────────────────────────────────
 export { ESTRATEGIA_FAN_OUT, MeshManager } from "./mesh/index.js";
-export type { DataOffer, OffersGossipConfig, NamespaceEventMap } from "./namespaces/index.js";
+export type {
+	DataOffer,
+	NamespaceEventMap,
+	OffersGossipConfig,
+} from "./namespaces/index.js";
 // ─── NAMESPACES ───────────────────────────────────────────────────────────
 export {
+	getOfferSigningString,
 	NAMESPACE_POR_DEFECTO,
 	NamespaceManager,
-	swalNamespace,
-	parseSwalNamespace,
 	namespacesAreIsolated,
-	OffersGossip,
 	OFFERS_TOPIC,
+	OffersGossip,
+	parseSwalNamespace,
 	SWAL_DATA_COMMONS_OFFERS,
-	getOfferSigningString,
+	swalNamespace,
 } from "./namespaces/index.js";
 // ─── NODE MEMORY ──────────────────────────────────────────────────────────
 export type {
@@ -216,10 +220,17 @@ export type {
 	TransportEventMap,
 } from "./transport/peerjs.js";
 export { PeerJSTransport } from "./transport/peerjs.js";
-export { parseRelayUrl, resolveRelayUrl, getRelayConfig } from "./transport/relay-config.js";
 export type { ParsedRelayConfig } from "./transport/relay-config.js";
+export {
+	getRelayConfig,
+	parseRelayUrl,
+	resolveRelayUrl,
+} from "./transport/relay-config.js";
+export type {
+	IceServerConfig,
+	RelayServerOptions,
+} from "./transport/relay-server.js";
 export { RelayServer } from "./transport/relay-server.js";
-export type { RelayServerOptions, IceServerConfig } from "./transport/relay-server.js";
 export type { ITransport } from "./transport/types.js";
 // ─── TYPES ────────────────────────────────────────────────────────────────
 export * from "./types/index.js";

@@ -1,7 +1,7 @@
 import type * as Y from "yjs";
 import type { YjsAdapter } from "../edge-mesh.js";
-import type { PresenceManager } from "../presence/index.js";
 import type { OpLog } from "../op-log/index.js";
+import type { PresenceManager } from "../presence/index.js";
 import type { MetadatosCompartidos } from "./types.js";
 
 export class MetadataManager {

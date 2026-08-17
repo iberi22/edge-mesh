@@ -12,7 +12,10 @@ export function resolveRelayUrl(optionsUrl?: string): string {
 	}
 
 	if (typeof process !== "undefined" && process.env) {
-		if (process.env.SWAL_RELAY_URL && process.env.SWAL_RELAY_URL.trim().length > 0) {
+		if (
+			process.env.SWAL_RELAY_URL &&
+			process.env.SWAL_RELAY_URL.trim().length > 0
+		) {
 			return process.env.SWAL_RELAY_URL.trim();
 		}
 

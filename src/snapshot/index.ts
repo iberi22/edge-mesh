@@ -1,13 +1,13 @@
+import type { RoleAssignment } from "../authz/index.js";
+import type { GovernanceSnapshot } from "../governance/merge.js";
+import type { MerkleTree } from "../maloca/evidentia.js";
+import type { Perfil as Profile } from "../maloca/perfil.js";
 import { InMemoryStorage, type IStorage } from "../storage/index.js";
 import type {
+	NamespaceCapabilityGrant,
 	NodoId,
 	PayloadSnapshot,
-	NamespaceCapabilityGrant,
 } from "../types/index.js";
-import type { RoleAssignment } from "../authz/index.js";
-import type { Perfil as Profile } from "../maloca/perfil.js";
-import { MerkleTree } from "../maloca/evidentia.js";
-import type { GovernanceSnapshot } from "../governance/merge.js";
 
 // ─── SNAPSHOT SYSTEM TYPES & INTERFACES ──────────────────────────────────────
 
