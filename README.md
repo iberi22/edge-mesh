@@ -1,6 +1,6 @@
 ﻿# Edge Mesh
 
-[![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-7.0.2-blue)](https://www.typescriptlang.org/)
 [![Tests](https://img.shields.io/badge/tests-353%20passing-brightgreen)](#)
 
@@ -82,4 +82,4 @@ channel.enviarMensaje("Hola a todos!");
 
 ## License
 
-GPL-2.0-only
+AGPL-3.0-only
