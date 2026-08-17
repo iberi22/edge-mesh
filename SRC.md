@@ -10,7 +10,7 @@ This document describes 100% of the repository structure for `@iberi22/edge-mesh
 edge-mesh/
 ├── AGENTS.md                  # Developer & AI agent guidelines (SWAL standard)
 ├── CLA.md                     # Contributor License Agreement
-├── CONTRIBUTING.md            # Contribution guidelines & code standards
+├── CONTRIBUTING.md            # Contribution guidelines & code standards (SWAL network)
 ├── LICENSE                    # AGPL-3.0-only License
 ├── README.md                  # Project overview, quickstart, and features
 ├── SECURITY.md                # Vulnerability reporting & post-quantum security policy
@@ -21,17 +21,19 @@ edge-mesh/
 ├── .gitcore/                  # SWAL GitCore repository metadata & specs
 │   ├── docs/
 │   │   └── SWAL_GOAL.md       # Local copy of canonical SWAL mission
-│   └── features.json          # Feature tracking database (schema v2)
+│   └── features.json          # Feature tracking database (canonical schema v2)
 ├── docs/                      # SWAL documentation, architecture, ADRs, & SRS
 │   ├── api.md                 # Full public API reference
 │   ├── SRS.md                 # System Requirements Specification
 │   ├── WORKSPACE-DISTRIBUTION.md # Monorepo & SSOT workspace distribution policy
 │   ├── migration.md           # Core migration guide
 │   ├── decisions/             # Architecture Decision Records (ADRs)
+│   ├── legacy/                # Preserved legacy configurations, features, and logs
 │   ├── performance/           # Performance benchmarks & baseline targets
 │   ├── SRS/
 │   │   └── REQUIREMENTS.md    # SWAL canonical REQ-NNN requirements
 │   └── SWAL/
+│       ├── GOAL.md            # SWAL Mission & Canonical Goal document
 │       └── NODE_MEMORY.md     # Node memory persistence specification
 ├── packages/                  # Workspace sub-packages
 │   └── edge-mesh-react/       # Official React hooks & provider library (@iberi22/edge-mesh-react)

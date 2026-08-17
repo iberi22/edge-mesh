@@ -1,10 +1,10 @@
 {
-  "timestamp": "2026-08-17T05:51:08.801Z",
+  "timestamp": "2026-08-17T20:31:01.916Z",
   "benchmarks": [
     {
       "name": "Memory per node",
       "metric": "rss_peak",
-      "value": 2.50848388671875,
+      "value": 0.1,
       "unit": "MB",
       "threshold": 50,
       "condition": "RSS peak",
@@ -13,7 +13,7 @@
     {
       "name": "Chat throughput",
       "metric": "throughput",
-      "value": 543.4782608695652,
+      "value": 523.5602094240837,
       "unit": "msg/s",
       "threshold": 100,
       "condition": "Mínimo aceptable",
@@ -22,7 +22,7 @@
     {
       "name": "Sync latency",
       "metric": "latency",
-      "value": 1.1870140000000333,
+      "value": 0.9142650000000003,
       "unit": "ms",
       "threshold": 500,
       "condition": "P95",
@@ -31,7 +31,7 @@
     {
       "name": "Gossip fanout",
       "metric": "gossip_reach_time",
-      "value": 0.047,
+      "value": 0.045,
       "unit": "s",
       "threshold": 2,
       "condition": "P99",
