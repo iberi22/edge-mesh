@@ -227,9 +227,8 @@ export class StorageManager implements IStorage {
 
 // ─── Y.DOC PERSISTENCE ─────────────────────────────────────────────────────
 
+export { PayloadOptimizer } from "./optimizer.js";
 export {
 	YDocPersistence,
 	type YDocPersistenceOptions,
 } from "./ydoc-persistence.js";
-
-export { PayloadOptimizer } from "./optimizer.js";
