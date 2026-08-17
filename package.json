@@ -9,7 +9,7 @@
 	"publishConfig": {
 		"registry": "https://npm.pkg.github.com"
 	},
-	"license": "GPL-2.0-only",
+	"license": "AGPL-3.0-only",
 	"type": "module",
 	"main": "./dist/index.js",
 	"exports": {
