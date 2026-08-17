@@ -7,10 +7,10 @@ import {
 import { PersistentOfflineQueue } from "./chat/offline-queue.js";
 import { createEdgeMeshNode, type EdgeMeshNode } from "./core/node.js";
 import {
+	type AuthorityManager,
+	createAuthorityManager,
 	createGovernanceManager,
 	type GovernanceManager,
-	createAuthorityManager,
-	type AuthorityManager,
 	type GovernanceSnapshot,
 } from "./governance/index.js";
 import {
@@ -19,9 +19,11 @@ import {
 	identityFromSecret,
 	type PostQuantumIdentity,
 } from "./identity/index.js";
+import { MerkleTree } from "./maloca/evidentia.js";
 import { NamespaceManager } from "./namespaces/index.js";
 import { OpLog } from "./op-log/index.js";
 import { PresenceManager } from "./presence/index.js";
+import { canonicalStringify } from "./protocol/canonical.js";
 import {
 	createEnvelope,
 	MessageDeduplicator,
@@ -32,13 +34,11 @@ import {
 import { bytesAHex, hexABytes } from "./protocol/utils.js";
 import {
 	createSnapshotManager,
-	type SnapshotManager,
-	type SnapshotConfig,
 	type Snapshot,
+	type SnapshotConfig,
+	type SnapshotManager,
 	type Subscription,
 } from "./snapshot/index.js";
-import { MerkleTree } from "./maloca/evidentia.js";
-import { canonicalStringify } from "./protocol/canonical.js";
 import { InMemoryStorage, StorageManager } from "./storage/index.js";
 import { SyncEngine } from "./sync/engine.js";
 import { MemoryTransport } from "./transport/memory.js";

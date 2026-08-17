@@ -1,5 +1,5 @@
+import type { PresenceManager } from "../presence/index.js";
 import type { NodoId } from "../types/index.js";
-import { PresenceManager } from "../presence/index.js";
 
 // ─── EVENTS ────────────────────────────────────────────────────────────────
 

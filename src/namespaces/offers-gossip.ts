@@ -229,7 +229,10 @@ export class OffersGossip {
 				verifierIdentity,
 			);
 			if (!validEnvSig) {
-				return { success: false, reason: "Envelope signature verification failed" };
+				return {
+					success: false,
+					reason: "Envelope signature verification failed",
+				};
 			}
 		}
 
@@ -241,7 +244,10 @@ export class OffersGossip {
 				verifierIdentity,
 			);
 			if (!validOfferSig) {
-				return { success: false, reason: "DataOffer signature verification failed" };
+				return {
+					success: false,
+					reason: "DataOffer signature verification failed",
+				};
 			}
 		}
 

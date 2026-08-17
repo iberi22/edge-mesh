@@ -1,5 +1,9 @@
 import { EventEmitter } from "node:events";
-import { type IncomingMessage, createServer, type Server as HttpServer } from "node:http";
+import {
+	createServer,
+	type Server as HttpServer,
+	type IncomingMessage,
+} from "node:http";
 import { type WebSocket, WebSocketServer } from "ws";
 import { TokenBucketRateLimiter } from "../security/rate-limiter.js";
 
@@ -83,7 +87,10 @@ export class RelayServer extends EventEmitter {
 			this.wss = new WebSocketServer({ noServer: true });
 
 			this.httpServer.on("upgrade", (req: IncomingMessage, socket, head) => {
-				const url = new URL(req.url ?? "", `http://${req.headers.host ?? "localhost"}`);
+				const url = new URL(
+					req.url ?? "",
+					`http://${req.headers.host ?? "localhost"}`,
+				);
 				const clientIp = req.socket.remoteAddress || "unknown";
 
 				if (!this.rateLimiter.consume(clientIp, 1)) {
@@ -127,7 +134,10 @@ export class RelayServer extends EventEmitter {
 	}
 
 	private handleConnection(ws: WebSocket, req: IncomingMessage): void {
-		const url = new URL(req.url ?? "", `http://${req.headers.host ?? "localhost"}`);
+		const url = new URL(
+			req.url ?? "",
+			`http://${req.headers.host ?? "localhost"}`,
+		);
 		const peerId = url.searchParams.get("id");
 		const key = url.searchParams.get("key");
 
