@@ -68,7 +68,11 @@ export class PeerJSTransport implements ITransport {
 		let path = this.opciones.path;
 		let secure = this.opciones.secure;
 
-		if (this.opciones.relayUrl || process.env.SWAL_RELAY_URL || process.env.SWAL_RELAY_PORT) {
+		if (
+			this.opciones.relayUrl ||
+			process.env.SWAL_RELAY_URL ||
+			process.env.SWAL_RELAY_PORT
+		) {
 			const resolvedUrl = resolveRelayUrl(this.opciones.relayUrl);
 			const parsed = parseRelayUrl(resolvedUrl);
 			if (!host) host = parsed.host;

@@ -37,7 +37,9 @@
 		"bench": "npm run build && node scripts/bench.js"
 	},
 	"dependencies": {
+		"@bokuweb/zstd-wasm": "0.0.27",
 		"@noble/post-quantum": "^0.6.1",
+		"cbor-x": "1.6.5",
 		"ethers": "^6.17.0",
 		"idb": "^8.0.3",
 		"peerjs": "^1.5.5",

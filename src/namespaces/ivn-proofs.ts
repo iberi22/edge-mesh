@@ -4,8 +4,8 @@ import crypto from "node:crypto";
 import { ml_dsa65 } from "@noble/post-quantum/ml-dsa.js";
 import { ml_kem768 } from "@noble/post-quantum/ml-kem.js";
 import type { PostQuantumIdentity } from "../identity/index.js";
-import { EncryptedChannel } from "./encrypted-plugin.js";
 import { bytesAHex, hexABytes } from "../protocol/utils.js";
+import { EncryptedChannel } from "./encrypted-plugin.js";
 
 export interface RecipientCiphertext {
 	readonly validatorPubKey: string;
@@ -62,9 +62,7 @@ export class IvnProofs {
 		const namespace = `swal/ivn/proofs/${id}`;
 
 		const payloadBytes =
-			typeof payload === "string"
-				? new TextEncoder().encode(payload)
-				: payload;
+			typeof payload === "string" ? new TextEncoder().encode(payload) : payload;
 
 		// Hash payload (SHA-256)
 		const payloadHashBytes = new Uint8Array(
@@ -210,7 +208,9 @@ export class IvnProofs {
 					// Continue to next recipient if decapsulation/decryption fails
 				}
 			}
-			throw new Error("Unable to decrypt proof: key does not match any recipient");
+			throw new Error(
+				"Unable to decrypt proof: key does not match any recipient",
+			);
 		}
 
 		// Decapsulate shared secret using recipient's ML-KEM-768 ciphertext & validator's secret key

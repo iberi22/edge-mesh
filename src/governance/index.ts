@@ -265,5 +265,5 @@ export function createGovernanceManager(
 	return new GovernanceManager(politica);
 }
 
-export * from "./merge.js";
 export * from "./authority.js";
+export * from "./merge.js";
