@@ -3,3 +3,8 @@ dist/
 .DS_Store
 *.log
 .env
+target/
+*.db
+*.db-shm
+*.db-wal
+.mcp.json
