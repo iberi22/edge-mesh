@@ -624,8 +624,9 @@ export class EdgeMesh {
 	): Promise<void> {
 		if (this.transport !== null) {
 			await this.transport.enviar(destino, payload, tipoMensaje);
+		} else {
+			await this.nodo.enviar(destino, payload);
 		}
-		await this.nodo.enviar(destino, payload);
 	}
 
 	async transmitir(
@@ -647,8 +648,9 @@ export class EdgeMesh {
 
 		if (this.transport !== null) {
 			await this.transport.transmitir(payload, tipoMensaje);
+		} else {
+			await this.nodo.transmitir(payload);
 		}
-		await this.nodo.transmitir(payload);
 	}
 
 	private async enviarSyncEnvelope(

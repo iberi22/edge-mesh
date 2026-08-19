@@ -94,6 +94,7 @@ class DefaultEdgeMeshNode implements EdgeMeshNode {
 	}
 
 	async conectar(): Promise<void> {
+		if (this.estado === "online") return;
 		this.transicionar("conectando");
 		// Placeholder: implementar logica de conexion real
 		this.transicionar("online");
@@ -106,11 +107,11 @@ class DefaultEdgeMeshNode implements EdgeMeshNode {
 		this.emit("nodoDesconectado", { nodoId: this.nodoId });
 	}
 
-	async enviar(_destino: NodoId, _payload: unknown): Promise<void> {
-		// Placeholder: implementar envio directo
+	async enviar(destino: NodoId, payload: unknown): Promise<void> {
+		this.emit("enviar", { destino, payload });
 	}
 
-	async transmitir(_payload: unknown): Promise<void> {
-		// Placeholder: implementar broadcast
+	async transmitir(payload: unknown): Promise<void> {
+		this.emit("transmitir", { payload });
 	}
 }

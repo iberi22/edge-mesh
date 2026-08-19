@@ -247,6 +247,8 @@ export interface EdgeMeshEventMap {
 		readonly nuevoMaster: NodoId;
 		readonly razon: "timeout" | "forced" | "manual";
 	}>;
+	enviar: CustomEvent<{ readonly destino: NodoId; readonly payload: unknown }>;
+	transmitir: CustomEvent<{ readonly payload: unknown }>;
 }
 
 export type EdgeMeshEvent = EdgeMeshEventMap[keyof EdgeMeshEventMap];
