@@ -49,10 +49,13 @@
 	"devDependencies": {
 		"@biomejs/biome": "^2.5.3",
 		"@types/node": "^26.1.1",
+		"@types/react": "^19.2.18",
 		"@types/ws": "^8.18.1",
+		"react": "^19.2.8",
 		"solc": "^0.8.36",
 		"typescript": "^7.0.2",
-		"vitest": "^4.1.9"
+		"vitest": "^4.1.9",
+		"ws": "^8.21.3"
 	},
 	"keywords": [
 		"mesh",
