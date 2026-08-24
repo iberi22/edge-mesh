@@ -55,6 +55,7 @@ export const TIPO_TRANSPORTE = {
 	PEERJS: "peerjs",
 	WEBSOCKET: "websocket",
 	MEMORIA: "memoria",
+	TOR: "tor",
 } as const;
 
 export type TipoTransporte =
