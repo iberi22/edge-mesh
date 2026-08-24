@@ -1,4 +1,7 @@
 import type { EdgeMeshEventMap, EstadoNodo, NodoId } from "../types/index.js";
+import { DefaultEdgeMeshNode } from "./DefaultEdgeMeshNode.js";
+
+export { DefaultEdgeMeshNode };
 
 // ─── DEFAULT EDGE MESH NODE ────────────────────────────────────────────────
 
@@ -43,74 +46,4 @@ export interface EdgeMeshNode {
 
 export function createEdgeMeshNode(nodoId: NodoId): EdgeMeshNode {
 	return new DefaultEdgeMeshNode(nodoId);
-}
-
-// ─── IMPLEMENTATION ────────────────────────────────────────────────────────
-
-class DefaultEdgeMeshNode implements EdgeMeshNode {
-	readonly nodoId: NodoId;
-	readonly eventTarget: EventTarget;
-	estado: EstadoNodo = "offline";
-
-	constructor(nodoId: NodoId) {
-		this.nodoId = nodoId;
-		this.eventTarget = new EventTarget();
-	}
-
-	on<K extends keyof EdgeMeshEventMap>(
-		tipo: K,
-		handler: (ev: EdgeMeshEventMap[K]) => void,
-	): void {
-		this.eventTarget.addEventListener(tipo as string, handler as EventListener);
-	}
-
-	off<K extends keyof EdgeMeshEventMap>(
-		tipo: K,
-		handler: (ev: EdgeMeshEventMap[K]) => void,
-	): void {
-		this.eventTarget.removeEventListener(
-			tipo as string,
-			handler as EventListener,
-		);
-	}
-
-	emit<K extends keyof EdgeMeshEventMap>(
-		tipo: K,
-		detalle: EdgeMeshEventMap[K]["detail"],
-	): void {
-		const evento = new CustomEvent(tipo as string, { detail: detalle });
-		this.eventTarget.dispatchEvent(evento);
-	}
-
-	private transicionar(nuevoEstado: TransicionEntrada): void {
-		const transiciones = ESTADO_TRANSICIONES[this.estado];
-		// eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
-		if (!(transiciones as readonly string[]).includes(nuevoEstado)) {
-			throw new Error(`Transicion invalida: ${this.estado} -> ${nuevoEstado}`);
-		}
-		const estadoAnterior = this.estado;
-		this.estado = nuevoEstado;
-		this.emit("estadoCambiado", { estadoAnterior, estadoNuevo: nuevoEstado });
-	}
-
-	async conectar(): Promise<void> {
-		this.transicionar("conectando");
-		// Placeholder: implementar logica de conexion real
-		this.transicionar("online");
-		this.emit("nodoConectado", { nodoId: this.nodoId });
-	}
-
-	async desconectar(): Promise<void> {
-		if (this.estado === "offline") return;
-		this.transicionar("offline");
-		this.emit("nodoDesconectado", { nodoId: this.nodoId });
-	}
-
-	async enviar(_destino: NodoId, _payload: unknown): Promise<void> {
-		// Placeholder: implementar envio directo
-	}
-
-	async transmitir(_payload: unknown): Promise<void> {
-		// Placeholder: implementar broadcast
-	}
 }
