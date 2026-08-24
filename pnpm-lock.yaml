@@ -26,6 +26,9 @@ importers:
       peerjs:
         specifier: ^1.5.5
         version: 1.5.5
+      ws:
+        specifier: ^8.21.3
+        version: 8.21.3
       y-protocols:
         specifier: ^1.0.7
         version: 1.0.7(yjs@13.6.32)
@@ -42,12 +45,18 @@ importers:
       '@types/react':
         specifier: ^19.2.18
         version: 19.2.18
+      '@types/react-dom':
+        specifier: ^19.2.5
+        version: 19.2.5(@types/react@19.2.18)
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
       react:
         specifier: ^19.2.8
         version: 19.2.8
+      react-dom:
+        specifier: ^19.2.8
+        version: 19.2.8(react@19.2.8)
       solc:
         specifier: ^0.8.36
         version: 0.8.36
@@ -57,9 +66,6 @@ importers:
       vitest:
         specifier: ^4.1.9
         version: 4.1.11(@types/node@26.2.0)(vite@8.2.2(@types/node@26.2.0))
-      ws:
-        specifier: ^8.21.3
-        version: 8.21.3
 
 packages:
 
@@ -305,6 +311,11 @@ packages:
 
   '@types/node@26.2.0':
     resolution: {integrity: sha512-5IviulTZeRNp2vAJ514cc/HUlY5nZ9fCbq9DMyC52BrhFZACo3nI0R7qBxhQmo/d27NFe96ur/b7Wwxklda+kg==}
+
+  '@types/react-dom@19.2.5':
+    resolution: {integrity: sha512-fMPwH9v7r/pp43yUd2/Mbiex5KouJwwR3dzHkhLREUC6764VyDsqxhAxv6OFEYR1RhjOyD1naqba8ECDBe7ZQg==}
+    peerDependencies:
+      '@types/react': ^19.2.0
 
   '@types/react@19.2.18':
     resolution: {integrity: sha512-AnzbBERsrLKtk2XSfTbYRLjQPdy116Sty4q+T+Bp3IC4l6jNBvreVPAHmpq9qhXQM7CXZPjLVmGMw9sy+hxQ3w==}
@@ -670,6 +681,11 @@ packages:
     resolution: {integrity: sha512-u82N74LFzG8ca+dD8puPnplTXoGH4fTPpVGuIbt36G3qvNlkvfD0lEAZSxaly3KX8TS/L1A1gsCEmvKmBcVbkQ==}
     engines: {node: ^10 || ^12 || >=14}
 
+  react-dom@19.2.8:
+    resolution: {integrity: sha512-rVprimfGBG3DR+Tq0IQG2DT5PxKth1WIGDmj5yPmlzr4YBe7uyE+Du4oVqTDXZSHGGGXRtTJEGSSePyQCMBglQ==}
+    peerDependencies:
+      react: ^19.2.8
+
   react@19.2.8:
     resolution: {integrity: sha512-PWaYA1L/q9u2u7xYQi+Y3L3Yfnie7XyLeaJICV1MGD6LprsBxcAqGjYyr0eY3p+QdsA+x/Irkt4Qif8D63+Sbw==}
     engines: {node: '>=0.10.0'}
@@ -678,6 +694,9 @@ packages:
     resolution: {integrity: sha512-VD2IE5PUG4Oj8zz2VGykiYd5wbnjdIiSsNQb8Qu5B+noEp+A78mu2iVvpp27g8es14Tk9rofNs5Tku9iQCS4fA==}
     engines: {node: ^20.19.0 || >=22.12.0}
     hasBin: true
+
+  scheduler@0.27.0:
+    resolution: {integrity: sha512-eNv+WrVbKu1f3vbYJT/xtiF5syA5HPIMtf9IgY/nKg0sWqzAUEvqY/xm7OcZc/qafLx/iO9FgOmeSAp4v5ti/Q==}
 
   sdp@3.2.2:
     resolution: {integrity: sha512-xZocWwfyp4hkbN4hLWxMjmv2Q8aNa9MhmOZ7L9aCZPT+dZsgRr6wZRrSYE3HTdyk/2pZKPSgqI7ns7Een1xMSA==}
@@ -1015,6 +1034,10 @@ snapshots:
     dependencies:
       undici-types: 8.3.0
 
+  '@types/react-dom@19.2.5(@types/react@19.2.18)':
+    dependencies:
+      '@types/react': 19.2.18
+
   '@types/react@19.2.18':
     dependencies:
       csstype: 3.2.3
@@ -1285,6 +1308,11 @@ snapshots:
       picocolors: 1.1.1
       source-map-js: 1.2.1
 
+  react-dom@19.2.8(react@19.2.8):
+    dependencies:
+      react: 19.2.8
+      scheduler: 0.27.0
+
   react@19.2.8: {}
 
   rolldown@1.2.5:
@@ -1307,6 +1335,8 @@ snapshots:
       '@rolldown/binding-openharmony-arm64': 1.2.5
       '@rolldown/binding-win32-arm64-msvc': 1.2.5
       '@rolldown/binding-win32-x64-msvc': 1.2.5
+
+  scheduler@0.27.0: {}
 
   sdp@3.2.2: {}
 

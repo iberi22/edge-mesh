@@ -51,6 +51,13 @@ export type {
 	GovernanceEventMap,
 	Propuesta,
 } from "./governance/index.js";
+// ─── GOS INTEGRATION & TELEMETRY ──────────────────────────────────────────
+export type {
+	BandwidthTelemetry,
+	GosBridgeConfig,
+	NodeTelemetry,
+} from "./gos/GosBridge.js";
+export { GosBridge } from "./gos/GosBridge.js";
 // ─── GOVERNANCE ───────────────────────────────────────────────────────────
 export {
 	AuthorityManager,
