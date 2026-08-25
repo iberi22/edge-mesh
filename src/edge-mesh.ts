@@ -51,6 +51,8 @@ import {
 	PqcHandshake,
 } from "./transport/pqc-handshake.js";
 import type { ITransport } from "./transport/types.js";
+import { ml_dsa65 } from "@noble/post-quantum/ml-dsa.js";
+import { MeshGossip, type GossipMessage } from "./mesh/index.js";
 import type {
 	EdgeMeshConfig,
 	EdgeMeshEventMap,
@@ -58,6 +60,7 @@ import type {
 	NodoId,
 	ParPublico,
 	TipoMensaje,
+	VerificadorVotos,
 } from "./types/index.js";
 import { TIPO_MENSAJE } from "./types/index.js";
 
@@ -300,6 +303,7 @@ export class EdgeMesh {
 	readonly offlineQueue: PersistentOfflineQueue;
 	readonly peerSecureChannels: Map<NodoId, PqcChannelState>;
 	readonly pqcHandshake: PqcHandshake;
+	readonly meshGossip: MeshGossip;
 
 	private transport: ITransport | null = null;
 	private readonly logsDoc: Map<string, OpLog>;
@@ -376,8 +380,26 @@ export class EdgeMesh {
 		const externalDoc = config.yDoc as Y.Doc | undefined;
 		this.yjsAdapter = new YjsAdapter(externalDoc, !externalDoc);
 
-		// Governance
-		this.governance = createGovernanceManager(config.governancePolicy);
+		// Governance with crypto verifier
+		this.governance = createGovernanceManager(
+			config.governancePolicy,
+			this,
+			{ requireSignedVotes: config.requireSignedVotes },
+		);
+
+		// Mesh Gossip
+		this.meshGossip = new MeshGossip(
+			{
+				nodoId: config.nodoId,
+				fanOut: config.gossipFanOut ?? 3,
+				gossipTTL: config.gossipTTL ?? 5,
+			},
+			this,
+		);
+
+		this.meshGossip.addEventListener("gossipRecibido", (ev: any) => {
+			this.emit("gossipRecibido" as any, ev.detail);
+		});
 
 		// Presence
 		this.presence = new PresenceManager({
@@ -472,6 +494,26 @@ export class EdgeMesh {
 
 	obtenerClavePublica(nodoId: NodoId): ParPublico | undefined {
 		return this.peerPublicKeys.get(nodoId);
+	}
+
+	verificarFirma(
+		mensaje: Uint8Array,
+		firma: Uint8Array,
+		clave: ParPublico | Uint8Array,
+	): boolean {
+		return this.verificarFirmaVoto(mensaje, firma, clave);
+	}
+
+	verificarFirmaVoto(
+		mensaje: Uint8Array,
+		firma: Uint8Array,
+		clave: ParPublico | Uint8Array,
+	): boolean {
+		try {
+			return ml_dsa65.verify(firma, mensaje, clave);
+		} catch {
+			return false;
+		}
 	}
 
 	// ─── INICIALIZACION ──────────────────────────────────────────────────
@@ -603,6 +645,7 @@ export class EdgeMesh {
 		// Shared host docs are only detached (listeners cleared), never destroyed.
 		this.yjsAdapter.destroy();
 		this.governance.destruir();
+		this.meshGossip.destruir();
 	}
 
 	/** Current attached transport (if any). */
@@ -637,7 +680,7 @@ export class EdgeMesh {
 				? this.transport.obtenerConexiones()
 				: [];
 			if (connections.length > 0) {
-				const promesas = connections.map((peerId) =>
+				const promesas = connections.map((peerId: string) =>
 					this.enviarSyncEnvelope(peerId as NodoId, payload),
 				);
 				await Promise.all(promesas);
@@ -886,9 +929,36 @@ export class EdgeMesh {
 				await this.procesarPqcAck(processedEnvelope);
 				break;
 
+			case TIPO_MENSAJE.GOSSIP:
+				await this.procesarGossip(processedEnvelope);
+				break;
+
 			default:
 				break;
 		}
+	}
+
+	private async procesarGossip(env: Envolvente): Promise<void> {
+		const payload = env.payload as any;
+		const mensaje = (payload?.mensaje ?? payload) as GossipMessage;
+		this.meshGossip.recibirGossip(env.origen, mensaje);
+	}
+
+	async publicarGossip(
+		payload: unknown,
+		namespace = "global",
+		ttl?: number,
+	): Promise<void> {
+		const mensaje: GossipMessage = {
+			id: crypto.randomUUID(),
+			namespace,
+			ttl: ttl ?? this.config.gossipTTL ?? 5,
+			payload,
+			origen: this.config.nodoId,
+			timestamp: Date.now(),
+			ruta: [this.config.nodoId],
+		};
+		await this.meshGossip.propagarGossip(mensaje);
 	}
 
 	private async procesarPqcHandshake(env: Envolvente): Promise<void> {

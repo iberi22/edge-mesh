@@ -406,8 +406,8 @@ export class MeshManager extends EventTarget {
 	// ─── PROCESAR GOSSIP ─────────────────────────────────────────────────
 
 	procesarGossip(mensaje: GossipMessage): void {
-		// Verificar TTL
-		if (mensaje.ttl <= 0) return;
+		// Verificar mensaje y TTL
+		if (!mensaje || typeof mensaje !== "object" || typeof mensaje.ttl !== "number" || mensaje.ttl <= 0) return;
 
 		// Verificar duplicado
 		if (this.gossipsVistos.has(mensaje.id)) return;
@@ -682,4 +682,23 @@ export class MeshManager extends EventTarget {
 			}),
 		);
 	}
+
+	destruir(): void {
+		void this.detener();
+	}
 }
+
+export class MeshGossip extends MeshManager {
+	recibirGossip(_origen: NodoId, mensaje: GossipMessage): void {
+		this.procesarGossip(mensaje);
+	}
+
+	async propagarGossip(mensaje: GossipMessage): Promise<void> {
+		await this.transmitirConGossip(
+			mensaje.namespace,
+			mensaje.payload,
+			mensaje.ttl,
+		);
+	}
+}
+

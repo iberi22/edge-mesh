@@ -46,7 +46,8 @@ describe("Performance: Gossip Fanout", () => {
 								(m) => m.config.nodoId === destino,
 							);
 							if (destManager) {
-								destManager.procesarGossip(env.payload.mensaje);
+								const msg = env.payload?.mensaje ?? env.payload;
+								if (msg) destManager.procesarGossip(msg);
 							}
 						}, 20);
 					},

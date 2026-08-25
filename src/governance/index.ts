@@ -1,9 +1,14 @@
 import type {
 	GovernancePolicy,
 	NodoId,
+	ParPublico,
 	PayloadVotacion,
+	VerificadorVotos,
 } from "../types/index.js";
 import { POLITICA_GOBERNANZA } from "../types/index.js";
+import { hexABytes } from "../protocol/utils.js";
+
+export type { VerificadorVotos };
 
 // ─── CONSTANTS ─────────────────────────────────────────────────────────────
 
@@ -53,17 +58,29 @@ export interface GovernanceEventMap {
 	politicaCambiada: CustomEvent<{ readonly politica: GovernancePolicy }>;
 }
 
+export interface GovernanceManagerOptions {
+	readonly requireSignedVotes?: boolean;
+}
+
 export class GovernanceManager {
 	readonly eventTarget: EventTarget;
 	private politica: GovernancePolicy;
 	private readonly propuestas: Map<string, Propuesta>;
 	private readonly timers: Map<string, ReturnType<typeof setTimeout>>;
+	private readonly verificador?: VerificadorVotos;
+	private readonly requireSignedVotes: boolean;
 
-	constructor(politica?: GovernancePolicy) {
+	constructor(
+		politica?: GovernancePolicy,
+		verificador?: VerificadorVotos,
+		options?: GovernanceManagerOptions,
+	) {
 		this.eventTarget = new EventTarget();
 		this.politica = { ...POLITICA_POR_DEFECTO, ...politica };
 		this.propuestas = new Map();
 		this.timers = new Map();
+		this.verificador = verificador;
+		this.requireSignedVotes = options?.requireSignedVotes ?? false;
 	}
 
 	// ─── PROPUESTAS ───────────────────────────────────────────────────────
@@ -105,6 +122,39 @@ export class GovernanceManager {
 		if (propuesta === undefined) return false;
 		if (propuesta.estado !== ESTADO_PROPUESTA.ABIERTA) return false;
 		if (Date.now() > propuesta.expiracion) return false;
+
+		// Requerir firma estricta si configurado
+		if (this.requireSignedVotes && !voto.firma) {
+			return false;
+		}
+
+		// Verificación criptográfica si hay verificador y firma
+		if (this.verificador && voto.firma) {
+			const clavePublica = this.verificador.obtenerClavePublica(voto.nodoId);
+			if (!clavePublica) return false;
+
+			const mensajeBytes = new TextEncoder().encode(
+				JSON.stringify({
+					propuestaId: id,
+					nodoId: voto.nodoId,
+					voto: voto.voto,
+					timestamp: voto.timestamp,
+				}),
+			);
+			const firmaBytes =
+				typeof voto.firma === "string"
+					? hexABytes(voto.firma)
+					: voto.firma instanceof Uint8Array
+						? voto.firma
+						: new Uint8Array(voto.firma);
+
+			const valido = this.verificador.verificarFirma(
+				mensajeBytes,
+				firmaBytes,
+				clavePublica,
+			);
+			if (!valido) return false;
+		}
 
 		// Evitar voto duplicado del mismo nodo
 		const yaVoto = propuesta.votos.some((v) => v.nodoId === voto.nodoId);
@@ -261,8 +311,10 @@ export class GovernanceManager {
 
 export function createGovernanceManager(
 	politica?: GovernancePolicy,
+	verificador?: VerificadorVotos,
+	options?: GovernanceManagerOptions,
 ): GovernanceManager {
-	return new GovernanceManager(politica);
+	return new GovernanceManager(politica, verificador, options);
 }
 
 export * from "./authority.js";

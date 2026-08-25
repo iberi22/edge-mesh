@@ -17,6 +17,7 @@ export const TIPO_MENSAJE = {
 	KEM_REPLY: "kem_reply",
 	PQC_ACK: "pqc_ack",
 	PEER_LIST_UPDATE: "peer_list_update",
+	GOSSIP: "gossip",
 } as const;
 
 export type TipoMensaje = (typeof TIPO_MENSAJE)[keyof typeof TIPO_MENSAJE];
@@ -126,7 +127,18 @@ export type PayloadVotacion = {
 	readonly nodoId: NodoId;
 	readonly peso: number;
 	readonly justificacion: string | null;
+	readonly firma?: Uint8Array | number[] | string | null;
+	readonly timestamp?: number;
 };
+
+export interface VerificadorVotos {
+	obtenerClavePublica(nodoId: NodoId): ParPublico | Uint8Array | undefined | null;
+	verificarFirma(
+		mensaje: Uint8Array,
+		firma: Uint8Array,
+		clave: ParPublico | Uint8Array,
+	): boolean | Promise<boolean>;
+}
 
 export type PayloadSnapshot = {
 	readonly docId: string;
@@ -330,4 +342,7 @@ export interface EdgeMeshConfig {
 	readonly initialMaster?: NodoId;
 	readonly authorityTimeoutMs?: number;
 	readonly sybilThreshold?: number;
+	readonly requireSignedVotes?: boolean;
+	readonly gossipFanOut?: number;
+	readonly gossipTTL?: number;
 }
