@@ -223,6 +223,8 @@ export { SyncEngine } from "./sync/engine.js";
 // ─── TRANSPORT ────────────────────────────────────────────────────────────
 export type { TorTransportAdapterOptions } from "./transport/TorTransportAdapter.js";
 export { TorTransportAdapter } from "./transport/TorTransportAdapter.js";
+export type { TorConfig } from "./transport/tor.js";
+export { TorOnionTransport, generateTorrc, getTorDataDir } from "./transport/tor.js";
 export { MemoryTransport } from "./transport/memory.js";
 export type {
 	PeerJSTransportOptions,

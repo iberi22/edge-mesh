@@ -4,7 +4,7 @@ import path from "node:path";
 export default defineConfig({
 	test: {
 		alias: {
-			"@iberi22/edge-mesh": path.resolve(__dirname, "./src/index.ts"),
+			"@iberi22/edge-mesh": path.resolve(import.meta.dirname ?? ".", "./src/index.ts"),
 		},
 	},
 });
