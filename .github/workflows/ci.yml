@@ -108,12 +108,14 @@ jobs:
       - name: Build project
         run: npm run build
 
-      - name: Ensure beta version is not already published
+      - name: Bump to unique beta version
+        run: npm version "0.0.0-beta.$GITHUB_RUN_NUMBER" --no-git-tag-version --allow-same-version
+
+      - name: Skip if already published
         id: ver
         run: |
-          NAME=$(node -p "require('./package.json').name")
           VER=$(node -p "require('./package.json').version")
-          EXISTS=$(npm view "$NAME@$VER-beta.$GITHUB_RUN_NUMBER" version 2>/dev/null || true)
+          EXISTS=$(npm view "@iberi22/edge-mesh@$VER" version 2>/dev/null || true)
           if [ -n "$EXISTS" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
@@ -122,6 +124,6 @@ jobs:
 
       - name: Publish to GitHub Packages
         if: steps.ver.outputs.skip == 'false'
-        run: npm publish --tag beta --no-git-tag-version --new-version "0.0.0-beta.$GITHUB_RUN_NUMBER"
+        run: npm publish --tag beta
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
