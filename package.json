@@ -1,74 +1,73 @@
 {
-	"name": "@iberi22/edge-mesh",
-	"version": "1.0.0",
-	"workspaces": [
-		".",
-		"packages/*"
-	],
-	"description": "Mesh networking library with CRDT sync, post-quantum identity, and peer-to-peer transport",
-	"publishConfig": {
-		"registry": "https://npm.pkg.github.com"
-	},
-	"license": "AGPL-3.0-only",
-	"type": "module",
-	"main": "./dist/index.js",
-	"exports": {
-		".": {
-			"types": "./dist/index.d.ts",
-			"import": "./dist/index.js",
-			"default": "./dist/index.js"
-		}
-	},
-	"types": "./dist/index.d.ts",
-	"files": [
-		"dist",
-		"src",
-		"LICENSE",
-		"README.md"
-	],
-	"scripts": {
-		"build": "tsc",
-		"dev": "tsc -w",
-		"test": "node tests/run-tests.js",
-		"test:watch": "vitest",
-		"lint": "biome check src/",
-		"format": "biome format --write src/",
-		"check": "npx tsc --noEmit",
-		"bench": "npm run build && node scripts/bench.js"
-	},
-	"dependencies": {
-		"@bokuweb/zstd-wasm": "0.0.27",
-		"@noble/post-quantum": "^0.6.1",
-		"cbor-x": "1.6.5",
-		"ethers": "^6.17.0",
-		"idb": "^8.0.3",
-		"peerjs": "^1.5.5",
-		"ws": "^8.21.3",
-		"y-protocols": "^1.0.7",
-		"yjs": "^13.6.31"
-	},
-	"devDependencies": {
-		"@biomejs/biome": "^2.5.3",
-		"@types/node": "^26.1.1",
-		"@types/react": "^19.2.18",
-		"@types/react-dom": "^19.2.5",
-		"@types/ws": "^8.18.1",
-		"react": "^19.2.8",
-		"react-dom": "^19.2.8",
-		"solc": "^0.8.36",
-		"typescript": "^7.0.2",
-		"vitest": "^4.1.9"
-	},
-	"keywords": [
-		"mesh",
-		"p2p",
-		"crdt",
-		"yjs",
-		"peerjs",
-		"post-quantum",
-		"webrtc"
-	],
-	"engines": {
-		"node": ">=22.0.0"
-	}
+  "name": "@iberi22/edge-mesh",
+  "version": "1.0.0",
+  "workspaces": [
+    ".",
+    "packages/*"
+  ],
+  "description": "Mesh networking library with CRDT sync, post-quantum identity, and peer-to-peer transport",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc -w",
+    "test": "node tests/run-tests.js",
+    "test:watch": "vitest",
+    "lint": "biome check src/",
+    "format": "biome format --write src/",
+    "check": "npx tsc --noEmit",
+    "bench": "npm run build && node scripts/bench.js"
+  },
+  "dependencies": {
+    "@bokuweb/zstd-wasm": "0.0.27",
+    "@noble/post-quantum": "^0.6.1",
+    "cbor-x": "1.6.5",
+    "ethers": "^6.17.0",
+    "idb": "^8.0.3",
+    "peerjs": "^1.5.5",
+    "ws": "^8.21.3",
+    "y-protocols": "^1.0.7",
+    "yjs": "^13.6.31"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.3",
+    "@types/node": "^26.1.1",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "@types/ws": "^8.18.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.9"
+  },
+  "keywords": [
+    "mesh",
+    "p2p",
+    "crdt",
+    "yjs",
+    "peerjs",
+    "post-quantum",
+    "webrtc"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  }
 }
