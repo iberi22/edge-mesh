@@ -27,6 +27,8 @@ export const CAPACIDAD_ESTANDAR = {
 	SINC: "sync",
 	PRESENCIA: "presence",
 	GOBERNANZA: "governance",
+	BACKLOG_READ: "backlog:read",
+	BACKLOG_WRITE: "backlog:write",
 } as const;
 
 export type CapacidadEstandar =
