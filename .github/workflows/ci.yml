@@ -2,6 +2,10 @@ name: CI/CD edge-mesh
 
 on: [push, pull_request]
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -104,7 +108,20 @@ jobs:
       - name: Build project
         run: npm run build
 
+      - name: Ensure beta version is not already published
+        id: ver
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          VER=$(node -p "require('./package.json').version")
+          EXISTS=$(npm view "$NAME@$VER-beta.$GITHUB_RUN_NUMBER" version 2>/dev/null || true)
+          if [ -n "$EXISTS" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish to GitHub Packages
-        run: npm publish --tag beta
+        if: steps.ver.outputs.skip == 'false'
+        run: npm publish --tag beta --no-git-tag-version --new-version "0.0.0-beta.$GITHUB_RUN_NUMBER"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
