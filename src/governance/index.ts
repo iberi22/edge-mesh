@@ -1,3 +1,4 @@
+import { hexABytes } from "../protocol/utils.js";
 import type {
 	GovernancePolicy,
 	NodoId,
@@ -6,7 +7,6 @@ import type {
 	VerificadorVotos,
 } from "../types/index.js";
 import { POLITICA_GOBERNANZA } from "../types/index.js";
-import { hexABytes } from "../protocol/utils.js";
 
 export type { VerificadorVotos };
 

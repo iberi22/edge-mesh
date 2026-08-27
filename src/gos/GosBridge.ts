@@ -110,7 +110,11 @@ export class GosBridge {
 		let status: "online" | "offline" | "degraded" = "online";
 		if (this.presence) {
 			const selfHealth = this.presence.obtenerSalud(this.nodeId as never);
-			if (!selfHealth || selfHealth.estado === "fallando" || selfHealth.fallosConsecutivos > 0) {
+			if (
+				!selfHealth ||
+				selfHealth.estado === "fallando" ||
+				selfHealth.fallosConsecutivos > 0
+			) {
 				status = "degraded";
 			}
 		}

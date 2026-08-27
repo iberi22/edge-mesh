@@ -1,3 +1,4 @@
+import { ml_dsa65 } from "@noble/post-quantum/ml-dsa.js";
 import * as Y from "yjs";
 import {
 	CAPACIDAD_ESTANDAR,
@@ -20,6 +21,7 @@ import {
 	type PostQuantumIdentity,
 } from "./identity/index.js";
 import { MerkleTree } from "./maloca/evidentia.js";
+import { type GossipMessage, MeshGossip } from "./mesh/index.js";
 import { NamespaceManager } from "./namespaces/index.js";
 import { OpLog } from "./op-log/index.js";
 import { PresenceManager } from "./presence/index.js";
@@ -51,8 +53,6 @@ import {
 	PqcHandshake,
 } from "./transport/pqc-handshake.js";
 import type { ITransport } from "./transport/types.js";
-import { ml_dsa65 } from "@noble/post-quantum/ml-dsa.js";
-import { MeshGossip, type GossipMessage } from "./mesh/index.js";
 import type {
 	EdgeMeshConfig,
 	EdgeMeshEventMap,
@@ -381,11 +381,9 @@ export class EdgeMesh {
 		this.yjsAdapter = new YjsAdapter(externalDoc, !externalDoc);
 
 		// Governance with crypto verifier
-		this.governance = createGovernanceManager(
-			config.governancePolicy,
-			this,
-			{ requireSignedVotes: config.requireSignedVotes },
-		);
+		this.governance = createGovernanceManager(config.governancePolicy, this, {
+			requireSignedVotes: config.requireSignedVotes,
+		});
 
 		// Mesh Gossip
 		this.meshGossip = new MeshGossip(

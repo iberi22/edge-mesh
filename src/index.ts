@@ -45,12 +45,6 @@ export { createEdgeMeshNode, ESTADO_TRANSICIONES } from "./core/node.js";
 export type { MutationGuardFn } from "./edge-mesh.js";
 // ─── CORE ─────────────────────────────────────────────────────────────────
 export { EdgeMesh, MUTATION_REVERT_ORIGIN, YjsAdapter } from "./edge-mesh.js";
-export type {
-	AuthorityEventMap,
-	EstadoPropuesta,
-	GovernanceEventMap,
-	Propuesta,
-} from "./governance/index.js";
 // ─── GOS INTEGRATION & TELEMETRY ──────────────────────────────────────────
 export type {
 	BandwidthTelemetry,
@@ -58,6 +52,12 @@ export type {
 	NodeTelemetry,
 } from "./gos/GosBridge.js";
 export { GosBridge } from "./gos/GosBridge.js";
+export type {
+	AuthorityEventMap,
+	EstadoPropuesta,
+	GovernanceEventMap,
+	Propuesta,
+} from "./governance/index.js";
 // ─── GOVERNANCE ───────────────────────────────────────────────────────────
 export {
 	AuthorityManager,
@@ -220,11 +220,6 @@ export type {
 } from "./sync/engine.js";
 // ─── SYNC ─────────────────────────────────────────────────────────────────
 export { SyncEngine } from "./sync/engine.js";
-// ─── TRANSPORT ────────────────────────────────────────────────────────────
-export type { TorTransportAdapterOptions } from "./transport/TorTransportAdapter.js";
-export { TorTransportAdapter } from "./transport/TorTransportAdapter.js";
-export type { TorConfig } from "./transport/tor.js";
-export { TorOnionTransport, generateTorrc, getTorDataDir } from "./transport/tor.js";
 export { MemoryTransport } from "./transport/memory.js";
 export type {
 	PeerJSTransportOptions,
@@ -242,6 +237,15 @@ export type {
 	RelayServerOptions,
 } from "./transport/relay-server.js";
 export { RelayServer } from "./transport/relay-server.js";
+// ─── TRANSPORT ────────────────────────────────────────────────────────────
+export type { TorTransportAdapterOptions } from "./transport/TorTransportAdapter.js";
+export { TorTransportAdapter } from "./transport/TorTransportAdapter.js";
+export type { TorConfig } from "./transport/tor.js";
+export {
+	generateTorrc,
+	getTorDataDir,
+	TorOnionTransport,
+} from "./transport/tor.js";
 export type { ITransport } from "./transport/types.js";
 // ─── TYPES ────────────────────────────────────────────────────────────────
 export * from "./types/index.js";

@@ -132,7 +132,9 @@ export type PayloadVotacion = {
 };
 
 export interface VerificadorVotos {
-	obtenerClavePublica(nodoId: NodoId): ParPublico | Uint8Array | undefined | null;
+	obtenerClavePublica(
+		nodoId: NodoId,
+	): ParPublico | Uint8Array | undefined | null;
 	verificarFirma(
 		mensaje: Uint8Array,
 		firma: Uint8Array,

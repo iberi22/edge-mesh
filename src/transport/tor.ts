@@ -1,7 +1,7 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import fs from "node:fs";
-import path from "node:path";
 import os from "node:os";
+import path from "node:path";
 import { createEnvelope, MessageDeduplicator } from "../protocol/index.js";
 import type {
 	Envolvente,
@@ -36,10 +36,20 @@ export function getTorDataDir(customPath?: string): string {
 	if (customPath) return customPath;
 	const home = os.homedir();
 	if (process.platform === "win32") {
-		return path.join(process.env.APPDATA || path.join(home, "AppData", "Roaming"), "edge-mesh", "tor");
+		return path.join(
+			process.env.APPDATA || path.join(home, "AppData", "Roaming"),
+			"edge-mesh",
+			"tor",
+		);
 	}
 	if (process.platform === "darwin") {
-		return path.join(home, "Library", "Application Support", "edge-mesh", "tor");
+		return path.join(
+			home,
+			"Library",
+			"Application Support",
+			"edge-mesh",
+			"tor",
+		);
 	}
 	return path.join(home, ".local", "share", "edge-mesh", "tor");
 }
@@ -98,12 +108,17 @@ export class TorOnionTransport implements ITransport {
 		try {
 			fs.mkdirSync(hiddenServiceDir, { recursive: true, mode: 0o700 });
 		} catch (err) {
-			console.warn(`[TorTransport] Failed to create data dir: ${(err as Error).message}`);
+			console.warn(
+				`[TorTransport] Failed to create data dir: ${(err as Error).message}`,
+			);
 			return null;
 		}
 
 		const torrcPath = path.join(this.dataDir, "torrc");
-		const torrcContent = generateTorrc({ ...this.config, localPort: port }, this.dataDir);
+		const torrcContent = generateTorrc(
+			{ ...this.config, localPort: port },
+			this.dataDir,
+		);
 		fs.writeFileSync(torrcPath, torrcContent, { mode: 0o600 });
 
 		const hostnamePath = path.join(hiddenServiceDir, "hostname");
@@ -118,7 +133,9 @@ export class TorOnionTransport implements ITransport {
 			});
 
 			this.torProcess.on("error", (err) => {
-				console.warn(`[TorTransport] Tor binary execution error: ${err.message}`);
+				console.warn(
+					`[TorTransport] Tor binary execution error: ${err.message}`,
+				);
 				this.conectado = false;
 			});
 
@@ -128,7 +145,9 @@ export class TorOnionTransport implements ITransport {
 
 			this.conectado = true;
 		} catch (err) {
-			console.warn(`[TorTransport] Failed to spawn Tor process: ${(err as Error).message}`);
+			console.warn(
+				`[TorTransport] Failed to spawn Tor process: ${(err as Error).message}`,
+			);
 			this.conectado = false;
 		}
 
@@ -167,7 +186,11 @@ export class TorOnionTransport implements ITransport {
 		this.emit("mensaje", { envolvente: env });
 	}
 
-	async enviar(destino: NodoId, datos: unknown, tipo?: TipoMensaje): Promise<void> {
+	async enviar(
+		destino: NodoId,
+		datos: unknown,
+		tipo?: TipoMensaje,
+	): Promise<void> {
 		if (!this.conectado) return;
 		const env = createEnvelope(
 			tipo ?? TIPO_MENSAJE.SYNC,
@@ -201,7 +224,10 @@ export class TorOnionTransport implements ITransport {
 		tipo: K,
 		handler: (ev: TransportEventMap[K]) => void,
 	): void {
-		this.eventTarget.removeEventListener(tipo as string, handler as EventListener);
+		this.eventTarget.removeEventListener(
+			tipo as string,
+			handler as EventListener,
+		);
 	}
 
 	private emit<K extends keyof TransportEventMap>(

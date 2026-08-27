@@ -407,7 +407,13 @@ export class MeshManager extends EventTarget {
 
 	procesarGossip(mensaje: GossipMessage): void {
 		// Verificar mensaje y TTL
-		if (!mensaje || typeof mensaje !== "object" || typeof mensaje.ttl !== "number" || mensaje.ttl <= 0) return;
+		if (
+			!mensaje ||
+			typeof mensaje !== "object" ||
+			typeof mensaje.ttl !== "number" ||
+			mensaje.ttl <= 0
+		)
+			return;
 
 		// Verificar duplicado
 		if (this.gossipsVistos.has(mensaje.id)) return;
@@ -701,4 +707,3 @@ export class MeshGossip extends MeshManager {
 		);
 	}
 }
-

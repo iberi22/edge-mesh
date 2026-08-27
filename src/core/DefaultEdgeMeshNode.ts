@@ -1,7 +1,7 @@
 import type { EdgeMeshEventMap, EstadoNodo, NodoId } from "../types/index.js";
 import {
-	ESTADO_TRANSICIONES,
 	type EdgeMeshNode,
+	ESTADO_TRANSICIONES,
 	type TransicionEntrada,
 } from "./node.js";
 
