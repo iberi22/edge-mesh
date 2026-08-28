@@ -88,17 +88,51 @@ export class EvidentiaManager extends EventTarget {
 		const evidentia = this.evidentias.get(hash);
 		if (!evidentia) return false;
 
-		// Si tiene bridge de Polygon, podemos verificar on-chain
+		// (1) Si tiene bridge de Polygon, la verificación on-chain decide (fail-closed)
 		if (this.bridge) {
 			const root = evidentia.hash.startsWith("0x")
 				? evidentia.hash
 				: `0x${evidentia.hash}`;
-			const onChainOk = await this.bridge.verifyOnChain(root, []);
-			if (onChainOk) return true;
+			try {
+				const onChainOk = await this.bridge.verifyOnChain(root, []);
+				return onChainOk;
+			} catch {
+				return false;
+			}
 		}
 
-		// Por ahora, simulamos verificación de integridad básica
-		return true;
+		// (2) Sin bridge: reconstruir Merkle root local y validar inclusion proof
+		const localRoot = await this.buildLocalRoot();
+		if (localRoot === null) return false;
+
+		const leaves: Leaf[] = Array.from(this.evidentias.values()).map((e) => ({
+			id: e.hash,
+			hash: e.contenidoHash,
+			timestamp: e.timestamp,
+		}));
+
+		const leaf: Leaf = {
+			id: evidentia.hash,
+			hash: evidentia.contenidoHash,
+			timestamp: evidentia.timestamp,
+		};
+
+		const tree = new MerkleTree(leaves);
+		const proof = await tree.getProof(leaf);
+		const isValid = await tree.verify(leaf, proof);
+		return isValid;
+	}
+
+	private async buildLocalRoot(): Promise<string | null> {
+		if (this.evidentias.size === 0) return null;
+		const leaves: Leaf[] = Array.from(this.evidentias.values()).map((e) => ({
+			id: e.hash,
+			hash: e.contenidoHash,
+			timestamp: e.timestamp,
+		}));
+		const tree = new MerkleTree(leaves);
+		const root = await tree.getRoot();
+		return root || null;
 	}
 
 	getProof(hash: string): Evidentia | null {
