@@ -222,6 +222,17 @@ export type {
 export { SyncEngine } from "./sync/engine.js";
 export { MemoryTransport } from "./transport/memory.js";
 export type {
+	HeartbeatPayload,
+	PeerReconnectState,
+	ReconnectManagerOptions,
+} from "./transport/reconnect-manager.js";
+export { ReconnectManager } from "./transport/reconnect-manager.js";
+export type {
+	WebRTCPeerConnectionEntry,
+	WebRTCTransportOptions,
+} from "./transport/webrtc-transport.js";
+export { WebRTCTransport } from "./transport/webrtc-transport.js";
+export type {
 	PeerJSTransportOptions,
 	TransportEventMap,
 } from "./transport/peerjs.js";
