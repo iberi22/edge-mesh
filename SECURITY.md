@@ -17,7 +17,7 @@ Only the latest release and main branch of `@iberi22/edge-mesh` receive security
 
 ## Post-Quantum Cryptography Architecture
 
-- **Identity Signatures:** ML-DSA-65 (FIPS 205 compliant) implemented via `@noble/post-quantum`.
+- **Identity Signatures:** ML-DSA-65 (FIPS 204 compliant) implemented via `@noble/post-quantum`.
 - **Key Exchange:** ML-KEM-768 key encapsulation mechanism for establishing encrypted AEAD channels.
 - **Symmetric Cipher:** AES-256-GCM (`EncryptedChannel`) derived via SHA-256 HKDF.
 - **Replay Defense:** 30-second strict validity window with nonce deduplication (`seenNonces`).
