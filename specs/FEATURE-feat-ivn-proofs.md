@@ -41,7 +41,7 @@ descifrar; el veredicto es público pero las pruebas NUNCA.
 ## Verification harness
 
 ```bash
-cd /home/belal/proyectosSWAL/cores/edge-mesh
+cd <repo-root>   # cores/edge-mesh
 npm run build
 npx vitest run test/ivn-proofs.test.ts
 ```
