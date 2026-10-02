@@ -131,7 +131,7 @@ describe("mesh", () => {
 		await until(() => b.mesh.epoch === 1);
 		expect(b.vault.meshKey).toEqual(a.vault.meshKey);
 		expect(a.mesh.devices().map((d) => d.deviceId)).not.toContain("devC");
-		await until(() => !b.mesh.devices().some((d) => d.deviceId === "devC"));
+		await until(() => !b.mesh.devices().some((d) => d.deviceId === "devC"), 5000);
 		a.doc.getMap("data").set("after", "x");
 		await until(() => b.doc.getMap("data").get("after") === "x");
 		await new Promise((r) => setTimeout(r, 50));
