@@ -17,6 +17,11 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./web": {
+      "types": "./dist/web/index.d.ts",
+      "import": "./dist/web/index.js",
+      "default": "./dist/web/index.js"
     }
   },
   "types": "./dist/index.d.ts",
@@ -44,6 +49,7 @@
     "idb": "^8.0.3",
     "peerjs": "^1.5.5",
     "ws": "^8.21.3",
+    "y-indexeddb": "9.0.12",
     "y-protocols": "^1.0.7",
     "yjs": "^13.6.32"
   },
