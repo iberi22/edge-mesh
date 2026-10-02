@@ -65,6 +65,16 @@ describe("wsTransport (docs/SIGNALING-PROTOCOL.md)", () => {
 		expect(FakeWS.last.sent[1]).toEqual({ type: "signal", rid: "A".repeat(22), from: "me", to: "x", payload: "q" });
 		ws.close();
 	});
+	it("rejects signaling messages above the 16 KB server cap with a clear error", async () => {
+		const ws = wsTransport("wss://m", { WebSocketImpl: FakeWS as any, reconnect: false });
+		await ws.join("A".repeat(22), "me");
+		const before = FakeWS.last.sent.length;
+		expect(() => ws.send({ type: "signal", rid: "A".repeat(22), from: "me", to: "x", payload: "q".repeat(17 * 1024) })).toThrow(/too large.*16384/);
+		expect(FakeWS.last.sent).toHaveLength(before);
+		ws.send({ type: "signal", rid: "A".repeat(22), from: "me", to: "x", payload: "q".repeat(8 * 1024) });
+		expect(FakeWS.last.sent).toHaveLength(before + 1);
+		ws.close();
+	});
 	it("omits token for pairing rooms and has no default url", async () => {
 		const ws = wsTransport("wss://m", { token: "JWT", WebSocketImpl: FakeWS as any, reconnect: false });
 		await ws.join("p_" + "B".repeat(20), "me");

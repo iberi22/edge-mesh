@@ -1,5 +1,8 @@
 import type { SigMessage, SignalingChannel } from "../types.js";
 
+/** Server limit per JSON text frame (docs/SIGNALING-PROTOCOL.md). */
+export const WS_MAX_MESSAGE_BYTES = 16 * 1024;
+
 export interface WsTransportOptions {
 	/** Entitlement JWT (HS256 {sub, tier:'paid', exp}); sent in the `join` message. Not needed for pairing rooms (`p_` prefix). */
 	token?: string;
@@ -81,7 +84,12 @@ export function wsTransport(url: string, opts: WsTransportOptions = {}): Signali
 			const ws = rooms.get(msg.rid)?.ws;
 			// the server addresses by `to` and fans out joins itself: only signals go out
 			if (msg.type === "signal" && ws && ws.readyState === 1) {
-				ws.send(JSON.stringify({ type: "signal", rid: msg.rid, from: msg.from, to: msg.to, payload: msg.payload }));
+				const frame = JSON.stringify({ type: "signal", rid: msg.rid, from: msg.from, to: msg.to, payload: msg.payload });
+				const size = new TextEncoder().encode(frame).length;
+				if (size > WS_MAX_MESSAGE_BYTES) {
+					throw new Error(`signaling message too large: ${size} bytes > ${WS_MAX_MESSAGE_BYTES} (server limit "too-large")`);
+				}
+				ws.send(frame);
 			}
 		},
 		onMessage(cb) {

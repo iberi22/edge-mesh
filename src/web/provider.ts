@@ -1,6 +1,7 @@
 import * as Y from "yjs";
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate, removeAwarenessStates } from "y-protocols/awareness";
-import { deriveDocKey, hkdf, importAesKey, openUpdate, sealUpdate } from "./crypto.js";
+import { deriveDocMaterial, deriveSenderKey, hkdf, importAesKey, openUpdate, sealUpdate } from "./crypto.js";
+import { type EcdhIdentity, ecdhSignedBytes, generateEcdhIdentity, unwrapMeshKey, wrapMeshKey } from "./rotation.js";
 import {
 	type GrantBody,
 	GuestPairing,
@@ -63,12 +64,33 @@ const K_AWARENESS = 2;
 const K_ROTATE = 3;
 const ORIGIN = Symbol("swal-mesh");
 const DEV = "dev/";
+const ECDH_PREFIX = "ecdh/"; // ecdh/<deviceId> = { pub, sig } (sig by the device identity key)
+const ROT_PREFIX = "rot:"; // rot:<epoch>:<deviceId> = { from, wrap, revoked } (pairwise-wrapped new mesh key)
+const OLD_PREFIX = "old:"; // old:<epoch> = previous mesh key (b64u); only readable by current members (meta is under the NEW key)
+
+interface RotateMsg {
+	epoch: number;
+	from: string;
+	to: string;
+	wrap: string;
+	revoked: string;
+}
 
 interface LinkRec {
 	link: PeerLink;
 	rid: string;
 	deviceId?: string;
 	chain: Promise<void>;
+	/** set synchronously by closeRec: never sent to, never read from */
+	closing?: boolean;
+	/** link on a retired epoch room: only used to hand pairwise wraps to peers that missed the rotation */
+	legacy?: Legacy;
+}
+
+interface Legacy {
+	epoch: number;
+	rid: string;
+	material: Uint8Array;
 }
 
 export function createMesh(opts: MeshOptions): Mesh {
@@ -89,19 +111,23 @@ export function createMesh(opts: MeshOptions): Mesh {
 	let destroyed = false;
 	let running = false;
 	let meshKey: Uint8Array | null = null;
-	let docKey: CryptoKey | null = null;
+	let docMat: Uint8Array | null = null;
 	let sigKey: CryptoKey | null = null;
 	let dataRid = "";
 	let epoch = 0;
 	let status: MeshStatus = "off";
 	const links = new Set<LinkRec>();
+	const senderKeys = new Map<string, CryptoKey>(); // `${epoch}|${deviceId}` -> per-sender AES-GCM key
+	const revokedIds = new Set<string>();
+	const legacy = new Map<string, Legacy>(); // retired data rid -> its epoch material
+	let ecdhId: EcdhIdentity | null = null;
 	const rooms = new Map<string, () => void>(); // rid -> leave
 	const linkSubs: Array<() => void> = [];
 	let hostSession: { s: HostPairing; rid: string } | null = null;
 	let guestSession: { s: GuestPairing; rid: string } | null = null;
 	let pairRids = new Set<string>();
 
-	const peerIds = () => [...new Set([...links].filter((l) => l.deviceId && l.rid !== "pair").map((l) => l.deviceId!))];
+	const peerIds = () => [...new Set([...links].filter((l) => l.deviceId && l.rid !== "pair" && !l.legacy && !l.closing).map((l) => l.deviceId!))];
 	const setStatus = () => {
 		const s: MeshStatus = !running ? "off" : peerIds().length > 0 ? "online" : "connecting";
 		if (s !== status) {
@@ -137,27 +163,77 @@ export function createMesh(opts: MeshOptions): Mesh {
 				addedAt: now(),
 			} satisfies Device);
 		}
+		await publishEcdh();
 		if (devices().length > 1 && !destroyed) await start(); // already paired: resume
 	})();
 	ready.catch(err);
 
+	// ---- pairwise ECDH identity (rotation wraps) ----
+	async function ecdhIdentity(): Promise<EcdhIdentity> {
+		return (ecdhId ??= (await vault.getEcdhIdentity?.()) ?? (await generateEcdhIdentity()));
+	}
+	async function publishEcdh() {
+		const id = await ecdhIdentity();
+		const pub = b64uEncode(id.publicKey);
+		const cur = meta.get(ECDH_PREFIX + vault.deviceId) as { pub: string } | undefined;
+		if (cur?.pub === pub) return;
+		const sig = b64uEncode(await vault.sign(ecdhSignedBytes(vault.deviceId, pub)));
+		meta.set(ECDH_PREFIX + vault.deviceId, { pub, sig });
+	}
+	/** Verified ECDH public key of a registered device, or null. */
+	async function peerEcdhPub(deviceId: string): Promise<Uint8Array | null> {
+		const dev = meta.get(DEV + deviceId) as Device | undefined;
+		const e = meta.get(ECDH_PREFIX + deviceId) as { pub: string; sig: string } | undefined;
+		if (!dev || !e || typeof e.pub !== "string" || typeof e.sig !== "string") return null;
+		try {
+			const ok = await vault.verify(b64uDecode(dev.pub), ecdhSignedBytes(deviceId, e.pub), b64uDecode(e.sig));
+			return ok ? b64uDecode(e.pub) : null;
+		} catch {
+			return null;
+		}
+	}
+
 	// ---- keys ----
+	async function senderKey(material: Uint8Array, ep: number, deviceId: string): Promise<CryptoKey> {
+		const k = `${ep}|${deviceId}`;
+		let key = senderKeys.get(k);
+		if (!key) senderKeys.set(k, (key = await deriveSenderKey(material, topicName, deviceId)));
+		return key;
+	}
 	async function loadKeys(raw?: Uint8Array) {
 		meshKey = raw ?? (await vault.getOrCreateMeshKey());
 		epoch = Math.max(Number(await vault.getEpoch?.() ?? 0), Number(meta.get("epoch") ?? 0), epoch);
-		docKey = await deriveDocKey(meshKey, topicName);
+		docMat = await deriveDocMaterial(meshKey, topicName);
 		sigKey = await importAesKey(await hkdf(meshKey, `swal-signal/v1|${topicName}`));
 		dataRid = await deriveRoomId(meshKey, appId, topicName, epoch);
 	}
 
 	// ---- framing ----
+	// Every sender seals under its OWN subkey (HKDF over the sender's deviceId); receivers derive it
+	// from the deviceId in the frame header (also bound in the AAD). Wire: F_DATA | idLen | id | nonce | ct+tag.
 	async function sendFrame(rec: LinkRec, kind: number, body: Uint8Array) {
-		if (!docKey) return;
+		const lg = rec.legacy;
+		const mat = lg ? lg.material : docMat;
+		if (!mat || rec.closing) return;
+		const key = await senderKey(mat, lg ? lg.epoch : epoch, vault.deviceId);
 		const id = utf8(vault.deviceId);
-		const sealed = await sealUpdate(docKey, concat(new Uint8Array([kind]), body), `${dataRid}|${vault.deviceId}`);
+		const sealed = await sealUpdate(key, concat(new Uint8Array([kind]), body), `${lg ? lg.rid : dataRid}|${vault.deviceId}`);
+		if (rec.closing) return;
 		rec.link.send(concat(new Uint8Array([F_DATA, id.length]), id, sealed));
 	}
-	const established = () => [...links].filter((l) => l.rid === dataRid || l.rid === "");
+	const established = () =>
+		[...links].filter(
+			(l) => !l.closing && !l.legacy && (l.rid === dataRid || l.rid === "") && !(l.deviceId && revokedIds.has(l.deviceId)),
+		);
+	/** Synchronous: the link leaves `links` right now (the transport's onClose may fire much later). */
+	function closeRec(rec: LinkRec) {
+		rec.closing = true;
+		links.delete(rec);
+		try {
+			rec.link.close();
+		} catch {}
+		setStatus();
+	}
 	const broadcast = (kind: number, body: Uint8Array, except?: LinkRec) => {
 		for (const l of established()) if (l !== except) sendFrame(l, kind, body).catch(err);
 	};
@@ -174,21 +250,37 @@ export function createMesh(opts: MeshOptions): Mesh {
 	}
 
 	async function onData(rec: LinkRec, data: Uint8Array) {
-		if (!docKey || !running) return;
+		const lg = rec.legacy;
+		const mat = lg ? lg.material : docMat;
+		if (!mat || !running || rec.closing) return;
 		const idLen = data[1];
 		const sender = fromUtf8(data.subarray(2, 2 + idLen));
+		if (revokedIds.has(sender)) return;
 		let plain: Uint8Array;
 		try {
-			plain = await openUpdate(docKey, data.subarray(2 + idLen), `${dataRid}|${sender}`);
+			const key = await senderKey(mat, lg ? lg.epoch : epoch, sender);
+			plain = await openUpdate(key, data.subarray(2 + idLen), `${lg ? lg.rid : dataRid}|${sender}`);
 		} catch {
 			return; // wrong key / tampered / other epoch: drop silently
 		}
+		if (rec.closing) return;
 		if (!rec.deviceId) {
 			rec.deviceId = sender;
 			setStatus();
 		}
 		const kind = plain[0];
 		const body = plain.subarray(1);
+		if (lg) {
+			// retired room: the only thing we do is hand THIS peer its own pairwise wrap for the next epoch
+			if (kind === K_SV) {
+				const w = meta.get(`${ROT_PREFIX}${lg.epoch + 1}:${sender}`) as { from: string; wrap: string; revoked: string } | undefined;
+				if (w) {
+					const msg: RotateMsg = { epoch: lg.epoch + 1, from: w.from, to: sender, wrap: w.wrap, revoked: w.revoked };
+					await sendFrame(rec, K_ROTATE, utf8(JSON.stringify(msg)));
+				}
+			} else if (kind === K_ROTATE) await handleRotate(body);
+			return;
+		}
 		if (kind === K_SV) {
 			await sendFrame(rec, K_UPDATE, Y.encodeStateAsUpdate(doc, body));
 		} else if (kind === K_UPDATE) {
@@ -196,9 +288,28 @@ export function createMesh(opts: MeshOptions): Mesh {
 		} else if (kind === K_AWARENESS) {
 			applyAwarenessUpdate(awareness, body, ORIGIN);
 		} else if (kind === K_ROTATE) {
-			const r = JSON.parse(fromUtf8(body)) as { meshKey: string; epoch: number; revoked: string };
-			if (r.epoch > epoch) await adoptRotation(b64uDecode(r.meshKey), r.epoch, r.revoked);
+			await handleRotate(body);
 		}
+	}
+
+	async function handleRotate(body: Uint8Array) {
+		let r: RotateMsg;
+		try {
+			r = JSON.parse(fromUtf8(body)) as RotateMsg;
+		} catch {
+			return;
+		}
+		if (r.to !== vault.deviceId || r.epoch !== epoch + 1 || revokedIds.has(r.from) || r.from === r.revoked) return;
+		const fromPub = await peerEcdhPub(r.from);
+		if (!fromPub) return;
+		let newKey: Uint8Array;
+		try {
+			newKey = await unwrapMeshKey((await ecdhIdentity()).privateKey, fromPub, r.epoch, r.from, r.to, b64uDecode(r.wrap));
+		} catch {
+			return;
+		}
+		if (r.epoch !== epoch + 1) return; // raced with another adoption
+		await adoptRotation(newKey, r.epoch, r.revoked);
 	}
 
 	async function onPairFrame(rec: LinkRec, data: Uint8Array) {
@@ -210,12 +321,15 @@ export function createMesh(opts: MeshOptions): Mesh {
 
 	function wireLink(link: PeerLink, rid: string) {
 		const isData = running && rid === dataRid;
+		const lg = running && !isData ? legacy.get(rid) : undefined;
 		const isPair = pairRids.has(rid);
-		if (rid !== "" && !isData && !isPair) return link.close();
+		if (rid !== "" && !isData && !isPair && !lg) return link.close();
 		const rec: LinkRec = { link, rid: isPair && !isData ? "pair" : rid, chain: Promise.resolve() };
+		if (lg) rec.legacy = lg;
 		if (rid === "") rec.rid = ""; // room-less (qr-sdp): frames are self-describing
 		links.add(rec);
 		link.onMessage((d) => {
+			if (rec.closing) return;
 			rec.chain = rec.chain
 				.then(() => (d[0] === F_PAIR ? onPairFrame({ ...rec, rid: rid === "" ? [...pairRids][0] ?? "" : rid }, d) : d[0] === F_DATA ? onData(rec, d) : undefined))
 				.catch(err);
@@ -276,13 +390,15 @@ export function createMesh(opts: MeshOptions): Mesh {
 		running = true;
 		setStatus();
 		await joinRoom(dataRid, sigKey!);
+		await syncLegacy();
 	}
 
 	function stopNetwork() {
 		running = false;
 		for (const rid of [...rooms.keys()]) leaveRoom(rid);
-		for (const l of [...links]) l.link.close();
+		for (const l of [...links]) closeRec(l);
 		links.clear();
+		legacy.clear();
 		for (const u of linkSubs.splice(0)) u();
 		subscribed = false;
 		pairRids = new Set();
@@ -303,16 +419,50 @@ export function createMesh(opts: MeshOptions): Mesh {
 	awareness.on("update", onAwareness);
 
 	// ---- rotation ----
-	async function adoptRotation(newKey: Uint8Array, newEpoch: number, revoked: string) {
+	// The new mesh key never travels under the shared (old) key: it is wrapped per remaining device with
+	// ECDH(own static key, peer static key) -> HKDF(swal-rotate/v1|epoch|from|to) -> AES-GCM. The wraps are also
+	// stored in meta (rot:<epoch>:<deviceId>) so a peer that was offline can fetch its own wrap later through the
+	// retired-epoch room (see `legacy`); the revoked device has no wrap and cannot unwrap anyone else's.
+	async function switchEpoch(newKey: Uint8Array, newEpoch: number) {
+		const oldRid = dataRid;
+		const old: Legacy = { epoch, rid: oldRid, material: docMat! };
+		const oldKey = meshKey!;
 		await vault.setMeshKey(newKey);
 		await vault.setEpoch?.(newEpoch);
-		const oldRid = dataRid;
 		epoch = newEpoch;
 		await loadKeys(newKey);
-		for (const l of [...links]) if (l.deviceId === revoked) l.link.close();
-		leaveRoom(oldRid);
-		for (const l of links) if (l.rid === oldRid) l.rid = dataRid;
+		// links stay up across the rotation; the retired room stays joined ONLY to serve wraps to stragglers
+		for (const l of links) if (l.rid === oldRid && !l.legacy) l.rid = dataRid;
+		legacy.set(oldRid, old);
 		await joinRoom(dataRid, sigKey!);
+		return { oldEpoch: old.epoch, oldKey };
+	}
+
+	async function syncLegacy() {
+		if (!running) return;
+		for (const k of [...meta.keys()]) {
+			if (!k.startsWith(OLD_PREFIX)) continue;
+			const e = Number(k.slice(OLD_PREFIX.length));
+			if (!Number.isInteger(e) || e >= epoch) continue;
+			const raw = b64uDecode(meta.get(k) as string);
+			const rid = await deriveRoomId(raw, appId, topicName, e);
+			if (legacy.has(rid) && rooms.has(rid)) continue;
+			legacy.set(rid, { epoch: e, rid, material: await deriveDocMaterial(raw, topicName) });
+			await joinRoom(rid, await importAesKey(await hkdf(raw, `swal-signal/v1|${topicName}`)));
+		}
+	}
+	meta.observe((ev) => {
+		if ([...ev.keysChanged].some((k) => k.startsWith(OLD_PREFIX))) void syncLegacy().catch(err);
+	});
+
+	async function adoptRotation(newKey: Uint8Array, newEpoch: number, revoked: string) {
+		revokedIds.add(revoked);
+		for (const l of [...links]) if (l.deviceId === revoked) closeRec(l);
+		const { oldEpoch, oldKey } = await switchEpoch(newKey, newEpoch);
+		doc.transact(() => {
+			meta.set(OLD_PREFIX + oldEpoch, b64uEncode(oldKey));
+			meta.set("epoch", newEpoch);
+		});
 		emit("revoked", { deviceId: revoked, epoch });
 	}
 
@@ -321,23 +471,36 @@ export function createMesh(opts: MeshOptions): Mesh {
 		if (deviceId === vault.deviceId) throw new Error("cannot revoke the current device");
 		if (!meta.has(DEV + deviceId)) throw new Error("unknown device");
 		if (!running) await start();
+		// cut the revoked device off SYNCHRONOUSLY: its link must not be reachable by anything below
+		revokedIds.add(deviceId);
+		for (const l of [...links]) if (l.deviceId === deviceId) closeRec(l);
 		const newKey = randomBytes(32);
 		const newEpoch = epoch + 1;
-		const payload = utf8(JSON.stringify({ meshKey: b64uEncode(newKey), epoch: newEpoch, revoked: deviceId }));
-		for (const l of [...links]) if (l.deviceId === deviceId) l.link.close();
-		// 1) tell the remaining peers under the OLD key, 2) switch, 3) publish the removal under the NEW key
-		await Promise.all(established().filter((l) => l.deviceId).map((l) => sendFrame(l, K_ROTATE, payload)));
-		await vault.setMeshKey(newKey);
-		await vault.setEpoch?.(newEpoch);
-		const oldRid = dataRid;
-		epoch = newEpoch;
-		await loadKeys(newKey);
-		leaveRoom(oldRid);
-		for (const l of links) if (l.rid === oldRid) l.rid = dataRid;
-		await joinRoom(dataRid, sigKey!);
+		const priv = (await ecdhIdentity()).privateKey;
+		const wraps = new Map<string, RotateMsg>();
+		for (const d of devices()) {
+			if (d.deviceId === vault.deviceId || d.deviceId === deviceId) continue;
+			const pub = await peerEcdhPub(d.deviceId);
+			if (!pub) {
+				err(new Error(`no verified ECDH key for ${d.deviceId}: it must be re-paired after the rotation`));
+				continue;
+			}
+			const wrap = await wrapMeshKey(priv, pub, newEpoch, vault.deviceId, d.deviceId, newKey);
+			wraps.set(d.deviceId, { epoch: newEpoch, from: vault.deviceId, to: d.deviceId, wrap, revoked: deviceId });
+		}
+		// 1) hand each connected remaining peer ITS OWN wrap, 2) switch, 3) publish the removal + wraps under the NEW key
+		await Promise.all(
+			established()
+				.filter((l) => l.deviceId && l.deviceId !== deviceId && wraps.has(l.deviceId))
+				.map((l) => sendFrame(l, K_ROTATE, utf8(JSON.stringify(wraps.get(l.deviceId!))))),
+		);
+		const { oldEpoch, oldKey } = await switchEpoch(newKey, newEpoch);
 		doc.transact(() => {
 			meta.delete(DEV + deviceId);
+			meta.delete(ECDH_PREFIX + deviceId);
 			meta.set("epoch", newEpoch);
+			meta.set(OLD_PREFIX + oldEpoch, b64uEncode(oldKey));
+			for (const [to, m] of wraps) meta.set(`${ROT_PREFIX}${newEpoch}:${to}`, { from: m.from, wrap: m.wrap, revoked: deviceId });
 		});
 		emit("revoked", { deviceId, epoch });
 	}
@@ -432,6 +595,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 				name: opts.deviceName ?? "device",
 				addedAt: now(),
 			} satisfies Device);
+			await publishEcdh();
 			endPairing(rid);
 			emit("paired", g.hostDevice);
 			await start();

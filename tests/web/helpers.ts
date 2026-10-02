@@ -1,11 +1,13 @@
 import * as Y from "yjs";
 import { createMesh, createLoopbackHub, type Mesh, type VaultClient } from "../../src/web/index.js";
 import type { LoopbackHub } from "../../src/web/index.js";
+import { generateEcdhIdentity } from "../../src/web/rotation.js";
 import { randomBytes } from "../../src/web/util.js";
 
 export async function makeVault(id: string): Promise<VaultClient & { meshKey: Uint8Array | null; epoch: number }> {
 	const kp = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair;
 	const pub = new Uint8Array(await crypto.subtle.exportKey("raw", kp.publicKey));
+	const ecdh = await generateEcdhIdentity(); // persistent for the life of this vault (like a real one)
 	const v = {
 		deviceId: id,
 		devicePublicKey: pub,
@@ -24,6 +26,7 @@ export async function makeVault(id: string): Promise<VaultClient & { meshKey: Ui
 			const k = await crypto.subtle.importKey("raw", p as BufferSource, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
 			return crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, k, sig as BufferSource, data as BufferSource);
 		},
+		getEcdhIdentity: async () => ecdh,
 		getEpoch: () => v.epoch,
 		setEpoch: (n: number) => void (v.epoch = n),
 	};

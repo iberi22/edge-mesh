@@ -7,6 +7,12 @@ export interface VaultClient {
 	setMeshKey(raw: Uint8Array): Promise<void>;
 	sign(data: Uint8Array): Promise<Uint8Array>;
 	verify(publicKey: Uint8Array, data: Uint8Array, signature: Uint8Array): Promise<boolean>;
+	/**
+	 * Optional: persistent static P-256 ECDH key of this device (non-extractable private key + raw public key),
+	 * used to wrap rotated mesh keys pairwise. Without it the mesh keeps an in-memory key for the session only,
+	 * so a device that reloads while peers hold wraps for its old key cannot catch up: provide it in production.
+	 */
+	getEcdhIdentity?(): Promise<{ privateKey: CryptoKey; publicKey: Uint8Array }>;
 	/** Optional: persist the rotation epoch (otherwise it lives in memory + the encrypted doc). */
 	getEpoch?(): Promise<number> | number;
 	setEpoch?(epoch: number): Promise<void> | void;
