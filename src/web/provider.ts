@@ -178,6 +178,8 @@ const K_AUTH = 6; // body = peer's nonce(16) | epoch(u32), signed: the sender is
 const NONCE_BYTES = 16;
 /** SF4: per link, at most this many challenges sent and answered */
 const HANDSHAKE_MAX = 8;
+/** frames kept per link while waiting for the peer's K_AUTH (also bounded by PRE_AUTH_MAX bytes) */
+const EARLY_MAX_FRAMES = 32;
 /** Replay window per sender session: seqs at most this far behind the highest one are still accepted once. */
 const REPLAY_WINDOW = 1024;
 const ORIGIN = Symbol("swal-mesh");
@@ -225,6 +227,10 @@ interface LinkRec {
 	peerSess?: string;
 	/** S5: raise this link's reassembly limits once it is authenticated */
 	lift?: () => void;
+	/** frames that arrived before we authenticated the peer (its state-vector pull may race our K_AUTH): replayed after */
+	early?: { frames: Uint8Array[]; bytes: number };
+	/** a key the peer demonstrably holds (its last handshake frame came under it): rotations are also sealed under it */
+	common?: { material: Uint8Array; rid: string; epoch: number };
 	/** we answered the peer's challenge */
 	authSent?: boolean;
 	/** SF4: handshake messages seen/sent on this link (re-sent after trust changes, capped) */
@@ -623,13 +629,17 @@ export function createMesh(opts: MeshOptions): Mesh {
 		return sendFrameWith(rec, kind, body, lg ? lg.material : docMat, lg ? lg.rid : dataRid);
 	}
 	/** Recent retired keys (newest first): rotation frames are also sealed under them, and receivers try them. */
-	const retiredKeys = () => [...legacy.values()].sort((x, y) => y.epoch - x.epoch).slice(0, RETIRED_TRY);
+	const retiredKeys = (n = RETIRED_TRY) => [...legacy.values()].sort((x, y) => y.epoch - x.epoch).slice(0, n);
 	/** A rotation frame must reach peers still on the previous key or on a concurrent branch: seal it under each. */
 	async function sendRotate(rec: LinkRec, msg: RotateMsg) {
 		const body = utf8(JSON.stringify(msg));
 		if (rec.legacy) return sendFrame(rec, K_ROTATE, body);
 		await sendFrameWith(rec, K_ROTATE, body, docMat, dataRid);
-		for (const r of retiredKeys()) await sendFrameWith(rec, K_ROTATE, body, r.material, r.rid);
+		const recent = retiredKeys();
+		for (const r of recent) await sendFrameWith(rec, K_ROTATE, body, r.material, r.rid);
+		// a key this peer is known to hold, if it is neither our current one nor among the recent ones above
+		const c = rec.common;
+		if (c && c.rid !== dataRid && !recent.some((r) => r.rid === c.rid)) await sendFrameWith(rec, K_ROTATE, body, c.material, c.rid);
 	}
 	async function sendFrameWith(rec: LinkRec, kind: number, body: Uint8Array, mat: Uint8Array | null, rid: string) {
 		if (!mat || rec.closing) return;
@@ -731,10 +741,13 @@ export function createMesh(opts: MeshOptions): Mesh {
 			return;
 		}
 		// the link's key first; on a live link also the recent retired keys, which may only carry rotations (B4)
-		const tries = lg ? [{ material: lg.material, rid: lg.rid }] : [{ material: docMat, rid: dataRid }, ...retiredKeys()];
+		const tries: Array<{ material: Uint8Array | null; rid: string; epoch: number }> = lg
+			? [lg]
+			: [{ material: docMat, rid: dataRid, epoch }, ...retiredKeys(MAX_RETIRED)];
 		let plain: Uint8Array | null = null;
 		let rid = "";
 		let retired = false;
+		let via: { material: Uint8Array; rid: string; epoch: number } | null = null; // the key this frame came under
 		for (let i = 0; i < tries.length && !plain; i++) {
 			const t = tries[i];
 			if (!t.material) continue;
@@ -742,6 +755,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 				plain = await openUpdate(await senderKey(t.material, sender), data.subarray(2 + idLen), `${t.rid}|${sender}`);
 				rid = t.rid;
 				retired = i > 0;
+				via = { material: t.material, rid: t.rid, epoch: t.epoch };
 			} catch {} // wrong key / tampered / other epoch: try the next one, else drop silently
 		}
 		if (!plain || rec.closing || plain.length < 1) return;
@@ -773,32 +787,48 @@ export function createMesh(opts: MeshOptions): Mesh {
 			if (!ok) return reject("bad frame signature", sender);
 			if (rec.closing) return;
 			// S1: a link carries nothing but its handshake until the peer signed OUR fresh challenge on it
+			// the handshake may arrive under one of our recent retired keys (a key switch raced with it, or the peer is on
+			// another branch): it is then bound to THAT key's room and epoch, and answered under the same key
 			if (kind === K_HELLO) {
-				if (retired || body.length !== NONCE_BYTES) return;
+				if (body.length !== NONCE_BYTES || !via) return;
+				rec.common = via;
 				rec.hellosIn = (rec.hellosIn ?? 0) + 1;
-				if ((rec.answers ?? 0) < HANDSHAKE_MAX) await answerHello(rec, body, sender);
+				if ((rec.answers ?? 0) < HANDSHAKE_MAX) await answerHello(rec, body, sender, via);
 				// SF4: a repeated challenge means our earlier messages may have been lost (e.g. held and expired while
 				// the peer was not yet admitted here): challenge again too
 				if (rec.hellosIn > 1 && !rec.authed) resendHello(rec);
 				return;
 			}
 			if (kind === K_AUTH) {
-				if (retired || rec.authed || !rec.nonce) return;
-				const ep = rec.legacy ? rec.legacy.epoch : epoch;
+				if (rec.authed || !rec.nonce || !via) return;
+				const ep = via.epoch;
 				const okAuth =
 					body.length > NONCE_BYTES + 4 &&
 					equalBytes(body.subarray(0, NONCE_BYTES), rec.nonce) &&
 					new DataView(body.buffer, body.byteOffset + NONCE_BYTES, 4).getUint32(0, false) === ep &&
 					fromUtf8(body.subarray(NONCE_BYTES + 4)) === vault.deviceId;
 				if (!okAuth) return reject("bad link authentication", sender);
+				rec.common = via;
 				rec.deviceId = sender;
 				rec.authed = true;
 				rec.peerSess = sess;
 				rec.lift?.();
 				setStatus();
+				const early = rec.early?.frames ?? [];
+				rec.early = undefined;
+				for (const f of early) rec.chain = rec.chain.then(() => onData(rec, f)).catch(err);
 				return maybeStart(rec);
 			}
-			if (!rec.authed || sess !== rec.peerSess || !freshSeq(sender, sess, seq)) return; // replay / other link
+			if (!rec.authed) {
+				// the peer authenticated us first and already talks: keep a few frames until its K_AUTH reaches us
+				const e = (rec.early ??= { frames: [], bytes: 0 });
+				if (e.frames.length < EARLY_MAX_FRAMES && e.bytes + data.length <= PRE_AUTH_MAX) {
+					e.frames.push(data);
+					e.bytes += data.length;
+				}
+				return;
+			}
+			if (sess !== rec.peerSess || !freshSeq(sender, sess, seq)) return; // replay / other link
 		} else if (revoked) return;
 		if (retired) {
 			if (kind === K_ROTATE) await serialRot(() => handleRotate(body));
@@ -1083,13 +1113,23 @@ export function createMesh(opts: MeshOptions): Mesh {
 	function resendHello(rec: LinkRec) {
 		if (!rec.nonce || rec.authed || rec.closing || (rec.hellosOut ?? 0) >= HANDSHAKE_MAX) return;
 		rec.hellosOut = (rec.hellosOut ?? 0) + 1;
-		sendFrame(rec, K_HELLO, rec.nonce).catch(err);
+		const nonce = rec.nonce;
+		// under the current AND the recent retired keys: the peer may still be on (or have switched from) any of them
+		void (async () => {
+			await sendFrame(rec, K_HELLO, nonce);
+			if (!rec.legacy) for (const r of retiredKeys()) await sendFrameWith(rec, K_HELLO, nonce, r.material, r.rid);
+		})().catch(err);
 	}
-	async function answerHello(rec: LinkRec, peerNonce: Uint8Array, peer: string) {
+	async function answerHello(
+		rec: LinkRec,
+		peerNonce: Uint8Array,
+		peer: string,
+		via: { material: Uint8Array; rid: string; epoch: number },
+	) {
 		rec.answers = (rec.answers ?? 0) + 1;
 		rec.authSent = true;
-		// bound to the challenger too: the answer is for THIS peer's challenge on THIS link
-		await sendFrame(rec, K_AUTH, concat(peerNonce, u32(rec.legacy ? rec.legacy.epoch : epoch), utf8(peer)));
+		// bound to the challenger and to the key the challenge came under (sealed under that same key)
+		await sendFrameWith(rec, K_AUTH, concat(peerNonce, u32(via.epoch), utf8(peer)), via.material, via.rid);
 		maybeStart(rec);
 	}
 	function maybeStart(rec: LinkRec) {
@@ -1108,6 +1148,16 @@ export function createMesh(opts: MeshOptions): Mesh {
 		}
 		sendFrame(rec, K_SV, Y.encodeStateVector(doc)).catch(err);
 		if (awareness.getLocalState()) sendFrame(rec, K_AWARENESS, encodeAwarenessUpdate(awareness, [doc.clientID])).catch(err);
+		// the peer may be on another key of this epoch (its handshake crossed a key switch): offer the rotation we
+		// are on if it is a recipient; one record, ignored if already known
+		const cur = curRot;
+		const peer = rec.deviceId as string;
+		if (cur && cur.to.includes(peer)) {
+			void (async () => {
+				const m = (await storedRotationsFor(peer, cur.epoch)).find((x) => x.rot.n === cur.n && x.rot.from === cur.from);
+				if (m) await sendRotate(rec, m);
+			})().catch(err);
+		}
 	}
 
 	function wireLink(link: PeerLink, rid: string) {

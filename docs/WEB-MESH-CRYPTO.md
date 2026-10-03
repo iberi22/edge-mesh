@@ -24,6 +24,11 @@
   nothing (`rejected: "bad link authentication"`). Handshake frames from a peer not yet admitted here are held like
   any other; since held frames expire, every trust change makes unauthenticated links send their challenge again, and
   a repeated challenge is answered and returned (at most 8 of each per link, SF4), so such a link still comes up.
+  A handshake frame may also arrive under one of this device's retired keys (a key switch raced with it, or the peer
+  is on another branch of the same epoch): it is then bound to that key's room and epoch and answered under the same
+  key, and the link remembers that key as one the peer holds (rotation frames are also sealed under it). Frames that
+  arrive before the peer's `K_AUTH` (it authenticated us first and already pulls our state) are kept (32 frames /
+  1 MiB) and processed right after it, with the usual session and replay checks.
 - **Replays and duplicates (S1).** `sess` is random per mesh instance (a restart is a new session) and `seq` grows by
   one per signed message (a broadcast signs once, same `seq` on every link). Receivers accept a `(sender, sess,
   seq)` once, within a window of 1024 behind the highest `seq` seen, and only with the link's bound session.

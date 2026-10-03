@@ -95,6 +95,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a repeated `K_HELLO` is answered and returned (capped at 8 per link).
 - **SF5 unverified `old:` entries made devices join unbounded rooms**: retired keys are only those a device retired
   itself, kept in its local store (16 most recent); `old:` entries in the shared doc are no longer written or read.
+- Link handshake across key switches (found while stress-testing V1, three admins revoking at once): handshake frames
+  are accepted under this device's retired keys and answered under the same key, rotation frames are also sealed
+  under a key the peer is known to hold, receivers try all retired keys (≤ 16), a link offers its current rotation
+  when it comes up, and frames that arrive before the peer's `K_AUTH` are kept and replayed instead of dropped (a
+  lost state-vector pull left a device without some doc updates).
 - Notes: `MeshOptions.resume: false` makes the documented move to another mesh work while the old one is reachable
   (R6); `ensureRoot` always draws a fresh `mid`; `K_AUTH` also names the challenger; per-mesh caches (revocation
   records, candidates, current rotation, negative cache, replay windows) are reset on a mesh switch; re-pairing from a
