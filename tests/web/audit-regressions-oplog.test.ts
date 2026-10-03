@@ -32,9 +32,6 @@ async function forge(signer: Signer, body: OpBody): Promise<Op> {
 	return { ...body, sig: await signCanonical(signer, body) };
 }
 
-/** A finding whose fix has not landed yet: the attack still works, so the inverted test is expected to fail. */
-const open = it.fails;
-
 describe("audit regressions: web/trust + web/oplog", () => {
 	it("A1 (B5): a member cannot self-revoke to erase its own accepted history", async () => {
 		const w = await world();
@@ -176,36 +173,33 @@ describe("audit regressions: web/trust + web/oplog", () => {
 		]);
 	});
 
-	open(
-		"A4 (S4): unknown-author junk cannot evict legit pending ops",
-		async () => {
-			const w = await world();
-			const trust = await w.trust();
-			await trust.addMany([w.g.owner, w.g.admin]); // waiter grant not yet known
-			const log = await w.log(undefined, trust, { maxPending: 100 });
-			for (let i = 0; i < 100; i++) {
-				await log.ingest({
-					t: "op",
-					v: 1,
-					alg: "ES256",
-					inst: "local-test",
-					author: `junk${i}`,
-					seq: 1,
-					prev: null,
-					hlc: `${String(T0).padStart(15, "0")}-00000`,
-					...op("j"),
-					sig: "AAAA",
-				});
-			}
-			const a = await ready(w, w.waiter);
-			const legit = await a.log.append(op("legit"));
-			const r = await log.ingest(legit.op);
-			expect(r.status).toBe("pending");
-			// once its grant arrives, the op is applied
-			await trust.add(w.g.waiter);
-			await until(() => log.isAccepted(w.waiter.fp, 1));
-		},
-	);
+	it("A4 (S4): unknown-author junk cannot evict legit pending ops", async () => {
+		const w = await world();
+		const trust = await w.trust();
+		await trust.addMany([w.g.owner, w.g.admin]); // waiter grant not yet known
+		const log = await w.log(undefined, trust, { maxPending: 100 });
+		for (let i = 0; i < 100; i++) {
+			await log.ingest({
+				t: "op",
+				v: 1,
+				alg: "ES256",
+				inst: "local-test",
+				author: `junk${i}`,
+				seq: 1,
+				prev: null,
+				hlc: `${String(T0).padStart(15, "0")}-00000`,
+				...op("j"),
+				sig: "AAAA",
+			});
+		}
+		const a = await ready(w, w.waiter);
+		const legit = await a.log.append(op("legit"));
+		const r = await log.ingest(legit.op);
+		expect(r.status).toBe("pending");
+		// once its grant arrives, the op is applied
+		await trust.add(w.g.waiter);
+		await until(() => log.isAccepted(w.waiter.fp, 1));
+	});
 
 	it("A3 (S3): a replica holding the real history keeps it when the revoked key later forks it (no equivocation cut)", async () => {
 		const w = await world();
@@ -274,6 +268,52 @@ describe("audit regressions: web/trust + web/oplog", () => {
 		expect([1, 2].map((s) => y.log.isAccepted(w.waiter.fp, s))).toEqual([
 			false,
 			false,
+		]);
+	});
+
+	it("A4 (S4): an unknown-author flood never evicts a known author's pending ops; per-author cap", async () => {
+		const w = await world();
+		const a = await ready(w, w.waiter);
+		const mine = [];
+		for (let i = 0; i < 5; i++) mine.push(await a.log.append(op(`o${i}`)));
+		const n = await ready(w);
+		const log = await w.log(undefined, n.trust, {
+			maxPending: 50,
+			maxPendingPerAuthor: 3,
+		});
+		// seqs 2..5 arrive first (gap): 3 are kept (per-author cap), the 4th overflows
+		const parked = await log.ingestMany(mine.slice(1).map((s) => s.op));
+		expect(parked.map((r) => r.status)).toEqual([
+			"pending",
+			"pending",
+			"pending",
+			"quarantined",
+		]);
+		for (let i = 0; i < 500; i++) {
+			await log.ingest({
+				t: "op",
+				v: 1,
+				alg: "ES256",
+				inst: "local-test",
+				author: `junk${i}`,
+				seq: 1,
+				prev: null,
+				hlc: `${String(T0).padStart(15, "0")}-00000`,
+				...op("j"),
+				sig: "AAAA",
+			});
+		}
+		const pend = log.pending();
+		expect(pend.filter((p) => p.author === w.waiter.fp)).toHaveLength(3);
+		expect(
+			pend.filter((p) => p.reason === "unknown-author").length,
+		).toBeLessThanOrEqual(5);
+		await log.ingest(mine[0]?.op);
+		expect([1, 2, 3, 4].map((s) => log.isAccepted(w.waiter.fp, s))).toEqual([
+			true,
+			true,
+			true,
+			true,
 		]);
 	});
 });

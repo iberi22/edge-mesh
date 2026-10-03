@@ -47,6 +47,17 @@ export interface OpLogOptions {
 	maxSkewMs?: number;
 	/** max pending ops held in memory. Default 10 000 */
 	maxPending?: number;
+	/** max canonical bytes of all pending ops. Default 16 MiB */
+	maxPendingBytes?: number;
+	/** max pending ops of one author. Default 1024 */
+	maxPendingPerAuthor?: number;
+	/**
+	 * Budget for ops whose author has no known grant yet (signature not checkable, so anyone can produce them):
+	 * count (default maxPending / 10) and bytes (default 1 MiB). When full, the OLDEST unknown-author op is dropped
+	 * (it comes back with catch-up); pending ops of known authors are never evicted for them (S4).
+	 */
+	maxPendingUnknown?: number;
+	maxPendingUnknownBytes?: number;
 	/** max canonical size of one op. Default 32 KiB (fits a 64 KiB catch-up frame) */
 	maxOpBytes?: number;
 }
@@ -136,6 +147,14 @@ export class OpLog {
 	private readonly now: () => number;
 	private readonly maxSkewMs: number;
 	private readonly maxPending: number;
+	private readonly maxPendingBytes: number;
+	private readonly maxPendingPerAuthor: number;
+	private readonly maxPendingUnknown: number;
+	private readonly maxPendingUnknownBytes: number;
+	private pendingBytes = 0;
+	private unknownCount = 0;
+	private unknownBytes = 0;
+	private readonly pendingPerAuthor = new Map<string, number>();
 	private readonly maxOpBytes: number;
 	private readonly clock: HlcClock;
 	private readonly verdicts = new Map<string, OpVerdict>();
@@ -143,7 +162,7 @@ export class OpLog {
 	private readonly equiv = new Map<string, { forkSeq: number }>();
 	private readonly pendingOps = new Map<
 		string,
-		{ op: Op; reason: PendingReason; id?: string }
+		{ op: Op; reason: PendingReason; id?: string; size: number }
 	>(); // key author:seq:sig
 	/** S3: author -> highest anchored seq whose STORED op is not the anchored one (its history <= that seq is void) */
 	private offAnchor = new Map<string, number>();
@@ -165,6 +184,11 @@ export class OpLog {
 		this.now = opts.now ?? Date.now;
 		this.maxSkewMs = opts.maxSkewMs ?? 10 * 60_000;
 		this.maxPending = opts.maxPending ?? 10_000;
+		this.maxPendingBytes = opts.maxPendingBytes ?? 16 * 1024 * 1024;
+		this.maxPendingPerAuthor = opts.maxPendingPerAuthor ?? 1024;
+		this.maxPendingUnknown =
+			opts.maxPendingUnknown ?? Math.max(1, Math.floor(this.maxPending / 10));
+		this.maxPendingUnknownBytes = opts.maxPendingUnknownBytes ?? 1024 * 1024;
 		this.maxOpBytes = opts.maxOpBytes ?? 32 * 1024;
 		this.clock = createHlc(this.now);
 		this.unsubscribeTrust = this.trust.onChange(() => void this.reevaluate());
@@ -399,14 +423,71 @@ export class OpLog {
 		});
 	}
 
-	private park(op: Op, reason: PendingReason, id?: string): IngestResult {
-		const k = `${op.author}:${op.seq}:${op.sig}`;
-		if (!this.pendingOps.has(k)) {
-			if (this.pendingOps.size >= this.maxPending)
-				return { status: "quarantined", reason: "pending-overflow" };
-			this.pendingOps.set(k, { op, reason, id });
-			this.emit("pending", { op, reason });
+	private takePending(k: string) {
+		const p = this.pendingOps.get(k);
+		if (!p) return undefined;
+		this.pendingOps.delete(k);
+		this.pendingBytes -= p.size;
+		const n = (this.pendingPerAuthor.get(p.op.author) ?? 1) - 1;
+		if (n > 0) this.pendingPerAuthor.set(p.op.author, n);
+		else this.pendingPerAuthor.delete(p.op.author);
+		if (p.reason === "unknown-author") {
+			this.unknownCount--;
+			this.unknownBytes -= p.size;
 		}
+		return p;
+	}
+
+	/** Drop the oldest unknown-author pending op (insertion order). False if there is none. */
+	private evictUnknown(): boolean {
+		for (const [k, p] of this.pendingOps) {
+			if (p.reason !== "unknown-author") continue;
+			this.takePending(k);
+			return true;
+		}
+		return false;
+	}
+
+	/**
+	 * S4: bounded pending set. Known authors (gap/future/anchor) only take free room (or room held by unknown authors);
+	 * unknown authors live in a small FIFO budget of their own and never displace a known author's op.
+	 */
+	private park(
+		op: Op,
+		reason: PendingReason,
+		size: number,
+		id?: string,
+	): IngestResult {
+		const k = `${op.author}:${op.seq}:${op.sig}`;
+		if (this.pendingOps.has(k)) return { status: "pending", reason };
+		const overflow: IngestResult = {
+			status: "quarantined",
+			reason: "pending-overflow",
+		};
+		if ((this.pendingPerAuthor.get(op.author) ?? 0) >= this.maxPendingPerAuthor)
+			return overflow;
+		const unknown = reason === "unknown-author";
+		if (unknown && size > this.maxPendingUnknownBytes) return overflow;
+		while (
+			this.pendingOps.size >= this.maxPending ||
+			this.pendingBytes + size > this.maxPendingBytes ||
+			(unknown &&
+				(this.unknownCount >= this.maxPendingUnknown ||
+					this.unknownBytes + size > this.maxPendingUnknownBytes))
+		) {
+			if (!this.evictUnknown()) return overflow;
+		}
+		this.pendingOps.set(k, { op, reason, id, size });
+		this.pendingBytes += size;
+		this.pendingPerAuthor.set(
+			op.author,
+			(this.pendingPerAuthor.get(op.author) ?? 0) + 1,
+		);
+		if (unknown) {
+			this.unknownCount++;
+			this.unknownBytes += size;
+		}
+		this.emit("pending", { op, reason });
 		return { status: "pending", reason };
 	}
 
@@ -437,12 +518,12 @@ export class OpLog {
 		}
 		if ((head?.id ?? null) !== want) return; // does not continue what we store
 		for (const [k, o] of chain) {
-			this.pendingOps.delete(k);
+			this.takePending(k);
 			await this.ingestOne(o, false, true);
 		}
 		for (const [k, p] of mine) {
 			if (!this.pendingOps.has(k)) continue;
-			this.pendingOps.delete(k);
+			this.takePending(k);
 			await this.rejectOp(
 				"broken-chain",
 				p.op,
@@ -482,15 +563,15 @@ export class OpLog {
 		if (bad) return this.rejectOp("malformed", x, bad);
 		const op = x as Op;
 		const body = bodyOfOp(op);
-		if (canonicalBytes(body).length > this.maxOpBytes)
-			return this.rejectOp("too-large", op);
+		const size = canonicalBytes(body).length;
+		if (size > this.maxOpBytes) return this.rejectOp("too-large", op);
 		if (op.inst !== this.inst) return this.rejectOp("wrong-instance", op);
 		const id = await contentId(body);
 		const existing = await this.store.get(op.author, op.seq);
 		if (existing && existing.id === id) return { status: "duplicate", id };
 
 		const jwk = this.trust.keyOf(op.author);
-		if (!jwk) return this.park(op, "unknown-author");
+		if (!jwk) return this.park(op, "unknown-author", size);
 		if (!(await verifyCanonical(jwk, body, op.sig)))
 			return this.rejectOp("bad-signature", op, undefined, id);
 
@@ -518,7 +599,7 @@ export class OpLog {
 					"not the op the revocation anchored",
 					id,
 				);
-			const r = this.park(op, "anchor", id);
+			const r = this.park(op, "anchor", size, id);
 			if (r.status === "pending") await this.resolveAnchor(op.author, anchor);
 			if ((await this.store.get(op.author, op.seq))?.id === id) {
 				if (drain) await this.drain(op.author);
@@ -542,7 +623,7 @@ export class OpLog {
 						detail: "not on the revocation anchor chain",
 					};
 		}
-		if (op.seq > headSeq + 1) return this.park(op, "gap");
+		if (op.seq > headSeq + 1) return this.park(op, "gap", size);
 		if (head && op.prev !== head.id) {
 			if (await this.storedAnchored(op.author, headSeq))
 				return this.rejectOp(
@@ -556,7 +637,7 @@ export class OpLog {
 		if (head && compareHlc(op.hlc, head.op.hlc) <= 0)
 			return this.rejectOp("hlc-regression", op, undefined, id);
 		if (hlcWall(op.hlc) > this.now() + this.maxSkewMs)
-			return this.park(op, "future");
+			return this.park(op, "future", size);
 
 		const entry: StoredOp = { id, op };
 		await this.store.append(entry);
@@ -589,7 +670,7 @@ export class OpLog {
 				);
 			let progressed = false;
 			for (const [k, p] of batch) {
-				this.pendingOps.delete(k);
+				this.takePending(k);
 				const r = await this.ingestOne(p.op, false);
 				if (r.status !== "pending") progressed = true;
 				else if (r.reason !== p.reason) progressed = true;

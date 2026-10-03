@@ -79,9 +79,6 @@ async function pairDirect(hostVault: Vault, guestVault: Vault) {
 
 const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
 
-/** A finding whose fix has not landed yet: the attack still works, so the inverted test is expected to fail. */
-const open = it.fails;
-
 describe("audit regressions: web/provider", () => {
 	it("P1 (B1): a pairing guest cannot claim an existing member's deviceId and take over its identity", async () => {
 		const hub = createLoopbackHub();

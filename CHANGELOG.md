@@ -57,6 +57,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `lastSeq` wait as pending until their chain reaches that op; other branches are rejected as forgeries
   (`broken-chain`) instead of producing equivocation evidence that would cut the legit history. A replica that had
   already stored a forged branch stops accepting it once the anchored revocation arrives.
+- **S4 unknown-author pending flood** (`web/oplog`): pending ops are capped per author (`maxPendingPerAuthor`, 1024)
+  and in bytes (`maxPendingBytes`, 16 MiB); ops of authors without a known grant get their own small FIFO budget
+  (`maxPendingUnknown` = maxPending/10, `maxPendingUnknownBytes` = 1 MiB, oldest dropped first) and never displace
+  pending ops of known authors.
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,
