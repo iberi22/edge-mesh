@@ -553,42 +553,37 @@ describe("audit round 2 regressions: web/provider", () => {
 		});
 
 	for (const jump of [31_000, 0])
-		(jump ? open : it)(
-			`SF4: a link whose held handshake expired still authenticates (clock jump ${jump})`,
-			async () => {
-				const hub = createLoopbackHub();
-				let skew = 0;
-				const a = await makeDev("devA", hub);
-				const b = await makeDev("devB", hub, () => Date.now() + skew);
-				await pair(a, b);
-				await until(() => b.mesh.peers.includes(a.id));
-				b.mesh.destroy(); // B offline while A pairs C
-				const c = await makeDev("devC", hub);
-				await pair(a, c);
-				await until(() => metaOf(c).has(`adm/${b.id}`));
-				a.mesh.destroy(); // A offline
-				const b2 = await makeDev("devB", hub, () => Date.now() + skew, {
-					doc: b.doc,
-					vault: b.vault,
-				});
-				await settle(300); // B<->C link up, both handshakes HELD by B (C unknown to B)
-				expect(ids(b2)).not.toContain(c.id);
-				skew = jump;
-				const a2 = await makeDev("devA", hub, undefined, {
-					doc: a.doc,
-					vault: a.vault,
-				}); // B learns C through A
-				await until(() => ids(b2).includes(c.id), 5000);
-				c.doc.getMap("x").set("k", 1);
-				await until(
-					() =>
-						b2.mesh.peers.includes(c.id) && b2.doc.getMap("x").get("k") === 1,
-					5000,
-				);
-				for (const x of [a2, b2, c]) x.mesh.destroy();
-			},
-			20_000,
-		);
+		it(`SF4: a link whose held handshake expired still authenticates (clock jump ${jump})`, async () => {
+			const hub = createLoopbackHub();
+			let skew = 0;
+			const a = await makeDev("devA", hub);
+			const b = await makeDev("devB", hub, () => Date.now() + skew);
+			await pair(a, b);
+			await until(() => b.mesh.peers.includes(a.id));
+			b.mesh.destroy(); // B offline while A pairs C
+			const c = await makeDev("devC", hub);
+			await pair(a, c);
+			await until(() => metaOf(c).has(`adm/${b.id}`));
+			a.mesh.destroy(); // A offline
+			const b2 = await makeDev("devB", hub, () => Date.now() + skew, {
+				doc: b.doc,
+				vault: b.vault,
+			});
+			await settle(300); // B<->C link up, both handshakes HELD by B (C unknown to B)
+			expect(ids(b2)).not.toContain(c.id);
+			skew = jump;
+			const a2 = await makeDev("devA", hub, undefined, {
+				doc: a.doc,
+				vault: a.vault,
+			}); // B learns C through A
+			await until(() => ids(b2).includes(c.id), 5000);
+			c.doc.getMap("x").set("k", 1);
+			await until(
+				() => b2.mesh.peers.includes(c.id) && b2.doc.getMap("x").get("k") === 1,
+				5000,
+			);
+			for (const x of [a2, b2, c]) x.mesh.destroy();
+		}, 20_000);
 
 	open(
 		"R6 (note): moving to another mesh with a fresh Y.Doc and resume:false works while the old mesh is reachable",

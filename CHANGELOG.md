@@ -91,6 +91,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   republished to the shared doc so membership views converge (V2).
 - **SF3 fake `rotrec:` entries blocked stragglers**: a retired room only serves rotations that verify on the serving
   device (id = hash of the record, epoch window, authorized issuer not void, targets validly revoked).
+- **SF4 expired held handshakes left dead links**: unauthenticated links re-send their `K_HELLO` on every trust change,
+  and a repeated `K_HELLO` is answered and returned (capped at 8 per link).
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,

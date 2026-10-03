@@ -170,6 +170,8 @@ const K_CHANNEL = 4; // body = nsLen(u16) | namespace | payload
 const K_HELLO = 5; // body = nonce(16): fresh challenge of this link (S1)
 const K_AUTH = 6; // body = peer's nonce(16) | epoch(u32), signed: the sender is live on THIS link (S1)
 const NONCE_BYTES = 16;
+/** SF4: per link, at most this many challenges sent and answered */
+const HANDSHAKE_MAX = 8;
 /** Replay window per sender session: seqs at most this far behind the highest one are still accepted once. */
 const REPLAY_WINDOW = 1024;
 const ORIGIN = Symbol("swal-mesh");
@@ -217,6 +219,10 @@ interface LinkRec {
 	lift?: () => void;
 	/** we answered the peer's challenge */
 	authSent?: boolean;
+	/** SF4: handshake messages seen/sent on this link (re-sent after trust changes, capped) */
+	hellosIn?: number;
+	hellosOut?: number;
+	answers?: number;
 	started?: boolean;
 }
 
@@ -685,6 +691,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 	}
 	/** Re-run held frames once the trust state changed (a pending admission may have arrived). */
 	function replayHeld() {
+		// SF4: held handshake frames may have expired meanwhile: challenge every unauthenticated link again
+		if (signFrames) for (const rec of links) if (!rec.authed && rec.rid !== "pair") resendHello(rec);
 		for (const rec of links) {
 			const h = rec.held;
 			if (!h || rec.closing) continue;
@@ -756,7 +764,12 @@ export function createMesh(opts: MeshOptions): Mesh {
 			if (rec.closing) return;
 			// S1: a link carries nothing but its handshake until the peer signed OUR fresh challenge on it
 			if (kind === K_HELLO) {
-				if (!retired && body.length === NONCE_BYTES && !rec.authSent) await answerHello(rec, body);
+				if (retired || body.length !== NONCE_BYTES) return;
+				rec.hellosIn = (rec.hellosIn ?? 0) + 1;
+				if ((rec.answers ?? 0) < HANDSHAKE_MAX) await answerHello(rec, body);
+				// SF4: a repeated challenge means our earlier messages may have been lost (e.g. held and expired while
+				// the peer was not yet admitted here): challenge again too
+				if (rec.hellosIn > 1 && !rec.authed) resendHello(rec);
 				return;
 			}
 			if (kind === K_AUTH) {
@@ -1052,9 +1065,17 @@ export function createMesh(opts: MeshOptions): Mesh {
 	/** S1: challenge the peer of a fresh data link; data flows once both sides answered each other's challenge. */
 	function startHandshake(rec: LinkRec) {
 		rec.nonce = randomBytes(NONCE_BYTES);
+		rec.hellosOut = 1;
+		sendFrame(rec, K_HELLO, rec.nonce).catch(err);
+	}
+	/** SF4: same challenge again, at most HANDSHAKE_MAX times per link. */
+	function resendHello(rec: LinkRec) {
+		if (!rec.nonce || rec.authed || rec.closing || (rec.hellosOut ?? 0) >= HANDSHAKE_MAX) return;
+		rec.hellosOut = (rec.hellosOut ?? 0) + 1;
 		sendFrame(rec, K_HELLO, rec.nonce).catch(err);
 	}
 	async function answerHello(rec: LinkRec, peerNonce: Uint8Array) {
+		rec.answers = (rec.answers ?? 0) + 1;
 		rec.authSent = true;
 		await sendFrame(rec, K_AUTH, concat(peerNonce, u32(rec.legacy ? rec.legacy.epoch : epoch)));
 		maybeStart(rec);

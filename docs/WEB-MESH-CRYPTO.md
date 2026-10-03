@@ -21,7 +21,9 @@
   and this link's challenge). Until a valid `K_AUTH` arrives the link carries nothing else: no data is sent to it
   and every other frame from it is dropped. The link is then bound to that sender and to the sender session (`sess`)
   of its `K_AUTH`. A frame captured on one link and replayed on another (even the whole handshake) authenticates
-  nothing (`rejected: "bad link authentication"`).
+  nothing (`rejected: "bad link authentication"`). Handshake frames from a peer not yet admitted here are held like
+  any other; since held frames expire, every trust change makes unauthenticated links send their challenge again, and
+  a repeated challenge is answered and returned (at most 8 of each per link, SF4), so such a link still comes up.
 - **Replays and duplicates (S1).** `sess` is random per mesh instance (a restart is a new session) and `seq` grows by
   one per signed message (a broadcast signs once, same `seq` on every link). Receivers accept a `(sender, sess,
   seq)` once, within a window of 1024 behind the highest `seq` seen, and only with the link's bound session.
