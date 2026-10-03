@@ -87,9 +87,10 @@ export interface RevocationBody {
 	/** ops of the target's subject with seq > lastSeq are no longer authorized by the target grant */
 	lastSeq: number;
 	/**
-	 * Cut-offs for the subjects of cascaded (descendant) grants, by device fp. A descendant subject missing here is
-	 * cut at 0 (fail-closed: a revoked issuer key could otherwise mint backdated grants). Fill it with
-	 * `TrustStore.prepareRevocation` from your log heads.
+	 * Cut-offs of the cascaded (descendant) grants, by GRANT ID (S2): only grants that existed when the revocation was
+	 * signed can keep history. A descendant grant missing here (e.g. one the revoked issuer mints afterwards, even
+	 * backdated, for a subject listed before) is cut at 0. Fill it with `TrustStore.prepareRevocation` from your log
+	 * heads.
 	 */
 	upTo?: Readonly<Record<string, number>>;
 	reason?: string;

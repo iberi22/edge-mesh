@@ -238,7 +238,7 @@ describe("web/trust: TrustStore", () => {
 		expect(input).toEqual({
 			target: w.g.admin.id,
 			lastSeq: 7,
-			upTo: { [w.cook.fp]: 3 },
+			upTo: { [w.g.cook.id]: 3 },
 			reason: "left",
 		});
 		expect(t.descendants(w.g.admin.id).map((g) => g.id)).toEqual([w.g.cook.id]);

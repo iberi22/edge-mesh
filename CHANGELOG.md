@@ -49,6 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **S1 frame replay bound a link to the wrong device**: per-link challenge-response (`K_HELLO` / signed `K_AUTH` over
   the peer's nonce + room + epoch) before a link carries anything; signed frames carry a sender session and sequence
   (`swal-frame/v2`) and receivers drop duplicates and replays.
+- **S2 revoked admin re-granted old ops** (`web/trust`): a revocation's cascade cut-offs `upTo` are keyed by grant id;
+  a descendant grant unknown at revocation time (e.g. minted later, even backdated, by the revoked issuer) is cut at
+  seq 0.
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,
@@ -72,6 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed (breaking)
 - `wrapMeshKey(priv, toPub, rotId, from, to, key)` / `unwrapMeshKey(priv, fromPub, rotId, from, to, wrap)` (v3);
   meta layout of stored wraps is `rotrec:<rotId>` + `rot:<rotId>:<deviceId>` and `old:<rid> = {e, k}`.
+- `web/trust`: `Revocation.upTo` is keyed by grant id (was device fp); `prepareRevocation` fills it that way.
 - `Admission` gains `epoch` (v2) and `Revocation` drops `at` (v2); `ChainContext` gains `epoch` and `revokedAt`
   returns the list of revocation epochs. Admissions/revocations of the previous version are ignored: re-pair.
 - `VaultClient.deviceId` must equal `fingerprint(devicePublicKey)` (`createMesh` rejects other vaults); pairing ack

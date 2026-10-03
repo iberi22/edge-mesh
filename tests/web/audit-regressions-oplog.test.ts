@@ -77,67 +77,64 @@ describe("audit regressions: web/trust + web/oplog", () => {
 		expect(n.trust.canRevoke(w.admin.fp, w.g.cook.id, w.g.admin.id)).toBe(true);
 	});
 
-	open(
-		"A2 (S2): a REVOKED admin cannot re-grant a cascaded subject to retroactively authorize its old ops",
-		async () => {
-			const w = await world();
-			const n = await ready(w);
-			// cook (colluding) signs two ops in 'inventario' needing 'editar' (cook has only 'ver' there)
-			let prev: string | null = null;
-			const ops: Op[] = [];
-			for (let seq = 1; seq <= 2; seq++) {
-				const body: OpBody = {
-					t: "op",
-					v: 1,
-					alg: "ES256",
-					inst: "local-test",
-					author: w.cook.fp,
-					seq,
-					prev,
-					hlc: `${String(T0 + seq).padStart(15, "0")}-00000`,
-					...op(`inv${seq}`, {
-						module: "inventario",
-						action: "stock.adjust",
-						payload: { amount: -1000 },
-					}),
-				};
-				ops.push(await forge(w.cook, body));
-				prev = await contentId(body);
-			}
-			const r = await n.log.ingestMany(ops);
-			expect(r.map((x) => x.detail)).toEqual([
-				"insufficient-level",
-				"insufficient-level",
-			]);
-			// root revokes the admin, keeping cook's history up to seq 2 (prepareRevocation from heads)
-			await n.trust.add(
-				await w.revoke(
-					w.root,
-					n.trust.prepareRevocation(w.g.admin.id, { [w.cook.fp]: 2 }),
-				),
-			);
-			await n.log.reevaluate();
-			// the revoked admin's key mints a NEW grant for cook with inventario=administrar (backdated)
-			const g2 = await w.grant(
-				w.admin,
-				w.cook,
-				{
-					role: "x",
-					permissions: { inventario: "administrar" },
-					notBefore: T0 - 86_400_000,
-					issuedAt: T0 + 99,
-				},
-				w.g.admin,
-			);
-			await n.trust.add(g2);
-			await n.log.reevaluate();
-			expect([1, 2].map((s) => n.log.isAccepted(w.cook.fp, s))).toEqual([
-				false,
-				false,
-			]);
-			expect(n.trust.cutOf(g2.id)).toBe(0);
-		},
-	);
+	it("A2 (S2): a REVOKED admin cannot re-grant a cascaded subject to retroactively authorize its old ops", async () => {
+		const w = await world();
+		const n = await ready(w);
+		// cook (colluding) signs two ops in 'inventario' needing 'editar' (cook has only 'ver' there)
+		let prev: string | null = null;
+		const ops: Op[] = [];
+		for (let seq = 1; seq <= 2; seq++) {
+			const body: OpBody = {
+				t: "op",
+				v: 1,
+				alg: "ES256",
+				inst: "local-test",
+				author: w.cook.fp,
+				seq,
+				prev,
+				hlc: `${String(T0 + seq).padStart(15, "0")}-00000`,
+				...op(`inv${seq}`, {
+					module: "inventario",
+					action: "stock.adjust",
+					payload: { amount: -1000 },
+				}),
+			};
+			ops.push(await forge(w.cook, body));
+			prev = await contentId(body);
+		}
+		const r = await n.log.ingestMany(ops);
+		expect(r.map((x) => x.detail)).toEqual([
+			"insufficient-level",
+			"insufficient-level",
+		]);
+		// root revokes the admin, keeping cook's history up to seq 2 (prepareRevocation from heads)
+		await n.trust.add(
+			await w.revoke(
+				w.root,
+				n.trust.prepareRevocation(w.g.admin.id, { [w.cook.fp]: 2 }),
+			),
+		);
+		await n.log.reevaluate();
+		// the revoked admin's key mints a NEW grant for cook with inventario=administrar (backdated)
+		const g2 = await w.grant(
+			w.admin,
+			w.cook,
+			{
+				role: "x",
+				permissions: { inventario: "administrar" },
+				notBefore: T0 - 86_400_000,
+				issuedAt: T0 + 99,
+			},
+			w.g.admin,
+		);
+		await n.trust.add(g2);
+		await n.log.reevaluate();
+		expect([1, 2].map((s) => n.log.isAccepted(w.cook.fp, s))).toEqual([
+			false,
+			false,
+		]);
+		expect(n.trust.cutOf(g2.id)).toBe(0);
+	});
 
 	open(
 		"A3 (S3): a revoked device cannot fork its history <= lastSeq; the real history is still accepted",

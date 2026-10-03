@@ -10,7 +10,8 @@
 //   the target: never the target grant itself) is decided at query time, so the target may arrive later. A
 //   revocation whose issuer grant is its own target is rejected outright: a device cannot retract its own accepted
 //   history (leaving is simply stopping; it never rewrites what peers already accepted).
-// - Revocations always cascade: descendants of a revoked grant are cut at `upTo[subject]` (missing = 0).
+// - Revocations always cascade: descendants of a revoked grant are cut at `upTo[grantId]` (missing = 0, so a grant
+//   the revoked issuer mints later never inherits a cut-off).
 // - Times are compared with the op's HLC wall time (`At.time`), seqs with the subject's own log seq (`At.seq`).
 
 import type { RevocationInput } from "./docs.js";
@@ -320,10 +321,11 @@ export class TrustStore {
 			const links = chain.get(g.id) ?? [g];
 			links.forEach((link, i) => {
 				for (const r of revsByTarget.get(link.id) ?? []) {
+					// S2: cascaded cut-offs are keyed by grant id; a grant unknown to the revocation gets 0
 					const s =
 						i === 0
 							? r.lastSeq
-							: (r.upTo?.[g.subject.fp] ??
+							: (r.upTo?.[g.id] ??
 								(g.subject.fp === link.subject.fp ? r.lastSeq : 0));
 					if (s < c) c = s;
 				}
@@ -443,7 +445,7 @@ export class TrustStore {
 
 	/**
 	 * Build the revocation input for `targetId` with cut-offs taken from the revoker's log heads
-	 * (`heads[fp]` = last seq the revoker has seen from that device), including every cascaded subject.
+	 * (`heads[fp]` = last seq the revoker has seen from that device), including every cascaded grant (by grant id).
 	 */
 	prepareRevocation(
 		targetId: string,
@@ -454,7 +456,7 @@ export class TrustStore {
 		if (!target) throw new Error("unknown target grant");
 		const upTo: Record<string, number> = {};
 		for (const g of this.descendants(targetId))
-			upTo[g.subject.fp] = heads[g.subject.fp] ?? 0;
+			upTo[g.id] = heads[g.subject.fp] ?? 0;
 		return {
 			target: targetId,
 			lastSeq: heads[target.subject.fp] ?? 0,
