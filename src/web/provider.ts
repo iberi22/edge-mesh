@@ -931,7 +931,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 	 * resulting key. Every device applies the same rule to the same set of rotations, so all of them end up on one key.
 	 */
 	async function converge() {
-		const cur = { epoch, id: curRot?.id ?? "\uffff" }; // genesis/unknown loses to any valid rotation of its epoch
+		// genesis/unknown, or a void current rotation (issuer revoked), loses to any valid rotation of its epoch
+		const cur = { epoch, id: curRot && !rotIssuerRevoked(curRot) ? curRot.id : "\uffff" };
 		let best: { rec: Rot; key: Uint8Array } | null = null;
 		for (const [id, c] of cands) {
 			if (c.rec.epoch < epoch || rotIssuerRevoked(c.rec)) {
