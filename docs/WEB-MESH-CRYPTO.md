@@ -208,3 +208,20 @@ see `SIGNALING-PROTOCOL.md`).
   argument. `pairJoin` resolves to `{ host, extra }` (was `void`).
 - Trust state needs a persistent device-local store (`store`, `vault.store` or `persist: "idb"`); with the
   in-memory fallback a reloaded device has to be paired again.
+
+## Breaking changes (security audit, 2026-10)
+
+All devices must be updated together and existing meshes re-paired (no app consumes `web/` yet). Regression tests
+for every finding: `tests/web/audit-regressions.test.ts` and `tests/web/audit-regressions-oplog.test.ts`.
+
+- Identity: `vault.deviceId` must be `fingerprint(vault.devicePublicKey)`; `createMesh` rejects other vaults.
+- Pairing: QR payload v3 (adds the root), transcript v3, signed ack (`swal-pair-ack/v1`); the grant no longer carries
+  a doc snapshot and does carry the current rotation record; pairing messages are capped at 256 KiB.
+- Trust records: `swal-adm/v2` (adds `epoch`; `at` is display-only), `swal-rev/v2` (no `at`), stored as
+  `rev/<id>:<epoch>`; local store key `revoked/v2` (epoch lists). Older records are ignored.
+- Rotation: record + `rotId`, wraps `swal-rotate/v3`, meta `rotrec:<rotId>`, `rot:<rotId>:<id>`, `old:<rid> = {e, k}`;
+  `wrapMeshKey(priv, toPub, rotId, from, to, key)` / `unwrapMeshKey(priv, fromPub, rotId, from, to, wrap)`.
+- Frames: `swal-frame/v2` with sender session + sequence, and the `K_HELLO`/`K_AUTH` link handshake.
+- `meta.epoch` is gone (the epoch is device-local).
+- `web/trust`: `Revocation.upTo` keyed by grant id, new `lastId` / `upToIds`, self-revocation rejected.
+  `web/oplog`: pending reason `anchor`, `headIds()`, pending caps, `serve`/`attachOpLogSync` limits.
