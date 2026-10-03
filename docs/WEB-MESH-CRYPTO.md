@@ -70,9 +70,16 @@ The shared `meta` map is writable by every member, so nothing in it is trusted b
 
 ## Pairing SAS
 
+- QR payload v3 (signed by the host identity key): `[3, mid, appId, topic, hostEphemeral, hostIdentityKey, sig,
+  pairSecret, exp, root]`, where `root` is the owner's deviceId (= fingerprint of its key). The guest requires the
+  grant's root to be exactly that one and its `mid` to be the QR's (S6).
+- **Root pinning (TOFU, S6).** The first root a device accepts for a `mid` stays pinned: pairing with a QR or a grant
+  that names another root for the same `mid` is refused, so a host that copies an existing mesh id cannot re-root a
+  member (and pull its data).
+
 - `hello` (v2) carries the guest ephemeral key `e`, a fresh 16-byte nonce `n` and `p = HMAC(HKDF(pairSecret),
   "hello/v2|e|n")`.
-- `transcript = SHA-256(["swal-pair-transcript/v2", appId, topic, mid, hostIdentityKey, hostEphemeral,
+- `transcript = SHA-256(["swal-pair-transcript/v3", appId, topic, mid, root, hostIdentityKey, hostEphemeral,
   guestEphemeral, pairSecret, n, exp])`.
 - SAS = 6 digits = 40 bits of `HKDF(ECDH, salt = transcript, "swal-sas/v2")` mod 10^6, shown on both devices; the
   session key is `HKDF(ECDH, salt = transcript, "swal-pair-session/v2")`. Either side rejecting aborts the pairing

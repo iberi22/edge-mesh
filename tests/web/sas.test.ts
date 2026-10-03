@@ -18,7 +18,7 @@ describe("SAS on pairing", () => {
 
 	it("is derived from the whole transcript: both ephemeral keys, both nonces and the host identity", async () => {
 		const vault = await makeVault("host");
-		const offer = await createPairOffer(vault, { mid: "m", appId: "app", topic: "app/data/x", now: Date.now() });
+		const offer = await createPairOffer(vault, { mid: "m", root: vault.deviceId, appId: "app", topic: "app/data/x", now: Date.now() });
 		const gPub = b64uEncode(randomBytes(65));
 		const nonce = b64uEncode(randomBytes(16));
 		const shared = randomBytes(32);
@@ -33,6 +33,7 @@ describe("SAS on pairing", () => {
 			await pairTranscript({ ...offer.payload, hostPub: b64uEncode(randomBytes(65)) }, gPub, nonce), // host ephemeral key
 			await pairTranscript({ ...offer.payload, pairSecret: b64uEncode(randomBytes(16)) }, gPub, nonce), // host nonce
 			await pairTranscript({ ...offer.payload, dpk: b64uEncode(randomBytes(65)) }, gPub, nonce), // host identity
+			await pairTranscript({ ...offer.payload, root: "other-root" }, gPub, nonce), // trust root named by the QR
 		];
 		for (const v of variants) expect(Array.from(v)).not.toEqual(Array.from(t));
 		const codes = await Promise.all(variants.map((v) => sasCode(shared, v)));

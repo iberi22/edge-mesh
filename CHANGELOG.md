@@ -64,6 +64,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **S5 pre-auth memory DoS**: 1 MiB reassembly per unauthenticated link plus an 8 MiB budget shared by all of them,
   16 MiB cap on held frames over all links, pairing messages capped at 256 KiB (the grant no longer embeds the doc
   snapshot; data arrives by normal sync), and a 16 MiB bounded WebRTC send queue that closes slow links.
+- **S6 re-pairing replaced a pinned root**: the root is pinned on first use per `mid`; the pairing QR (v3) names the
+  root (its fingerprint) and the guest checks that the grant chain ends at it.
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,
@@ -87,6 +89,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed (breaking)
 - `wrapMeshKey(priv, toPub, rotId, from, to, key)` / `unwrapMeshKey(priv, fromPub, rotId, from, to, wrap)` (v3);
   meta layout of stored wraps is `rotrec:<rotId>` + `rot:<rotId>:<deviceId>` and `old:<rid> = {e, k}`.
+- Pairing QR payload v3 (adds the root); `createPairOffer` takes `root`; transcript `swal-pair-transcript/v3`.
 - Pairing grant: no `snapshot` (the guest receives the doc through the normal sync right after pairing).
   `Reassembler`: `setLimits()` and a `shared` byte budget.
 - `web/oplog`: new pending reason `anchor`; `OpLog.headIds()`. `web/trust`: `Revocation.lastId` / `upToIds`,

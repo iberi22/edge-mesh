@@ -29,7 +29,8 @@ describe("mesh", () => {
 		expect(codes.host).toMatch(/^\d{6}$/);
 		expect(codes.guest).toBe(codes.host);
 		expect(offer.payload.length).toBeLessThan(700);
-		expect(decodePairPayload(offer.payload).v).toBe(2);
+		expect(decodePairPayload(offer.payload).v).toBe(3);
+		expect(decodePairPayload(offer.payload).root).toBe(a.id);
 		expect(b.vault.meshKey).toEqual(a.vault.meshKey);
 		await until(() => b.doc.getMap("data").get("before") === 1); // data arrives by sync, not inside the grant
 		expect(devLabels(a.mesh)).toEqual(["devA", "devB"]);

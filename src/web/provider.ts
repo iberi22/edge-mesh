@@ -1293,7 +1293,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const mine = selfRole();
 		if (!mine || !canIssue(mine, guestRole)) throw new Error(`this device (${mine ?? "not admitted"}) cannot admit a ${guestRole}`);
 		const key = await vault.getOrCreateMeshKey();
-		const offer = await createPairOffer(vault, { mid: r.mid, appId, topic: topicName, now: now() });
+		const offer = await createPairOffer(vault, { mid: r.mid, root: r.deviceId, appId, topic: topicName, now: now() });
 		const rid = await derivePairRoomId(offer.pairSecret);
 		const pairKey = await derivePairKey(offer.pairSecret);
 		const host = new HostPairing(offer, {
@@ -1385,6 +1385,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		setStatus();
 	}
 
+	const ROOT_MISMATCH_ERR = "pairing refused: this mesh id is pinned to another owner key";
 	const MOVE_MESH_ERR =
 		"this device belongs to another mesh: to join a different one, create a new Mesh with a fresh Y.Doc";
 	/** Only this device's own bookkeeping (dev/<self>, ecdh/<self>) and no shared content at all. */
@@ -1406,6 +1407,9 @@ export function createMesh(opts: MeshOptions): Mesh {
 		if (p.appId !== appId || p.topic !== topicName) throw new Error("pairing payload is for a different app/topic");
 		// B3: a device moving to ANOTHER mesh would merge this mesh's doc into it (and keep serving it). Only a fresh
 		// doc may change meshes: create a new Mesh with a new Y.Doc for that.
+		// S6: trust on first use. The QR (signed by the host) names the root; a device never re-pins another key for
+		// a mesh id it already knows
+		if (root && root.mid === p.mid && root.deviceId !== p.root) throw new Error(ROOT_MISMATCH_ERR);
 		const moving = root !== null && root.mid !== p.mid;
 		if (moving && !docIsFresh()) throw new Error(MOVE_MESH_ERR);
 		// ...and while moving, the old mesh must not fill the fresh doc: go offline from it (resumed on failure)
@@ -1441,6 +1445,9 @@ export function createMesh(opts: MeshOptions): Mesh {
 			const issuer = await verifyChain(gctx, mine.by, memo);
 			if (!issuer || issuer.pub !== p.dpk) throw new Error("pairing grant: admission not issued by the paired host");
 			if (g.root.mid !== p.mid || g.mid !== p.mid) throw new Error("pairing grant: mesh id does not match the pairing code");
+			if (g.root.deviceId !== p.root) throw new Error("pairing grant: trust root does not match the pairing code");
+			if (root && root.mid === g.root.mid && (root.deviceId !== g.root.deviceId || root.pub !== g.root.pub))
+				throw new Error(ROOT_MISMATCH_ERR);
 			const switching = root?.mid !== g.root.mid;
 			if (switching && root && !docIsFresh()) throw new Error(MOVE_MESH_ERR);
 			// leave the current network BEFORE touching keys or the doc: nothing of one mesh may reach the other

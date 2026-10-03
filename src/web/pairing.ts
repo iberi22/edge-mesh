@@ -8,14 +8,17 @@ export const PAIR_TTL_MS = 5 * 60_000;
 const ECDH = { name: "ECDH", namedCurve: "P-256" } as const;
 
 /**
- * QR payload v2. Wire form = base64url(JSON array
- * [2, mid, appId, topic, hostPub, dpk, sig, pairSecret, exp]); ~400 raw bytes.
+ * QR payload v3. Wire form = base64url(JSON array
+ * [3, mid, appId, topic, hostPub, dpk, sig, pairSecret, exp, root]); ~430 raw bytes.
  * `hostPub`: host ephemeral ECDH P-256 key (raw, 65B). `dpk`: host device identity key
- * (not in MESH.md; needed so `sig` is verifiable). `sig`: vault.sign over every other field.
+ * (not in MESH.md; needed so `sig` is verifiable). `root`: deviceId (= key fingerprint) of the mesh owner, so the
+ * guest can check the trust chain it receives ends at the root the QR names (S6). `sig`: vault.sign over every other
+ * field.
  */
 export interface PairPayload {
-	v: 2;
+	v: 3;
 	mid: string;
+	root: string;
 	appId: string;
 	topic: string;
 	hostPub: string;
@@ -41,10 +44,10 @@ export interface GrantBody {
 }
 
 const signedBytes = (p: Omit<PairPayload, "sig">) =>
-	utf8(["swal-pair/v2", p.mid, p.appId, p.topic, p.hostPub, p.dpk, p.pairSecret, p.exp].join("|"));
+	utf8(["swal-pair/v3", p.mid, p.root, p.appId, p.topic, p.hostPub, p.dpk, p.pairSecret, p.exp].join("|"));
 
 export function encodePairPayload(p: PairPayload): string {
-	return b64uEncode(utf8(JSON.stringify([p.v, p.mid, p.appId, p.topic, p.hostPub, p.dpk, p.sig, p.pairSecret, p.exp])));
+	return b64uEncode(utf8(JSON.stringify([p.v, p.mid, p.appId, p.topic, p.hostPub, p.dpk, p.sig, p.pairSecret, p.exp, p.root])));
 }
 
 export function decodePairPayload(s: string): PairPayload {
@@ -54,13 +57,13 @@ export function decodePairPayload(s: string): PairPayload {
 	} catch {
 		throw new Error("invalid pairing payload");
 	}
-	if (!Array.isArray(a) || a.length !== 9 || a[0] !== 2) throw new Error("unsupported pairing payload");
-	const [v, mid, appId, topic, hostPub, dpk, sig, pairSecret, exp] = a;
-	if (![mid, appId, topic, hostPub, dpk, sig, pairSecret].every((x) => typeof x === "string") || typeof exp !== "number") {
+	if (!Array.isArray(a) || a.length !== 10 || a[0] !== 3) throw new Error("unsupported pairing payload");
+	const [v, mid, appId, topic, hostPub, dpk, sig, pairSecret, exp, root] = a;
+	if (![mid, appId, topic, hostPub, dpk, sig, pairSecret, root].every((x) => typeof x === "string") || typeof exp !== "number") {
 		throw new Error("malformed pairing payload");
 	}
 	if (b64uDecode(pairSecret).length !== 16) throw new Error("malformed pairing secret");
-	return { v, mid, appId, topic, hostPub, dpk, sig, pairSecret, exp };
+	return { v, mid, root, appId, topic, hostPub, dpk, sig, pairSecret, exp };
 }
 
 export async function derivePairKey(pairSecret: Uint8Array): Promise<CryptoKey> {
@@ -80,13 +83,14 @@ export interface PairOfferState {
 
 export async function createPairOffer(
 	vault: VaultClient,
-	o: { mid: string; appId: string; topic: string; now: number; ttlMs?: number },
+	o: { mid: string; root: string; appId: string; topic: string; now: number; ttlMs?: number },
 ): Promise<PairOfferState> {
 	const hostKeys = (await crypto.subtle.generateKey(ECDH, false, ["deriveBits"])) as CryptoKeyPair;
 	const pairSecret = randomBytes(16);
 	const base = {
-		v: 2 as const,
+		v: 3 as const,
 		mid: o.mid,
+		root: o.root,
 		appId: o.appId,
 		topic: o.topic,
 		hostPub: b64uEncode(new Uint8Array(await crypto.subtle.exportKey("raw", hostKeys.publicKey))),
@@ -110,10 +114,11 @@ export async function verifyPairPayload(vault: VaultClient, p: PairPayload): Pro
  */
 export async function pairTranscript(p: PairPayload, guestPub: string, guestNonce: string): Promise<Uint8Array> {
 	const t = JSON.stringify([
-		"swal-pair-transcript/v2",
+		"swal-pair-transcript/v3",
 		p.appId,
 		p.topic,
 		p.mid,
+		p.root,
 		p.dpk,
 		p.hostPub,
 		guestPub,

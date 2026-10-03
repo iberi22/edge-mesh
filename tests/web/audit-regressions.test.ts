@@ -1,6 +1,7 @@
 // Regression tests for the security audit of web/provider (P1–P6). Each one reproduces an attack from the audit
 // and asserts that it no longer works.
 import { describe, expect, it } from "vitest";
+import * as Y from "yjs";
 import {
 	type Admission,
 	type ChainContext,
@@ -45,6 +46,7 @@ type Vault = Awaited<ReturnType<typeof makeVault>>;
 async function pairDirect(hostVault: Vault, guestVault: Vault) {
 	const offer = await createPairOffer(hostVault, {
 		mid: "m",
+		root: hostVault.deviceId,
 		appId: "app",
 		topic: "app/data/x",
 		now: Date.now(),
@@ -805,5 +807,27 @@ describe("audit regressions: web/provider", () => {
 		const chunk = new Uint8Array(1024 * 1024);
 		for (let i = 0; i < 40 && !closed; i++) link.send(chunk);
 		expect(closed).toBe(true);
+	});
+
+	it("S6: a host reusing a known mesh id with another owner key cannot re-root a paired device", async () => {
+		const hub = createLoopbackHub();
+		const a = await makeDev("devA", hub);
+		const b = await makeDev("devB", hub);
+		await pair(a, b);
+		a.doc.getMap("secret").set("x-recipe", "mesh X private data");
+		await until(() => b.doc.getMap("secret").get("x-recipe") !== undefined);
+		const mid = a.mesh.root?.mid as string;
+		// the attacker owns a mesh whose id it copied from mesh X (its key, its root)
+		const eDoc = new Y.Doc();
+		eDoc.getMap("meta").set("mid", mid);
+		const e = await makeDev("evilE", hub, undefined, { doc: eDoc });
+		await expect(pair(e, b)).rejects.toThrow(/pinned to another owner/);
+		expect(b.mesh.root?.deviceId).toBe(a.id);
+		await settle(300);
+		expect(e.doc.getMap("secret").get("x-recipe")).toBeUndefined();
+		// the real owner still re-pairs it fine
+		await pair(a, b);
+		expect(b.mesh.root?.deviceId).toBe(a.id);
+		for (const x of [a, b, e]) x.mesh.destroy();
 	});
 });
