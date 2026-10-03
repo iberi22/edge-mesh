@@ -203,6 +203,11 @@ interface RotateMsg {
 	rot: RotRecord;
 	to: string;
 	wrap: string;
+	/**
+	 * Every recipient's pairwise wrap (each opens only for its addressee): lets any device that adopted the rotation
+	 * relay it to recipients the issuer has no link to (partial topologies, healed partitions).
+	 */
+	wraps?: Record<string, string>;
 }
 type Rot = RotRecord & { id: string };
 /** Total order of rotations (B4): higher epoch first, then the lower rotation id. Deterministic on every device. */
@@ -926,7 +931,15 @@ export function createMesh(opts: MeshOptions): Mesh {
 	function parseRotate(body: Uint8Array): RotateMsg | null {
 		try {
 			const m = JSON.parse(fromUtf8(body)) as RotateMsg;
-			return m && isRotRecord(m.rot) && typeof m.to === "string" && typeof m.wrap === "string" ? m : null;
+			if (!m || !isRotRecord(m.rot) || typeof m.to !== "string" || typeof m.wrap !== "string") return null;
+			const w = m.wraps;
+			const okWraps =
+				w === undefined ||
+				(typeof w === "object" &&
+					w !== null &&
+					!Array.isArray(w) &&
+					Object.entries(w).every(([k, v]) => m.rot.to.includes(k) && typeof v === "string" && v.length <= 256));
+			return okWraps ? m : null;
 		} catch {
 			return null;
 		}
@@ -1023,6 +1036,22 @@ export function createMesh(opts: MeshOptions): Mesh {
 		}
 		cands.set(id, { rec: { ...rot, id }, key: newKey });
 		await converge();
+		if (curRot?.id === id && m.wraps) relayRotation(curRot, m.wraps);
+	}
+	/** Relayed (rotation, peer) pairs: each adopted rotation is passed on at most once per peer. */
+	const relayed = new Set<string>();
+	/** Hand an adopted rotation to connected recipients (the issuer may have no link to them). */
+	function relayRotation(rot: Rot, wraps: Record<string, string>) {
+		for (const l of [...links]) {
+			const p = l.deviceId;
+			if (!p || l.closing || p === rot.from || p === vault.deviceId || !rot.to.includes(p) || !wraps[p]) continue;
+			const k = `${rot.id}|${p}`;
+			if (relayed.has(k)) continue;
+			if (relayed.size >= 4096) relayed.clear();
+			relayed.add(k);
+			const { id: _id, ...rec } = rot;
+			sendRotate(l, { rot: rec, to: p, wrap: wraps[p], wraps }).catch(err);
+		}
 	}
 
 	/**
@@ -1397,7 +1426,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const sends: Promise<void>[] = [];
 		for (const l of [...links]) {
 			const w = !l.closing && l.deviceId ? wraps.get(l.deviceId) : undefined;
-			if (l.deviceId && w) sends.push(sendRotate(l, { rot: rec, to: l.deviceId, wrap: w }));
+			if (l.deviceId && w) sends.push(sendRotate(l, { rot: rec, to: l.deviceId, wrap: w, wraps: Object.fromEntries(wraps) }));
 		}
 		await Promise.all(sends);
 		await adopt({ rec: { ...rec, id }, key: newKey });

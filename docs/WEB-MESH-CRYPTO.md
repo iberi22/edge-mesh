@@ -170,6 +170,9 @@ The new mesh key is never sent under the old shared key (the revoked device know
    verify on the serving device are offered (SF3): the record's id is its hash, its epoch is within the peer's skip
    window and not past ours, its issuer is the root or a verified admin that was not void, and every device it cuts
    off is validly revoked. Fake `rotrec:` entries written into the shared doc by a member are never served.
+   Rotation frames also carry every recipient's wrap (each opens only for its addressee), so a device that adopted a
+   rotation relays it once per link to connected recipients the issuer has no link to (partial topologies, healed
+   partitions).
 6. Peers adopting a rotation drop links to every revoked device and ignore its frames; `peers` never lists them.
 7. Each fresh revocation is signed (`rev/<deviceId>:<epoch>`, see below) and travels inside the rotation (`revs`) and
    in meta. Every device verifies these records on their own, keeps a local map `deviceId -> [revocation epochs]` in
