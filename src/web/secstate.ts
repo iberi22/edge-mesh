@@ -593,7 +593,28 @@ export class SecurityState {
 		return [...out];
 	}
 
+	/**
+	 * Results of the whole-set queries. Valid while no document is added (both counters unchanged)
+	 * AND within the same second: membership depends on the clock (grants expire / start), so a
+	 * cache keyed only on versions would keep an expired member listed until the next document.
+	 */
+	private memo: {
+		key: string;
+		members?: MemberInfo[];
+		unexecuted?: { devices: string[]; cut: string[]; revs: string[] };
+	} = { key: "" };
+	private memoFor() {
+		const key = `${this.version}|${this.trust.version}|${Math.floor(this.now() / 1000)}`;
+		if (this.memo.key !== key) this.memo = { key };
+		return this.memo;
+	}
+
 	members(): MemberInfo[] {
+		const m = this.memoFor();
+		if (!m.members) m.members = this.computeMembers();
+		return m.members;
+	}
+	private computeMembers(): MemberInfo[] {
 		const out: MemberInfo[] = [];
 		for (const dev of this.knownDevices()) {
 			const g = this.memberGrant(dev);
@@ -623,6 +644,18 @@ export class SecurityState {
 	 * ancestor). Returns the devices, the grant ids to cut and the revocation documents behind them.
 	 */
 	unexecuted(only?: ReadonlySet<string>): {
+		devices: string[];
+		cut: string[];
+		revs: string[];
+	} {
+		if (!only) {
+			const m = this.memoFor();
+			if (!m.unexecuted) m.unexecuted = this.computeUnexecuted();
+			return m.unexecuted;
+		}
+		return this.computeUnexecuted(only);
+	}
+	private computeUnexecuted(only?: ReadonlySet<string>): {
 		devices: string[];
 		cut: string[];
 		revs: string[];
