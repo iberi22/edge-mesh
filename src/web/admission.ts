@@ -154,3 +154,59 @@ export async function verifyChain(
 	memo.set(deviceId, p);
 	return p;
 }
+
+/** "Device `by` revoked device `target` at rotation `epoch`", signed by `by`; replicated so late joiners learn it. */
+export interface Revocation {
+	v: 1;
+	mid: string;
+	target: string;
+	by: string;
+	epoch: number;
+	at: number;
+	sig: string;
+}
+
+export const revocationBytes = (r: Omit<Revocation, "sig">): Uint8Array =>
+	utf8(JSON.stringify(["swal-rev/v1", r.mid, r.target, r.by, r.epoch, r.at]));
+
+export function isRevocation(x: unknown): x is Revocation {
+	const r = x as Revocation;
+	return (
+		typeof r === "object" &&
+		r !== null &&
+		r.v === 1 &&
+		typeof r.mid === "string" &&
+		typeof r.target === "string" &&
+		typeof r.by === "string" &&
+		typeof r.epoch === "number" &&
+		typeof r.at === "number" &&
+		typeof r.sig === "string"
+	);
+}
+
+export async function signRevocation(vault: VaultClient, body: Omit<Revocation, "sig" | "v">): Promise<Revocation> {
+	const unsigned = { v: 1 as const, ...body };
+	return { ...unsigned, sig: b64uEncode(await vault.sign(revocationBytes(unsigned))) };
+}
+
+/**
+ * A revocation counts if its issuer currently has a valid admission chain and its role may revoke the target's
+ * role (a target without a valid admission counts as a member; the root can never be revoked).
+ */
+export async function verifyRevocation(
+	ctx: ChainContext,
+	r: Revocation,
+	memo: Map<string, Promise<Admission | null>> = new Map(),
+): Promise<boolean> {
+	if (!isRevocation(r) || r.mid !== ctx.root.mid || r.target === ctx.root.deviceId || r.by === r.target) return false;
+	const issuer = await verifyChain(ctx, r.by, memo);
+	if (!issuer) return false;
+	const target = await verifyChain(ctx, r.target, memo);
+	if (!canRevokeRole(issuer.role, target?.role ?? "member")) return false;
+	try {
+		const { sig, ...body } = r;
+		return await ctx.vault.verify(b64uDecode(issuer.pub), revocationBytes(body), b64uDecode(sig));
+	} catch {
+		return false;
+	}
+}

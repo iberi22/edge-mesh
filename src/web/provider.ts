@@ -1,6 +1,17 @@
 import * as Y from "yjs";
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate, removeAwarenessStates } from "y-protocols/awareness";
-import { type Admission, type Role, type TrustRoot, canIssue, canRevokeRole, signAdmission, verifyChain } from "./admission.js";
+import {
+	type Admission,
+	type Revocation,
+	type Role,
+	type TrustRoot,
+	canIssue,
+	canRevokeRole,
+	signAdmission,
+	signRevocation,
+	verifyChain,
+	verifyRevocation,
+} from "./admission.js";
 import { deriveDocMaterial, deriveSenderKey, hkdf, importAesKey, openUpdate, sealUpdate } from "./crypto.js";
 import { type EcdhIdentity, ecdhSignedBytes, generateEcdhIdentity, unwrapMeshKey, wrapMeshKey } from "./rotation.js";
 import {
@@ -101,6 +112,7 @@ const K_ROTATE = 3;
 const ORIGIN = Symbol("swal-mesh");
 const DEV = "dev/"; // dev/<deviceId> = Device (informative only: trust comes from adm/)
 const ADM_PREFIX = "adm/"; // adm/<deviceId> = Admission signed by an owner/admin, verified against the local root pin
+const REV_PREFIX = "rev/"; // rev/<deviceId> = Revocation signed by the revoker (H4: replicated + persisted locally)
 const ECDH_PREFIX = "ecdh/"; // ecdh/<deviceId> = { pub, sig } (sig by the device identity key)
 const ROT_PREFIX = "rot:"; // rot:<epoch>:<deviceId> = { from, wrap, revoked } (pairwise-wrapped new mesh key)
 const OLD_PREFIX = "old:"; // old:<epoch> = previous mesh key (b64u); only readable by current members (meta is under the NEW key)
@@ -155,7 +167,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 	let status: MeshStatus = "off";
 	const links = new Set<LinkRec>();
 	const senderKeys = new Map<string, CryptoKey>(); // `${epoch}|${deviceId}` -> per-sender AES-GCM key
-	const revokedIds = new Map<string, number>(); // deviceId -> revocation time
+	const revokedIds = new Map<string, number>(); // deviceId -> revocation time (persisted in the local store)
 	const store: MeshStore =
 		opts.store ??
 		vault.store ??
@@ -221,7 +233,25 @@ export function createMesh(opts: MeshOptions): Mesh {
 	});
 	let trustChain: Promise<void> = Promise.resolve();
 	const refreshTrust = () => (trustChain = trustChain.then(computeTrust).catch(err));
+	const persistRevoked = () => store.set("revoked", Object.fromEntries(revokedIds));
+	/** A device is cut off if revoked and not re-admitted afterwards. */
+	const isRevoked = (id: string) => revokedIds.has(id) && !trusted.has(id);
 	async function computeTrust() {
+		// 1) signed revocations replicated in the doc (only valid ones count; the local map only ever grows)
+		if (root) {
+			const rctx = chainCtx(root);
+			const rmemo = new Map<string, Promise<Admission | null>>();
+			let changed = false;
+			for (const k of meta.keys()) {
+				if (!k.startsWith(REV_PREFIX)) continue;
+				const r = meta.get(k) as Revocation;
+				if (r?.target !== k.slice(REV_PREFIX.length) || (revokedIds.get(r.target) ?? -1) >= r.at) continue;
+				if (!(await verifyRevocation(rctx, r, rmemo))) continue;
+				revokedIds.set(r.target, r.at);
+				changed = true;
+			}
+			if (changed) await persistRevoked();
+		}
 		const ids = new Set<string>(Object.keys(admCache));
 		for (const k of meta.keys()) {
 			if (k.startsWith(ADM_PREFIX)) ids.add(k.slice(ADM_PREFIX.length));
@@ -266,6 +296,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 	const ready = (async () => {
 		const r = (await store.get("root")) as TrustRoot | undefined;
 		if (r && typeof r.deviceId === "string" && typeof r.pub === "string" && typeof r.mid === "string") root = r;
+		const rv = (await store.get("revoked")) as Record<string, number> | undefined;
+		for (const [id, at] of Object.entries(rv ?? {})) if (typeof at === "number") revokedIds.set(id, at);
 		admCache = ((await store.get("adm")) as Record<string, Admission> | undefined) ?? {};
 		ecdhOk = ((await store.get("ecdh")) as Record<string, string> | undefined) ?? {};
 		if (opts.persist === "idb" && typeof indexedDB !== "undefined") {
@@ -332,7 +364,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 	}
 	async function loadKeys(raw?: Uint8Array) {
 		meshKey = raw ?? (await vault.getOrCreateMeshKey());
-		epoch = Math.max(Number(await vault.getEpoch?.() ?? 0), Number(meta.get("epoch") ?? 0), epoch);
+		epoch = Math.max(Number((await vault.getEpoch?.()) ?? 0), Number((await store.get("epoch")) ?? 0), Number(meta.get("epoch") ?? 0), epoch);
 		docMat = await deriveDocMaterial(meshKey, topicName);
 		sigKey = await importAesKey(await hkdf(meshKey, `swal-signal/v1|${topicName}`));
 		dataRid = await deriveRoomId(meshKey, appId, topicName, epoch);
@@ -353,7 +385,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 	}
 	const established = () =>
 		[...links].filter(
-			(l) => !l.closing && !l.legacy && (l.rid === dataRid || l.rid === "") && !(l.deviceId && revokedIds.has(l.deviceId)),
+			(l) => !l.closing && !l.legacy && (l.rid === dataRid || l.rid === "") && !(l.deviceId && isRevoked(l.deviceId)),
 		);
 	/** Synchronous: the link leaves `links` right now (the transport's onClose may fire much later). */
 	function closeRec(rec: LinkRec) {
@@ -385,7 +417,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		if (!mat || !running || rec.closing) return;
 		const idLen = data[1];
 		const sender = fromUtf8(data.subarray(2, 2 + idLen));
-		if (revokedIds.has(sender)) return;
+		if (isRevoked(sender)) return;
 		let plain: Uint8Array;
 		try {
 			const key = await senderKey(mat, lg ? lg.epoch : epoch, sender);
@@ -429,7 +461,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		} catch {
 			return;
 		}
-		if (r.to !== vault.deviceId || r.epoch !== epoch + 1 || revokedIds.has(r.from) || r.from === r.revoked) return;
+		if (r.to !== vault.deviceId || r.epoch !== epoch + 1 || isRevoked(r.from) || r.from === r.revoked) return;
 		if (typeof r.revoked !== "string" || r.revoked === vault.deviceId) return;
 		const fromPub = await peerEcdhPub(r.from);
 		if (!fromPub) return;
@@ -565,6 +597,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const oldKey = meshKey!;
 		await vault.setMeshKey(newKey);
 		await vault.setEpoch?.(newEpoch);
+		await store.set("epoch", newEpoch);
 		epoch = newEpoch;
 		await loadKeys(newKey);
 		// links stay up across the rotation; the retired room stays joined ONLY to serve wraps to stragglers
@@ -591,11 +624,11 @@ export function createMesh(opts: MeshOptions): Mesh {
 		if ([...ev.keysChanged].some((k) => k.startsWith(OLD_PREFIX))) void syncLegacy().catch(err);
 	});
 
-	function forget(deviceId: string) {
-		revokedIds.set(deviceId, now());
+	function forget(deviceId: string, at = now()) {
+		revokedIds.set(deviceId, Math.max(at, revokedIds.get(deviceId) ?? at));
 		trusted.delete(deviceId);
 		delete admCache[deviceId];
-		void Promise.resolve(store.set("adm", admCache)).catch(err);
+		void Promise.all([store.set("adm", admCache), persistRevoked()]).catch(err);
 	}
 
 	async function adoptRotation(newKey: Uint8Array, newEpoch: number, revoked: string) {
@@ -621,6 +654,9 @@ export function createMesh(opts: MeshOptions): Mesh {
 		for (const l of [...links]) if (l.deviceId === deviceId) closeRec(l);
 		const newKey = randomBytes(32);
 		const newEpoch = epoch + 1;
+		const rev = root
+			? await signRevocation(vault, { mid: root.mid, target: deviceId, by: vault.deviceId, epoch: newEpoch, at: revokedIds.get(deviceId) ?? now() })
+			: null;
 		const priv = (await ecdhIdentity()).privateKey;
 		const wraps = new Map<string, RotateMsg>();
 		for (const d of trusted.values()) {
@@ -644,6 +680,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 			meta.delete(DEV + deviceId);
 			meta.delete(ADM_PREFIX + deviceId);
 			meta.delete(ECDH_PREFIX + deviceId);
+			if (rev) meta.set(REV_PREFIX + deviceId, rev);
 			meta.set("epoch", newEpoch);
 			meta.set(OLD_PREFIX + oldEpoch, b64uEncode(oldKey));
 			for (const [to, m] of wraps) meta.set(`${ROT_PREFIX}${newEpoch}:${to}`, { from: m.from, wrap: m.wrap, revoked: deviceId });
@@ -700,10 +737,12 @@ export function createMesh(opts: MeshOptions): Mesh {
 				});
 				const dev: Device = { ...guest, addedAt: adm.at, role: guestRole, admittedBy: vault.deviceId };
 				const extra = o.extra ? await o.extra(dev) : undefined;
-				revokedIds.delete(guest.deviceId); // explicit re-admission
+				revokedIds.delete(guest.deviceId); // explicit re-admission (its new admission post-dates the revocation)
+				await persistRevoked();
 				admCache[guest.deviceId] = adm;
 				trusted.set(guest.deviceId, dev);
 				doc.transact(() => {
+					meta.delete(REV_PREFIX + guest.deviceId);
 					meta.set(ADM_PREFIX + guest.deviceId, adm);
 					meta.set(DEV + guest.deviceId, { deviceId: dev.deviceId, pub: dev.pub, name: dev.name, addedAt: dev.addedAt });
 				});
@@ -816,6 +855,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 			await publishEcdh();
 			await refreshTrust();
 			endPairing(rid);
+			if (running) stopNetwork(); // re-pairing while online (e.g. after a revocation): rejoin under the new key
 			emit("paired", g.hostDevice);
 			await start();
 			return { host: g.hostDevice, extra: g.extra };
