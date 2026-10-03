@@ -1,6 +1,14 @@
 // Regression tests for the security audit of web/provider (P1–P6). Each one reproduces an attack from the audit
 // and asserts that it no longer works.
 import { describe, expect, it } from "vitest";
+import {
+	type Admission,
+	type ChainContext,
+	signAdmission,
+	signRevocation,
+	verifyChain,
+	verifyRevocation,
+} from "../../src/web/admission.js";
 import type { LinkTransport, PeerLink } from "../../src/web/index.js";
 import { createLoopbackHub } from "../../src/web/index.js";
 import {
@@ -208,40 +216,125 @@ describe("audit regressions: web/provider", () => {
 	});
 
 	for (const sk of [0, 3_600_000])
-		(sk === 0 ? it : open)(
-			`P4 (B6): an admission future-dated by ${sk} ms does not survive a revocation, nor a replay of it`,
-			async () => {
-				const hub = createLoopbackHub();
-				const a = await makeDev("devA", hub);
-				let skew = 0;
-				const x = await makeDev("adm", hub, () => Date.now() + skew);
-				const c = await makeDev("devC", hub);
-				const m = await makeDev("devM", hub);
-				a.mesh.on("sas", (p) => p.confirm());
-				const o = await a.mesh.pairHost({ role: "admin" });
-				await x.mesh.pairJoin(o.payload, { confirmSas: () => true });
-				await pair(a, c);
-				skew = sk;
-				await pair(x, m);
-				await until(
-					() =>
-						c.mesh.devices().some((d) => d.deviceId === m.id) &&
-						a.mesh.devices().some((d) => d.deviceId === m.id),
-				);
-				await until(() =>
-					[a, x, c, m].every((d) => metaOf(a).has(`ecdh/${d.id}`)),
-				);
-				const saved = metaOf(c).get(`adm/${m.id}`);
-				await a.mesh.revoke(m.id);
-				await until(() => c.mesh.epoch === 1 && x.mesh.epoch === 1);
-				const view = () => [a, x, c].map((d) => d.mesh.role(m.id));
-				await until(() => view().every((r) => r === null));
-				metaOf(c).set(`adm/${m.id}`, saved); // an insider replays the old admission
-				await settle(300);
-				expect(view()).toEqual([null, null, null]);
-				for (const y of [a, x, c, m]) y.mesh.destroy();
-			},
+		it(`P4 (B6): an admission future-dated by ${sk} ms does not survive a revocation, nor a replay of it`, async () => {
+			const hub = createLoopbackHub();
+			const a = await makeDev("devA", hub);
+			let skew = 0;
+			const x = await makeDev("adm", hub, () => Date.now() + skew);
+			const c = await makeDev("devC", hub);
+			const m = await makeDev("devM", hub);
+			a.mesh.on("sas", (p) => p.confirm());
+			const o = await a.mesh.pairHost({ role: "admin" });
+			await x.mesh.pairJoin(o.payload, { confirmSas: () => true });
+			await pair(a, c);
+			skew = sk;
+			await pair(x, m);
+			await until(
+				() =>
+					c.mesh.devices().some((d) => d.deviceId === m.id) &&
+					a.mesh.devices().some((d) => d.deviceId === m.id),
+			);
+			await until(() =>
+				[a, x, c, m].every((d) => metaOf(a).has(`ecdh/${d.id}`)),
+			);
+			const saved = metaOf(c).get(`adm/${m.id}`);
+			await a.mesh.revoke(m.id);
+			await until(() => c.mesh.epoch === 1 && x.mesh.epoch === 1);
+			const view = () => [a, x, c].map((d) => d.mesh.role(m.id));
+			await until(() => view().every((r) => r === null));
+			metaOf(c).set(`adm/${m.id}`, saved); // an insider replays the old admission
+			await settle(300);
+			expect(view()).toEqual([null, null, null]);
+			for (const y of [a, x, c, m]) y.mesh.destroy();
+		});
+
+	it("P4 (B6): revocation and re-admission do not depend on clocks (every device stuck at the same instant)", async () => {
+		const hub = createLoopbackHub();
+		const frozen = () => 1_000; // the old wall-clock rule needed admission.at > revocation.at
+		const a = await makeDev("devA", hub, frozen);
+		const b = await makeDev("devB", hub, frozen);
+		const c = await makeDev("devC", hub, frozen);
+		await pair(a, b);
+		await pair(a, c);
+		await until(() =>
+			[a, b, c].every((d) =>
+				[a, b, c].every((x) => metaOf(d).has(`ecdh/${x.id}`)),
+			),
 		);
+		await a.mesh.revoke(c.id);
+		await until(() => b.mesh.epoch === 1 && b.mesh.role(c.id) === null);
+		await pair(a, c); // explicit re-admission, same clock reading
+		await until(
+			() => b.mesh.role(c.id) === "member" && b.mesh.peers.includes(c.id),
+		);
+		expect(a.mesh.role(c.id)).toBe("member");
+		for (const x of [a, b, c]) x.mesh.destroy();
+	});
+
+	it("P4 (B6): epoch rules of admissions and revocations (unit)", async () => {
+		const owner = await makeVault("owner");
+		const admin = await makeVault("admin");
+		const mem = await makeVault("mem");
+		const root = {
+			mid: "m",
+			deviceId: owner.deviceId,
+			pub: b64uEncode(owner.devicePublicKey),
+		};
+		const adm = (v: Vault, by: Vault, role: "admin" | "member", ep: number) =>
+			signAdmission(by, {
+				mid: "m",
+				deviceId: v.deviceId,
+				pub: b64uEncode(v.devicePublicKey),
+				name: "",
+				role,
+				by: by.deviceId,
+				epoch: ep,
+				at: 0,
+			});
+		const admA = await adm(admin, owner, "admin", 0);
+		const admM0 = await adm(mem, admin, "member", 0);
+		const admM3 = await adm(mem, admin, "member", 3);
+		const revs = new Map<string, number[]>();
+		const ctx = (
+			epoch: number,
+			mAdms: Admission[] = [admM0],
+		): ChainContext => ({
+			vault: owner,
+			root,
+			epoch,
+			candidates: (id) =>
+				id === admin.deviceId ? [admA] : id === mem.deviceId ? mAdms : [],
+			revokedAt: (id) => revs.get(id),
+		});
+		expect((await verifyChain(ctx(0), mem.deviceId))?.epoch).toBe(0);
+		// not valid before its own epoch (no future-dated admissions)
+		expect(await verifyChain(ctx(2, [admM3]), mem.deviceId)).toBeNull();
+		// the admin revokes the member at epoch 2: admissions issued before epoch 2 are void, later ones valid
+		const rev = await signRevocation(admin, {
+			mid: "m",
+			target: mem.deviceId,
+			by: admin.deviceId,
+			epoch: 2,
+		});
+		expect(await verifyRevocation(ctx(1), rev)).toBe(true);
+		revs.set(mem.deviceId, [2]);
+		expect(await verifyChain(ctx(5), mem.deviceId)).toBeNull();
+		expect(
+			(await verifyChain(ctx(5, [admM0, admM3]), mem.deviceId))?.epoch,
+		).toBe(3);
+		// the owner revokes the admin at epoch 4: the admin's EARLIER revocation (epoch 2) still counts, a later one not
+		revs.set(admin.deviceId, [4]);
+		expect(await verifyRevocation(ctx(5), rev)).toBe(true);
+		const late = await signRevocation(admin, {
+			mid: "m",
+			target: mem.deviceId,
+			by: admin.deviceId,
+			epoch: 6,
+		});
+		expect(await verifyRevocation(ctx(5), late)).toBe(false);
+		// and its admissions are void now (cascade)
+		expect(await verifyChain(ctx(5, [admM3]), mem.deviceId)).toBeNull();
+	});
 
 	open(
 		"P5 (S1): a relay replaying captured signed frames on a new link neither binds it to the sender nor re-delivers them",

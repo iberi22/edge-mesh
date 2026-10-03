@@ -2,6 +2,7 @@ import * as Y from "yjs";
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate, removeAwarenessStates } from "y-protocols/awareness";
 import {
 	type Admission,
+	type ChainContext,
 	type Revocation,
 	type Role,
 	type TrustRoot,
@@ -9,6 +10,7 @@ import {
 	canRevokeRole,
 	idMatchesPub,
 	isDeviceId,
+	isRevocation,
 	signAdmission,
 	signRevocation,
 	verifyChain,
@@ -154,7 +156,9 @@ const K_CHANNEL = 4; // body = nsLen(u16) | namespace | payload
 const ORIGIN = Symbol("swal-mesh");
 const DEV = "dev/"; // dev/<deviceId> = Device (informative only: trust comes from adm/)
 const ADM_PREFIX = "adm/"; // adm/<deviceId> = Admission signed by an owner/admin, verified against the local root pin
-const REV_PREFIX = "rev/"; // rev/<deviceId> = Revocation signed by the revoker (H4: replicated + persisted locally)
+const REV_PREFIX = "rev/"; // rev/<deviceId>:<epoch> = Revocation signed by the revoker (H4: replicated + persisted locally)
+const revKey = (r: { target: string; epoch: number }) => `${REV_PREFIX}${r.target}:${r.epoch}`;
+const REVOKED_KEY = "revoked/v2"; // local store: deviceId -> revocation epochs (v1 held wall-clock times)
 const ECDH_PREFIX = "ecdh/"; // ecdh/<deviceId> = { pub, sig } (sig by the device identity key)
 const ROT_PREFIX = "rot:"; // rot:<epoch>:<deviceId> = { from, wrap, revoked } (pairwise-wrapped new mesh key)
 const OLD_PREFIX = "old:"; // old:<epoch> = previous mesh key (b64u); only readable by current members (meta is under the NEW key)
@@ -222,7 +226,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 	// per-sender AES-GCM keys, cached PER KEY MATERIAL (never by epoch number: two meshes, or two concurrent
 	// rotations, can share an epoch number). Reset by loadKeys (B3).
 	let senderKeys = new WeakMap<Uint8Array, Map<string, Promise<CryptoKey>>>();
-	const revokedIds = new Map<string, number>(); // deviceId -> revocation time (persisted in the local store)
+	// deviceId -> epochs of its valid revocations (B6: epochs, never clocks; persisted in the local store)
+	const revokedIds = new Map<string, number[]>();
 	const store: MeshStore =
 		opts.store ??
 		vault.store ??
@@ -231,7 +236,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 	let admCache: Record<string, Admission> = {}; // verified admissions: survive tampering with the shared doc
 	let ecdhOk: Record<string, string> = {}; // `${deviceId}|${identityPub}` -> verified ECDH pub
 	let trusted = new Map<string, Device>(); // admitted devices other than this one
-	let admittedAt = new Map<string, number>(); // `at` of each trusted device's VERIFIED admission
+	let admittedAt = new Map<string, number>(); // epoch of each trusted device's VERIFIED admission
 	let selfAdm: Admission | null = null;
 	const legacy = new Map<string, Legacy>(); // retired data rid -> its epoch material
 	let ecdhId: EcdhIdentity | null = null;
@@ -277,9 +282,10 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const tr = target === root?.deviceId ? "owner" : (roleOf(target) ?? "member");
 		return ir !== null && canRevokeRole(ir, tr);
 	};
-	const chainCtx = (r: TrustRoot) => ({
+	const chainCtx = (r: TrustRoot): ChainContext => ({
 		vault,
 		root: r,
+		epoch,
 		candidates: (id: string) => {
 			const out: Admission[] = [];
 			const m = meta.get(ADM_PREFIX + id) as Admission | undefined;
@@ -291,25 +297,31 @@ export function createMesh(opts: MeshOptions): Mesh {
 	});
 	let trustChain: Promise<void> = Promise.resolve();
 	const refreshTrust = () => (trustChain = trustChain.then(computeTrust).catch(err));
-	const persistRevoked = () => store.set("revoked", Object.fromEntries(revokedIds));
-	/** A device is cut off if revoked and not re-admitted (newer admission) afterwards. */
+	const persistRevoked = () => store.set(REVOKED_KEY, Object.fromEntries(revokedIds));
+	/** Record a valid revocation of `id` effective from epoch `ep`. Returns true if it is new. */
+	function addRevocation(id: string, ep: number): boolean {
+		const list = revokedIds.get(id) ?? [];
+		if (list.includes(ep)) return false;
+		revokedIds.set(id, [...list, ep].sort((x, y) => x - y).slice(-64));
+		return true;
+	}
+	/** A device is cut off if revoked and not re-admitted afterwards (an admission issued at or after the revocation epoch). */
 	const isRevoked = (id: string) => {
-		const at = revokedIds.get(id);
-		return at !== undefined && !(trusted.has(id) && (admittedAt.get(id) ?? -1) > at);
+		const revs = revokedIds.get(id);
+		if (!revs?.length) return false;
+		return !(trusted.has(id) && (admittedAt.get(id) ?? -1) >= revs[revs.length - 1]);
 	};
 	async function computeTrust() {
 		// 1) signed revocations replicated in the doc (only valid ones count; the local map only ever grows)
 		if (root) {
 			const rctx = chainCtx(root);
-			const rmemo = new Map<string, Promise<Admission | null>>();
 			let changed = false;
 			for (const k of meta.keys()) {
 				if (!k.startsWith(REV_PREFIX)) continue;
 				const r = meta.get(k) as Revocation;
-				if (r?.target !== k.slice(REV_PREFIX.length) || (revokedIds.get(r.target) ?? -1) >= r.at) continue;
-				if (!(await verifyRevocation(rctx, r, rmemo))) continue;
-				revokedIds.set(r.target, r.at);
-				changed = true;
+				if (!isRevocation(r) || k !== revKey(r) || revokedIds.get(r.target)?.includes(r.epoch)) continue;
+				if (!(await verifyRevocation(rctx, r))) continue;
+				changed = addRevocation(r.target, r.epoch) || changed;
 			}
 			if (changed) await persistRevoked();
 		}
@@ -332,7 +344,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 			const pub = adm?.pub ?? (opts.authorizeDevice && typeof dev?.pub === "string" ? dev.pub : undefined);
 			if (!pub || !(await idMatchesPub(id, pub))) continue;
 			if (opts.authorizeDevice ? !(await opts.authorizeDevice(id, b64uDecode(pub))) : !adm) continue;
-			if (adm) nextAt.set(id, adm.at);
+			if (adm) nextAt.set(id, adm.epoch);
 			next.set(id, {
 				deviceId: id,
 				pub,
@@ -365,8 +377,10 @@ export function createMesh(opts: MeshOptions): Mesh {
 		}
 		const r = (await store.get("root")) as TrustRoot | undefined;
 		if (r && typeof r.deviceId === "string" && typeof r.pub === "string" && typeof r.mid === "string") root = r;
-		const rv = (await store.get("revoked")) as Record<string, number> | undefined;
-		for (const [id, at] of Object.entries(rv ?? {})) if (typeof at === "number") revokedIds.set(id, at);
+		const rv = (await store.get(REVOKED_KEY)) as Record<string, unknown> | undefined;
+		for (const [id, eps] of Object.entries(rv ?? {})) {
+			if (Array.isArray(eps)) for (const e of eps) if (Number.isSafeInteger(e) && e >= 1) addRevocation(id, e);
+		}
 		admCache = ((await store.get("adm")) as Record<string, Admission> | undefined) ?? {};
 		ecdhOk = ((await store.get("ecdh")) as Record<string, string> | undefined) ?? {};
 		if (opts.persist === "idb" && typeof indexedDB !== "undefined") {
@@ -843,8 +857,9 @@ export function createMesh(opts: MeshOptions): Mesh {
 		if ([...ev.keysChanged].some((k) => k.startsWith(OLD_PREFIX))) void syncLegacy().catch(err);
 	});
 
-	function forget(deviceId: string, at = now()) {
-		revokedIds.set(deviceId, Math.max(at, revokedIds.get(deviceId) ?? at));
+	/** Cut `deviceId` off locally from epoch `ep` on (B6: the revocation epoch, no clock). */
+	function forget(deviceId: string, ep: number) {
+		addRevocation(deviceId, ep);
 		trusted.delete(deviceId);
 		admittedAt.delete(deviceId);
 		delete admCache[deviceId];
@@ -852,7 +867,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 	}
 
 	async function adoptRotation(newKey: Uint8Array, newEpoch: number, revoked: string) {
-		forget(revoked);
+		forget(revoked, newEpoch);
 		for (const l of [...links]) if (l.deviceId === revoked) closeRec(l);
 		const { oldEpoch, oldKey } = await switchEpoch(newKey, newEpoch);
 		meta.set(OLD_PREFIX + oldEpoch, b64uEncode(oldKey));
@@ -866,14 +881,12 @@ export function createMesh(opts: MeshOptions): Mesh {
 		if (!meta.has(DEV + deviceId) && !trusted.has(deviceId)) throw new Error("unknown device");
 		if (!(await canRotate(vault.deviceId, deviceId))) throw new Error(`not authorized to revoke ${deviceId}`);
 		if (!running) await start();
-		// cut the revoked device off SYNCHRONOUSLY: its link must not be reachable by anything below
-		forget(deviceId);
-		for (const l of [...links]) if (l.deviceId === deviceId) closeRec(l);
 		const newKey = randomBytes(32);
 		const newEpoch = epoch + 1;
-		const rev = root
-			? await signRevocation(vault, { mid: root.mid, target: deviceId, by: vault.deviceId, epoch: newEpoch, at: revokedIds.get(deviceId) ?? now() })
-			: null;
+		// cut the revoked device off SYNCHRONOUSLY: its link must not be reachable by anything below
+		forget(deviceId, newEpoch);
+		for (const l of [...links]) if (l.deviceId === deviceId) closeRec(l);
+		const rev = root ? await signRevocation(vault, { mid: root.mid, target: deviceId, by: vault.deviceId, epoch: newEpoch }) : null;
 		const priv = (await ecdhIdentity()).privateKey;
 		const wraps = new Map<string, RotateMsg>();
 		for (const d of trusted.values()) {
@@ -897,7 +910,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 			meta.delete(DEV + deviceId);
 			meta.delete(ADM_PREFIX + deviceId);
 			meta.delete(ECDH_PREFIX + deviceId);
-			if (rev) meta.set(REV_PREFIX + deviceId, rev);
+			if (rev) meta.set(revKey(rev), rev);
 			meta.set(OLD_PREFIX + oldEpoch, b64uEncode(oldKey));
 			for (const [to, m] of wraps) meta.set(`${ROT_PREFIX}${newEpoch}:${to}`, { from: m.from, wrap: m.wrap, revoked: deviceId });
 		});
@@ -955,20 +968,22 @@ export function createMesh(opts: MeshOptions): Mesh {
 					name: guest.name,
 					role: guestRole,
 					by: vault.deviceId,
-					at: now(),
+					epoch, // B6: valid from this epoch on; a revocation at a later epoch voids it (no clock involved)
+					at: now(), // display only
 				});
 				const dev: Device = { ...guest, addedAt: adm.at, role: guestRole, admittedBy: vault.deviceId };
 				const extra = o.extra ? await o.extra(dev) : undefined;
 				if (opts.authorizeDevice && !(await opts.authorizeDevice(guest.deviceId, b64uDecode(guest.pub)))) {
 					throw new Error("device not authorized by the mesh policy");
 				}
-				revokedIds.delete(guest.deviceId); // explicit re-admission (its new admission post-dates the revocation)
-				await persistRevoked();
+				// explicit re-admission: valid because it is issued at an epoch >= every known revocation of the guest
+				// (revocation records stay: they keep voiding the OLD admissions, whoever replays them)
+				const revs = revokedIds.get(guest.deviceId);
+				if (revs?.length && revs[revs.length - 1] > epoch) throw new Error("guest is being revoked: pair it after the rotation");
 				admCache[guest.deviceId] = adm;
 				trusted.set(guest.deviceId, dev);
-				admittedAt.set(guest.deviceId, adm.at);
+				admittedAt.set(guest.deviceId, adm.epoch);
 				doc.transact(() => {
-					meta.delete(REV_PREFIX + guest.deviceId);
 					meta.set(ADM_PREFIX + guest.deviceId, adm);
 					meta.set(DEV + guest.deviceId, { deviceId: dev.deviceId, pub: dev.pub, name: dev.name, addedAt: dev.addedAt });
 				});
@@ -1071,9 +1086,10 @@ export function createMesh(opts: MeshOptions): Mesh {
 			// the trust root and our admission arrive over the SAS-authenticated session; the chain must be valid and
 			// lead to the very host key that signed the QR payload
 			if (!g.root || !Array.isArray(g.admissions)) throw new Error("pairing grant carries no admission (host too old?)");
+			if (!Number.isSafeInteger(g.epoch) || g.epoch < 0) throw new Error("pairing grant: bad epoch");
 			const grantAdm = new Map<string, Admission[]>();
 			for (const a of g.admissions) grantAdm.set(a?.deviceId, [...(grantAdm.get(a?.deviceId) ?? []), a]);
-			const gctx = { vault, root: g.root, candidates: (id: string) => grantAdm.get(id) ?? [], revokedAt: () => undefined };
+			const gctx: ChainContext = { vault, root: g.root, epoch: g.epoch, candidates: (id: string) => grantAdm.get(id) ?? [], revokedAt: () => undefined };
 			const memo = new Map<string, Promise<Admission | null>>();
 			const mine = await verifyChain(gctx, vault.deviceId, memo);
 			if (!mine || mine.pub !== b64uEncode(vault.devicePublicKey)) throw new Error("pairing grant: invalid admission for this device");
@@ -1100,7 +1116,6 @@ export function createMesh(opts: MeshOptions): Mesh {
 			for (const list of grantAdm.values()) for (const a of list) if (a.deviceId !== g.root.deviceId) admCache[a.deviceId] = a;
 			await store.set("adm", admCache);
 			const key = b64uDecode(g.meshKey);
-			if (!Number.isSafeInteger(g.epoch) || g.epoch < 0) throw new Error("pairing grant: bad epoch");
 			await vault.setMeshKey(key);
 			await persistEpoch(g.epoch);
 			epoch = g.epoch;

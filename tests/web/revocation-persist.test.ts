@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { revocationBytes } from "../../src/web/admission.js";
 import { createLoopbackHub } from "../../src/web/index.js";
+import { b64uEncode } from "../../src/web/util.js";
 import { devLabels, makeDev, metaOf, pair, trio, until } from "./helpers.js";
 
 const settle = (ms = 150) => new Promise((r) => setTimeout(r, ms));
@@ -15,7 +17,10 @@ describe("H4: revocations survive reloads and reach devices that join later", ()
 		await until(() => b.mesh.epoch === 1);
 
 		a.mesh.destroy(); // reload A: same persisted doc + vault (incl. its local store)
-		const a2 = await makeDev("devA", hub, undefined, { doc: a.doc, vault: a.vault });
+		const a2 = await makeDev("devA", hub, undefined, {
+			doc: a.doc,
+			vault: a.vault,
+		});
 		expect(a2.mesh.epoch).toBe(1);
 		await until(() => a2.mesh.peers.includes(b.id));
 
@@ -41,9 +46,25 @@ describe("H4: revocations survive reloads and reach devices that join later", ()
 		const hub = createLoopbackHub();
 		const { a, b, c } = await trio(hub);
 		const mid = a.mesh.root!.mid;
-		metaOf(b).set(`rev/${c.id}`, { v: 1, mid, target: c.id, by: b.id, epoch: 1, at: Date.now(), sig: "AAAA" });
-		metaOf(b).set(`rev/${a.id}`, { v: 1, mid, target: a.id, by: b.id, epoch: 1, at: Date.now(), sig: "AAAA" });
-		await until(() => metaOf(a).has(`rev/${c.id}`));
+		// well-formed records signed by a member (who may revoke nobody), and one with a bogus signature
+		const signed = async (target: string) => {
+			const body = { v: 2 as const, mid, target, by: b.id, epoch: 1 };
+			return {
+				...body,
+				sig: b64uEncode(await b.vault.sign(revocationBytes(body))),
+			};
+		};
+		metaOf(b).set(`rev/${c.id}:1`, await signed(c.id));
+		metaOf(b).set(`rev/${a.id}:1`, await signed(a.id));
+		metaOf(b).set(`rev/${c.id}:2`, {
+			v: 2,
+			mid,
+			target: c.id,
+			by: a.id,
+			epoch: 2,
+			sig: "AAAA",
+		});
+		await until(() => metaOf(a).has(`rev/${c.id}:2`));
 		await settle();
 		expect(devLabels(a.mesh)).toEqual(["devA", "devB", "devC"]);
 		for (const x of [a, b, c]) x.mesh.destroy();
@@ -57,7 +78,11 @@ describe("H4: revocations survive reloads and reach devices that join later", ()
 		await settle(20);
 		await pair(a, c);
 		expect(c.mesh.epoch).toBe(1);
-		await until(() => b.mesh.devices().some((d) => d.deviceId === c.id) && b.mesh.peers.includes(c.id));
+		await until(
+			() =>
+				b.mesh.devices().some((d) => d.deviceId === c.id) &&
+				b.mesh.peers.includes(c.id),
+		);
 		c.doc.getMap("data").set("back", 1);
 		await until(() => b.doc.getMap("data").get("back") === 1);
 		for (const x of [a, b, c]) x.mesh.destroy();

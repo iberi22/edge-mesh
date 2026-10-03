@@ -37,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **B5 self-revocation erased history** (`web/trust`): a revocation is effective only if its issuer grant is a strict
   ancestor of the target (or the root); a revocation whose parent is its own target is rejected (`self-revocation`).
   A device that leaves simply stops; it cannot retract ops peers already accepted.
+- **B6 wall-clock revocation**: admissions (`swal-adm/v2`) and revocations (`swal-rev/v2`, stored as
+  `rev/<id>:<epoch>`) are tied to the mesh epoch: an admission is valid in epochs >= its issue epoch and before any
+  later revocation epoch; revocations are verified as of the epoch they rotated from. No `at` comparison is left in
+  authorization (a future-dated admission no longer survives a revocation or its replay).
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,
@@ -58,6 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unauthorized ops, replay, forks, seq cut-off, cascade, order independence, tampering).
 
 ### Changed (breaking)
+- `Admission` gains `epoch` (v2) and `Revocation` drops `at` (v2); `ChainContext` gains `epoch` and `revokedAt`
+  returns the list of revocation epochs. Admissions/revocations of the previous version are ignored: re-pair.
 - `VaultClient.deviceId` must equal `fingerprint(devicePublicKey)` (`createMesh` rejects other vaults); pairing ack
   carries a signature (`swal-pair-ack/v1`), so hosts and guests must be updated together.
 - Web mesh wire format (signed frames, pairing hello v2, rotation wraps v2, instance-bound room ids): update every

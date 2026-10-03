@@ -38,7 +38,7 @@ The shared `meta` map is writable by every member, so nothing in it is trusted b
 - The first device that hosts a pairing becomes the **owner**: its identity `{mid, deviceId, pub}` is pinned as
   the trust root in a **device-local store** (`MeshOptions.store`, else `VaultClient.store`, else IndexedDB with
   `persist: "idb"`, else memory). The root is never read from the shared doc.
-- `adm/<deviceId>` = admission signed by its issuer: `["swal-adm/v1", mid, deviceId, pub, role, by, at, name]`.
+- `adm/<deviceId>` = admission signed by its issuer (`swal-adm/v2`, see "Epochs, not clocks" below).
   Roles: `owner > admin > member`. The owner admits admins and members, an admin admits members, a member admits
   nobody (`pairHost` throws). A device is a member only if its admission chain verifies up to the root (depth ≤ 4)
   and no issuer in it is revoked. Verified admissions and ECDH keys are cached in the local store, so deleting or
@@ -123,10 +123,22 @@ The new mesh key is never sent under the old shared key (the revoked device know
    An old-epoch peer announces itself there and receives only its own `rot:<epoch+1>:<id>` wrap; it then
    adopts the epoch and repeats the process for further missed rotations.
 6. Peers adopting a rotation also drop links to the revoked device and ignore its frames.
-7. The revoker publishes a signed `rev/<deviceId>` (`["swal-rev/v1", mid, target, by, epoch, at]`). Every device
-   keeps a local map `deviceId -> revokedAt` in its store (merged with valid `rev/` records), so a reload or a
-   device paired later keeps rejecting the revoked device even if an insider replays its old admission.
-   Admissions issued at or before `revokedAt` are void; an explicit re-pairing (newer admission) is valid.
+7. The revoker publishes a signed `rev/<deviceId>:<epoch>` (`["swal-rev/v2", mid, target, by, epoch]`, `epoch` = the
+   epoch its rotation introduces). Every device keeps a local map `deviceId -> [revocation epochs]` in its store
+   (merged with valid `rev/` records), so a reload or a device paired later keeps rejecting the revoked device even if
+   an insider replays its old admission.
+
+### Epochs, not clocks (B6)
+
+Authorization never compares clocks across devices. An admission carries the issuer's mesh `epoch`
+(`["swal-adm/v2", mid, deviceId, pub, role, by, epoch, at, name]`; `at` is display-only) and is valid in epochs
+`>= epoch` (an admission from a later epoch than the verifier's is not valid yet) until a revocation of that device
+with a **later** epoch. A re-admission issued at or after the revocation epoch is valid again; the revocation record
+stays and keeps voiding the older admissions. A revocation counts if its issuer's chain was valid **as of
+`epoch - 1`** (the epoch it rotated from) and the role ladder allowed it then, so concurrent revocations (an admin
+revoking a member while the owner revokes that admin) all count. Limitation: a revoked admin that colludes with a
+current member can still get a back-dated revocation (`epoch` <= its own revocation) of a member it could revoke
+before into the doc; it exposes no key or data and the owner re-admits the member.
 
 ## Signaling cap
 
