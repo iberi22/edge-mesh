@@ -37,6 +37,11 @@ export interface PeerLink {
 	onMessage(cb: (data: Uint8Array) => void): void;
 	onClose(cb: () => void): void;
 	close(): void;
+	/**
+	 * Optional backpressure (BL3): resolves when the link's own send queue is low again. The mesh awaits it before
+	 * handing over each frame, so a large message is paced by the peer instead of piling up in memory.
+	 */
+	drain?(): Promise<void>;
 }
 
 /** Wire message of the signaling protocol (see docs/SIGNALING-PROTOCOL.md). */

@@ -780,7 +780,7 @@ describe("audit regressions: web/provider", () => {
 		a.mesh.destroy();
 	});
 
-	it("S5: a WebRTC link whose peer does not drain its queue is closed instead of buffering without bound", () => {
+	it("S5/BL3: a WebRTC link whose peer stopped draining is closed instead of buffering without bound", async () => {
 		const listeners: Record<string, Array<() => void>> = {};
 		const dc = {
 			readyState: "open",
@@ -799,14 +799,30 @@ describe("audit regressions: web/provider", () => {
 				for (const f of listeners.close ?? []) f();
 			},
 		};
-		const link = dataChannelLink("slow", dc as unknown as RTCDataChannel);
+		let t = 0;
+		const link = dataChannelLink("slow", dc as unknown as RTCDataChannel, {
+			now: () => t,
+			stallMs: 15_000,
+		});
 		let closed = false;
 		link.onClose(() => {
 			closed = true;
 		});
 		const chunk = new Uint8Array(1024 * 1024);
-		for (let i = 0; i < 40 && !closed; i++) link.send(chunk);
+		for (let i = 0; i < 20 && !closed; i++) link.send(chunk);
+		expect(closed).toBe(false); // over the cap, but it only just stopped draining
+		// backpressure: a sender awaiting drain() is held back
+		let drained = false;
+		void link.drain?.().then(() => {
+			drained = true;
+		});
+		await new Promise((r) => setTimeout(r, 20));
+		expect(drained).toBe(false);
+		t += 16_000; // no progress for longer than stallMs
+		link.send(chunk);
 		expect(closed).toBe(true);
+		await new Promise((r) => setTimeout(r, 20));
+		expect(drained).toBe(true); // waiters are released when the link closes
 	});
 
 	it("S6: a host reusing a known mesh id with another owner key cannot re-root a paired device", async () => {

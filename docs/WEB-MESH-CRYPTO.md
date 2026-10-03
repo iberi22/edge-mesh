@@ -102,8 +102,9 @@ drains its queue before closing.
 - Pairing messages above **256 KiB** are dropped before being parsed. The pairing grant no longer carries a snapshot
   of the doc: it holds keys, trust chain and the current rotation record only, and the data follows by the regular
   (fragmented, authenticated) sync.
-- `dataChannelLink` bounds its own send queue (16 MiB above SCTP's buffer): a peer that does not drain is closed
-  instead of making the sender buffer without limit.
+- Backpressure (BL3): links may expose `drain()`; the mesh awaits it before handing over each frame, so even a
+  64 MiB message is paced by the peer. `dataChannelLink` closes a link only when its queue is above 16 MiB **and**
+  nothing drained for `stallMs` (15 s): a slow but healthy peer is never cut off, a stuck one is.
 
 ## Channels
 

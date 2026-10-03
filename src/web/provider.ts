@@ -551,6 +551,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 			.then(async () => {
 				if (!alive()) return;
 				for (const f of await fragment(bytes, maxFrame)) {
+					if (link.drain) await link.drain(); // BL3: paced by the peer instead of piling up in memory
 					if (!alive()) return;
 					link.send(f);
 				}

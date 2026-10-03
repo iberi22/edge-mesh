@@ -528,44 +528,41 @@ describe("audit round 2 regressions: web/provider", () => {
 	);
 
 	for (const mib of [20, 8])
-		(mib > 16 ? open : it)(
-			`BL3: a healthy WebRTC link carries a legit ${mib} MiB message`,
-			async () => {
-				const listeners: Record<string, Array<() => void>> = {};
-				const dc = {
-					readyState: "open",
-					bufferedAmount: 0,
-					binaryType: "",
-					bufferedAmountLowThreshold: 0,
-					addEventListener: (t: string, f: () => void) => {
-						listeners[t] ??= [];
-						listeners[t].push(f);
-					},
-					send(d: Uint8Array) {
-						dc.bufferedAmount += d.length; // a healthy peer: SCTP drains asynchronously
-						setTimeout(() => {
-							dc.bufferedAmount = 0;
-							for (const f of listeners.bufferedamountlow ?? []) f();
-						}, 1);
-					},
-					close() {
-						dc.readyState = "closed";
-						for (const f of listeners.close ?? []) f();
-					},
-				};
-				const link = dataChannelLink("peer", dc as unknown as RTCDataChannel);
-				let closed = false;
-				link.onClose(() => {
-					closed = true;
-				});
-				const chunk = randomBytes(64 * 1024);
-				const big = new Uint8Array(mib * 1024 * 1024);
-				for (let o = 0; o < big.length; o += chunk.length) big.set(chunk, o);
-				for (const f of await fragment(big, 64 * 1024)) link.send(f); // even without the provider's backpressure
-				await settle(200);
-				expect(closed).toBe(false);
-			},
-		);
+		it(`BL3: a healthy WebRTC link carries a legit ${mib} MiB message`, async () => {
+			const listeners: Record<string, Array<() => void>> = {};
+			const dc = {
+				readyState: "open",
+				bufferedAmount: 0,
+				binaryType: "",
+				bufferedAmountLowThreshold: 0,
+				addEventListener: (t: string, f: () => void) => {
+					listeners[t] ??= [];
+					listeners[t].push(f);
+				},
+				send(d: Uint8Array) {
+					dc.bufferedAmount += d.length; // a healthy peer: SCTP drains asynchronously
+					setTimeout(() => {
+						dc.bufferedAmount = 0;
+						for (const f of listeners.bufferedamountlow ?? []) f();
+					}, 1);
+				},
+				close() {
+					dc.readyState = "closed";
+					for (const f of listeners.close ?? []) f();
+				},
+			};
+			const link = dataChannelLink("peer", dc as unknown as RTCDataChannel);
+			let closed = false;
+			link.onClose(() => {
+				closed = true;
+			});
+			const chunk = randomBytes(64 * 1024);
+			const big = new Uint8Array(mib * 1024 * 1024);
+			for (let o = 0; o < big.length; o += chunk.length) big.set(chunk, o);
+			for (const f of await fragment(big, 64 * 1024)) link.send(f); // even without the provider's backpressure
+			await settle(200);
+			expect(closed).toBe(false);
+		});
 
 	for (const jump of [31_000, 0])
 		(jump ? open : it)(
