@@ -517,7 +517,11 @@ describe("security: revocation", () => {
 		const w = await world();
 		const entries = await authored(w, w.waiter, 5);
 		const ops = entries.map((s) => s.op);
-		const rev = await w.revoke(w.root, { target: w.g.waiter.id, lastSeq: 3 });
+		const rev = await w.revoke(w.root, {
+			target: w.g.waiter.id,
+			lastSeq: 3,
+			lastId: (entries[2] as StoredOp).id,
+		});
 		// node 1: applied everything, then learns the revocation -> 4,5 retracted
 		const n1 = await ready(w);
 		await n1.log.ingestMany(ops);
@@ -530,13 +534,16 @@ describe("security: revocation", () => {
 		const n2 = await ready(w);
 		await n2.trust.add(rev);
 		const res = await n2.log.ingestMany(ops);
+		// (S3/R4-N6: ops <= lastSeq wait until the chain reaches the anchor lastId, then all apply)
 		expect(res.map((r) => r.detail ?? r.status)).toEqual([
-			"applied",
-			"applied",
+			"pending",
+			"pending",
 			"applied",
 			"revoked",
 			"revoked",
 		]);
+		expect(n2.log.isAccepted(w.waiter.fp, 1)).toBe(true);
+		expect(n2.log.isAccepted(w.waiter.fp, 2)).toBe(true);
 		expect(await acceptedIds(n2.log)).toEqual(await acceptedIds(n1.log));
 		// the revoked device can no longer sign new ops locally either
 		const t = await w.trust();
@@ -666,8 +673,9 @@ describe("security: revocation", () => {
 describe("security: order independence", () => {
 	it("grants, revocations and ops in any interleaving give the same accepted set", async () => {
 		const w = await world();
+		const waiterOps = await authored(w, w.waiter, 6);
 		const ops = [
-			...(await authored(w, w.waiter, 6)),
+			...waiterOps,
 			...(await authored(w, w.cook, 4, {
 				module: "cocina",
 				action: "order.state",
@@ -696,7 +704,11 @@ describe("security: order independence", () => {
 				w.root,
 				probe.trust.prepareRevocation(w.g.admin.id, { [w.cook.fp]: 2 }),
 			),
-			await w.revoke(w.root, { target: w.g.waiter.id, lastSeq: 4 }),
+			await w.revoke(w.root, {
+				target: w.g.waiter.id,
+				lastSeq: 4,
+				lastId: (waiterOps[3] as StoredOp).id,
+			}),
 		];
 		const items: { kind: "doc" | "op"; x: unknown }[] = [
 			...docs.map((x) => ({ kind: "doc" as const, x })),

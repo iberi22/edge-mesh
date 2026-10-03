@@ -111,6 +111,11 @@ export async function issueRevocation(
 	input: RevocationInput,
 	ctx: IssueContext,
 ): Promise<Revocation> {
+	// R4-N6: history kept up to lastSeq is anchored on the revoker's head op; without it the S3 fork protection is off
+	if (input.lastSeq > 0 && !input.lastId)
+		throw new Error(
+			"a revocation that keeps history (lastSeq > 0) needs lastId: pass {seq, id} heads to prepareRevocation",
+		);
 	const body: RevocationBody = {
 		t: "revoke",
 		v: 1,
@@ -205,6 +210,8 @@ export function checkRevocationShape(x: unknown): string | null {
 		return "bad parent/reason";
 	if (!isNat(x.lastSeq) || !isNat(x.issuedAt)) return "bad numbers";
 	if (!isOptStr(x.lastId, 128)) return "bad lastId";
+	if ((x.lastSeq as number) > 0 && x.lastId === undefined)
+		return "missing lastId (lastSeq > 0)";
 	if (x.upTo !== undefined) {
 		if (!isObj(x.upTo)) return "bad upTo";
 		for (const v of Object.values(x.upTo)) if (!isNat(v)) return "bad upTo";

@@ -278,7 +278,13 @@ describe("web/trust: TrustStore", () => {
 		const w = await world();
 		const t = await w.trust();
 		await t.addMany(w.docs);
-		await t.add(await w.revoke(w.root, { target: w.g.waiter.id, lastSeq: 2 }));
+		await t.add(
+			await w.revoke(w.root, {
+				target: w.g.waiter.id,
+				lastSeq: 2,
+				lastId: "h".repeat(43),
+			}),
+		);
 		const t2 = await w.trust();
 		await t2.addMany([...t.docs()].reverse());
 		expect(t2.docs().length).toBe(5);

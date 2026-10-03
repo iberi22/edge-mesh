@@ -38,6 +38,7 @@ const contains = (hay: Uint8Array, needle: Uint8Array) => {
 	return false;
 };
 
+import { checkRevocationShape } from "../../src/web/trust/docs.js";
 import { isPublicKey } from "../../src/web/trust/keys.js";
 import { b64uDecode, b64uEncode, randomBytes } from "../../src/web/util.js";
 import {
@@ -50,6 +51,7 @@ import {
 	storedWraps,
 	until,
 } from "./helpers.js";
+import { world } from "./trust-fixtures.js";
 
 const settle = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const keyOf = (d: Dev) => b64uEncode(d.vault.meshKey as Uint8Array);
@@ -374,5 +376,27 @@ describe("audit round 4 regressions", () => {
 			},
 		});
 		expect(r.guest).toBe("granted");
+	});
+
+	it("R4-N6: a web/trust revocation that keeps history (lastSeq > 0) must name the head op (lastId)", async () => {
+		const w = await world();
+		await expect(
+			w.revoke(w.root, { target: w.g.waiter.id, lastSeq: 3 }),
+		).rejects.toThrow(/lastId/);
+		const ok = await w.revoke(w.root, {
+			target: w.g.waiter.id,
+			lastSeq: 3,
+			lastId: "h".repeat(43),
+		});
+		expect(checkRevocationShape(ok)).toBeNull();
+		expect(checkRevocationShape({ ...ok, lastId: undefined })).toMatch(
+			/lastId/,
+		);
+		// lastSeq 0 (nothing kept) needs no head
+		expect(
+			checkRevocationShape(
+				await w.revoke(w.root, { target: w.g.waiter.id, lastSeq: 0 }),
+			),
+		).toBeNull();
 	});
 });
