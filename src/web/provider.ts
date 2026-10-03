@@ -111,6 +111,8 @@ export interface MeshOptions {
 	 * and its doc fills with the old mesh's data, which `pairJoin` then refuses to carry over.
 	 */
 	resume?: boolean;
+	/** A data link whose handshake (S1) has not completed after this long is closed (note 9). Default 120 s. */
+	handshakeTimeoutMs?: number;
 }
 
 export interface PairHostOptions {
@@ -1290,6 +1292,15 @@ export function createMesh(opts: MeshOptions): Mesh {
 	/** S1: challenge the peer of a fresh data link; data flows once both sides answered each other's challenge. */
 	function startHandshake(rec: LinkRec) {
 		rec.nonce = randomBytes(NONCE_BYTES);
+		// note 9: an unauthenticated link holds budgets (pre-auth reassembly, held frames): it does not stay forever
+		const t = setTimeout(() => {
+			if (!rec.authed && !rec.closing) {
+				reject("link handshake timed out", rec.deviceId);
+				closeRec(rec);
+			}
+		}, opts.handshakeTimeoutMs ?? 120_000);
+		(t as { unref?: () => void }).unref?.();
+		rec.link.onClose(() => clearTimeout(t));
 		rec.hellosOut = 1;
 		const lg = rec.legacy;
 		sendFrameWith(rec, K_HELLO, rec.nonce, lg ? lg.material : docMat, lg ? lg.rid : dataRid, true).catch(err);

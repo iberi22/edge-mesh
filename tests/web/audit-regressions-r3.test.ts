@@ -3,7 +3,11 @@
 import { describe, expect, it } from "vitest";
 import { signRevocation } from "../../src/web/admission.js";
 import { deriveDocMaterial } from "../../src/web/crypto.js";
-import type { LinkTransport, PeerLink } from "../../src/web/index.js";
+import type {
+	LinkTransport,
+	MeshOptions,
+	PeerLink,
+} from "../../src/web/index.js";
 import { createLoopbackHub, deriveRoomId } from "../../src/web/index.js";
 import {
 	rotationPreId,
@@ -576,5 +580,41 @@ describe("audit round 3 regressions: owner-only re-keying", () => {
 		for (const f of listeners.bufferedamountlow ?? []) f();
 		const firstByte = sent.map((c) => c[1]);
 		expect(firstByte).toEqual([1, 1, 1, 9, 2, 2, 2]);
+	});
+
+	it("note 9: a link whose handshake never completes is closed after handshakeTimeoutMs", async () => {
+		const hub = createLoopbackHub();
+		const a = await makeDev("devA", hub, undefined, {
+			handshakeTimeoutMs: 300,
+		} as Partial<MeshOptions>);
+		const b = await makeDev("devB", hub);
+		await pair(a, b);
+		await until(() => a.mesh.peers.includes(b.id));
+		const rejected: string[] = [];
+		a.mesh.on("rejected", (e) => rejected.push(e.reason));
+		// a silent peer in A's data room: it never answers A's challenge
+		const instance = a.mesh.namespace.split("/")[1] as string;
+		const t = hub.transport("silent");
+		let closed = false;
+		t.onLink((l) =>
+			l.onClose(() => {
+				closed = true;
+			}),
+		);
+		await t.join(
+			await deriveRoomId(
+				a.vault.meshKey as Uint8Array,
+				"fize",
+				TOPIC,
+				0,
+				instance,
+			),
+			"silent",
+		);
+		await until(() => closed, 3000);
+		expect(rejected).toContain("link handshake timed out");
+		expect(a.mesh.peers).toContain(b.id); // authenticated links are untouched
+		for (const x of [a, b]) x.mesh.destroy();
+		t.close();
 	});
 });

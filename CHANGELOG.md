@@ -133,6 +133,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Finding 6 a fork sent first kept the anchored history out** (`web/oplog`): at most 2 ops wait per (author, seq)
   for an anchor; when a seq is full, those not on the chain walked back from the anchor id are evicted; the anchored
   span budget is twice the span (a fork plus the real history). 600 / 1100-op histories are accepted in full.
+- Notes: links whose handshake does not complete within `handshakeTimeoutMs` (default 120 s) are closed (9); the
+  evidence path is gone (7); what the handshake binds and why a live relay can only delay or drop is documented (8).
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,

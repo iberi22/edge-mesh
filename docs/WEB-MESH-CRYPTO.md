@@ -30,6 +30,16 @@
   key, and the link remembers that key as one the peer holds (rotation frames are also sealed under it). Frames that
   arrive before the peer's `K_AUTH` (it authenticated us first and already pulls our state) are kept (32 frames /
   1 MiB) and processed right after it, with the usual session and replay checks.
+- **Handshake timeout (note 9).** A data link whose handshake has not completed after `handshakeTimeoutMs`
+  (default 120 s) is closed (`rejected: "link handshake timed out"`): it would otherwise hold pre-auth budgets and
+  held frames for ever. A peer that is admitted later reconnects through the room (new link, new handshake).
+- **Live relay (note 8), what the handshake does and does not bind.** `K_AUTH` is signed by the answering device and
+  names the room, the epoch, the challenger and the challenger's fresh nonce, so it cannot be replayed onto another
+  link or for another device. It is NOT bound to the transport session (no generic channel binding exists across
+  loopback / WebRTC / qr-sdp links): a live relay sitting on two links can forward one device's handshake to the other
+  in real time and so make two honest devices talk through it. It still reads nothing (frames are encrypted under the
+  mesh key and signed per sender, with replay windows) and can forge nothing; it can only delay or drop, like any
+  transport. The evidence path of round 2 (note 7) no longer exists: frames of a revoked device are dropped whole.
 - **Replays and duplicates (S1).** `sess` is random per mesh instance (a restart is a new session) and `seq` grows by
   one per signed message (a broadcast signs once, same `seq` on every link). Receivers accept a `(sender, sess,
   seq)` once, within a window of 1024 behind the highest `seq` seen, and only with the link's bound session.
