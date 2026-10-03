@@ -1,5 +1,6 @@
 import { hkdf, importAesKey, openUpdate, sealUpdate } from "./crypto.js";
 import { hmac } from "./rooms.js";
+import type { Admission, TrustRoot } from "./admission.js";
 import type { Device, VaultClient } from "./types.js";
 import { b64uDecode, b64uEncode, bs, equalBytes, fromUtf8, randomBytes, utf8 } from "./util.js";
 
@@ -31,6 +32,12 @@ export interface GrantBody {
 	/** Y.encodeStateAsUpdate of the shared doc (base64url) */
 	snapshot: string;
 	hostDevice?: Device;
+	/** Trust anchor the guest pins (the mesh owner), sent over the SAS-authenticated session. */
+	root?: TrustRoot;
+	/** The guest's own admission followed by its issuer's chain up to (excluding) the root. */
+	admissions?: Admission[];
+	/** Application data attached by the host for this guest (MeshOptions pairHost({ extra })). */
+	extra?: unknown;
 }
 
 const signedBytes = (p: Omit<PairPayload, "sig">) =>
@@ -137,7 +144,7 @@ export class HostPairing {
 		private hooks: {
 			now(): number;
 			onSas(p: SasPrompt): void;
-			buildGrant(): Promise<GrantBody>;
+			buildGrant(guest: Omit<Device, "addedAt">): Promise<GrantBody>;
 			onPaired(d: Device): void;
 			onFail(reason: string): void;
 		},
@@ -216,7 +223,14 @@ export class HostPairing {
 	private async tryGrant() {
 		if (!this.hostOk || !this.guestDevice || !this.sess || !this.send || this.done) return;
 		this.done = true;
-		const grant = await this.hooks.buildGrant();
+		let grant: GrantBody;
+		try {
+			grant = await this.hooks.buildGrant(this.guestDevice);
+		} catch (e) {
+			this.send({ t: "err", e: "refused" });
+			this.hooks.onFail(`grant refused: ${e instanceof Error ? e.message : String(e)}`);
+			return;
+		}
 		const ct = b64uEncode(await sealUpdate(this.sess.key, json(grant), "swal-pair/grant"));
 		this.send({ t: "grant", ct });
 		this.hooks.onPaired({ ...this.guestDevice, addedAt: this.hooks.now() });

@@ -1,5 +1,6 @@
 import * as Y from "yjs";
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate, removeAwarenessStates } from "y-protocols/awareness";
+import { type Admission, type Role, type TrustRoot, canIssue, signAdmission, verifyChain } from "./admission.js";
 import { deriveDocMaterial, deriveSenderKey, hkdf, importAesKey, openUpdate, sealUpdate } from "./crypto.js";
 import { type EcdhIdentity, ecdhSignedBytes, generateEcdhIdentity, unwrapMeshKey, wrapMeshKey } from "./rotation.js";
 import {
@@ -13,6 +14,7 @@ import {
 	derivePairKey,
 } from "./pairing.js";
 import { derivePairRoomId, deriveRoomId } from "./rooms.js";
+import { type MeshStore, idbStore, memoryStore } from "./store.js";
 import type { Device, PeerLink, RtcOptions, SigTransport, VaultClient } from "./types.js";
 import { b64uDecode, b64uEncode, concat, fromUtf8, randomBytes, utf8 } from "./util.js";
 import { connectViaSignaling } from "./webrtc.js";
@@ -31,6 +33,30 @@ export interface MeshOptions {
 	deviceName?: string;
 	rtc?: RtcOptions;
 	now?: () => number;
+	/**
+	 * Device-local store for trust state (pinned root, verified admissions, revocations). Default: `vault.store`,
+	 * else IndexedDB when persist:'idb', else memory (a reloaded device then has to be paired again).
+	 */
+	store?: MeshStore;
+	/**
+	 * Replaces the built-in admission check (signed admission chain up to the pinned root). Called for every
+	 * candidate device with the identity key the mesh would trust for it; it MUST check that this key belongs to
+	 * `deviceId` (e.g. against a signed grant), because the shared doc is writable by every member.
+	 * Only devices it accepts receive rotation wraps, have their ECDH key used and appear in `devices()`.
+	 */
+	authorizeDevice?: (deviceId: string, devicePub: Uint8Array) => boolean | Promise<boolean>;
+}
+
+export interface PairHostOptions {
+	/** Role of the admitted guest. Default "member". Only the owner admits admins. */
+	role?: Exclude<Role, "owner">;
+	/** Application data for this guest (e.g. a signed capability grant), sent inside the encrypted grant. */
+	extra?: (guest: Device) => unknown | Promise<unknown>;
+}
+
+export interface PairJoinResult {
+	host?: Device;
+	extra?: unknown;
 }
 
 export interface PairOffer {
@@ -47,9 +73,14 @@ export interface Mesh {
 	readonly awareness: Awareness;
 	/** Resolves when local persistence is loaded and this device is registered. */
 	readonly ready: Promise<void>;
-	pairHost(): Promise<PairOffer>;
-	pairJoin(payload: string, opts?: { confirmSas?: (code: string) => Promise<boolean> | boolean }): Promise<void>;
+	/** Pinned trust root (mesh owner), or null before the first pairing. */
+	readonly root: TrustRoot | null;
+	pairHost(opts?: PairHostOptions): Promise<PairOffer>;
+	pairJoin(payload: string, opts?: { confirmSas?: (code: string) => Promise<boolean> | boolean }): Promise<PairJoinResult>;
+	/** This device plus every ADMITTED device (self-registered entries in the shared doc are ignored). */
 	devices(): Device[];
+	/** Verified role of a device (default: this one), or null if it is not admitted. */
+	role(deviceId?: string): Role | null;
 	revoke(deviceId: string): Promise<void>;
 	leave(): void;
 	destroy(): void;
@@ -63,7 +94,8 @@ const K_UPDATE = 1;
 const K_AWARENESS = 2;
 const K_ROTATE = 3;
 const ORIGIN = Symbol("swal-mesh");
-const DEV = "dev/";
+const DEV = "dev/"; // dev/<deviceId> = Device (informative only: trust comes from adm/)
+const ADM_PREFIX = "adm/"; // adm/<deviceId> = Admission signed by an owner/admin, verified against the local root pin
 const ECDH_PREFIX = "ecdh/"; // ecdh/<deviceId> = { pub, sig } (sig by the device identity key)
 const ROT_PREFIX = "rot:"; // rot:<epoch>:<deviceId> = { from, wrap, revoked } (pairwise-wrapped new mesh key)
 const OLD_PREFIX = "old:"; // old:<epoch> = previous mesh key (b64u); only readable by current members (meta is under the NEW key)
@@ -118,7 +150,16 @@ export function createMesh(opts: MeshOptions): Mesh {
 	let status: MeshStatus = "off";
 	const links = new Set<LinkRec>();
 	const senderKeys = new Map<string, CryptoKey>(); // `${epoch}|${deviceId}` -> per-sender AES-GCM key
-	const revokedIds = new Set<string>();
+	const revokedIds = new Map<string, number>(); // deviceId -> revocation time
+	const store: MeshStore =
+		opts.store ??
+		vault.store ??
+		(opts.persist === "idb" && typeof indexedDB !== "undefined" ? idbStore(`swal-mesh-local/${appId}/${topicName}`) : memoryStore());
+	let root: TrustRoot | null = null;
+	let admCache: Record<string, Admission> = {}; // verified admissions: survive tampering with the shared doc
+	let ecdhOk: Record<string, string> = {}; // `${deviceId}|${identityPub}` -> verified ECDH pub
+	let trusted = new Map<string, Device>(); // admitted devices other than this one
+	let selfAdm: Admission | null = null;
 	const legacy = new Map<string, Legacy>(); // retired data rid -> its epoch material
 	let ecdhId: EcdhIdentity | null = null;
 	const rooms = new Map<string, () => void>(); // rid -> leave
@@ -138,14 +179,82 @@ export function createMesh(opts: MeshOptions): Mesh {
 	};
 	const err = (e: unknown) => emit("error", e);
 
-	// ---- devices (inside the encrypted-on-the-wire Y.Doc 'meta' map) ----
-	const devices = (): Device[] =>
-		[...meta.keys()].filter((k) => k.startsWith(DEV)).map((k) => meta.get(k) as Device).sort((a, b) => a.addedAt - b.addedAt);
-	meta.observe(() => emit("devices", devices()));
+	// ---- devices: only ADMITTED ones (H1). The 'meta' map is writable by every member, so a device entry is
+	// trusted only through a signed admission chain up to the locally pinned root (or the authorizeDevice hook).
+	const selfRole = (): Role | null => (root?.deviceId === vault.deviceId ? "owner" : (selfAdm?.role ?? null));
+	const selfDevice = (): Device => {
+		const d = meta.get(DEV + vault.deviceId) as Device | undefined;
+		return {
+			deviceId: vault.deviceId,
+			pub: b64uEncode(vault.devicePublicKey),
+			name: d?.name ?? opts.deviceName ?? "device",
+			addedAt: d?.addedAt ?? 0,
+			...(selfRole() ? { role: selfRole()! } : {}),
+			...(selfAdm ? { admittedBy: selfAdm.by } : {}),
+		};
+	};
+	const devices = (): Device[] => [selfDevice(), ...trusted.values()].sort((a, b) => a.addedAt - b.addedAt);
+	const chainCtx = (r: TrustRoot) => ({
+		vault,
+		root: r,
+		candidates: (id: string) => {
+			const out: Admission[] = [];
+			const m = meta.get(ADM_PREFIX + id) as Admission | undefined;
+			if (m) out.push(m);
+			if (admCache[id] && admCache[id].sig !== m?.sig) out.push(admCache[id]);
+			return out;
+		},
+		revokedAt: (id: string) => revokedIds.get(id),
+	});
+	let trustChain: Promise<void> = Promise.resolve();
+	const refreshTrust = () => (trustChain = trustChain.then(computeTrust).catch(err));
+	async function computeTrust() {
+		const ids = new Set<string>(Object.keys(admCache));
+		for (const k of meta.keys()) {
+			if (k.startsWith(ADM_PREFIX)) ids.add(k.slice(ADM_PREFIX.length));
+			else if (opts.authorizeDevice && k.startsWith(DEV)) ids.add(k.slice(DEV.length));
+		}
+		if (root) ids.add(root.deviceId);
+		ids.delete(vault.deviceId);
+		const memo = new Map<string, Promise<Admission | null>>();
+		const ctx = root ? chainCtx(root) : null;
+		const next = new Map<string, Device>();
+		const nextCache: Record<string, Admission> = {};
+		for (const id of ids) {
+			const adm = ctx ? await verifyChain(ctx, id, memo) : null;
+			if (adm?.sig) nextCache[id] = adm;
+			const dev = meta.get(DEV + id) as Device | undefined;
+			const pub = adm?.pub ?? (opts.authorizeDevice && typeof dev?.pub === "string" ? dev.pub : undefined);
+			if (!pub) continue;
+			if (opts.authorizeDevice ? !(await opts.authorizeDevice(id, b64uDecode(pub))) : !adm) continue;
+			next.set(id, {
+				deviceId: id,
+				pub,
+				name: adm?.name || dev?.name || id,
+				addedAt: adm?.at || dev?.addedAt || 0,
+				...(adm ? { role: adm.role, admittedBy: adm.by } : {}),
+			});
+		}
+		selfAdm = ctx && root?.deviceId !== vault.deviceId ? await verifyChain(ctx, vault.deviceId, memo) : null;
+		if (selfAdm?.sig) nextCache[vault.deviceId] = selfAdm;
+		trusted = next;
+		if (JSON.stringify(nextCache) !== JSON.stringify(admCache)) {
+			admCache = nextCache;
+			await store.set("adm", admCache);
+		}
+		// verify (and remember) each member's ECDH key now, so a later overwrite in meta cannot replace it
+		for (const id of next.keys()) await peerEcdhPub(id);
+		emit("devices", devices());
+	}
+	meta.observe(() => void refreshTrust());
 
 	// ---- persistence ----
 	let persistence: { destroy(): Promise<void> | void } | null = null;
 	const ready = (async () => {
+		const r = (await store.get("root")) as TrustRoot | undefined;
+		if (r && typeof r.deviceId === "string" && typeof r.pub === "string" && typeof r.mid === "string") root = r;
+		admCache = ((await store.get("adm")) as Record<string, Admission> | undefined) ?? {};
+		ecdhOk = ((await store.get("ecdh")) as Record<string, string> | undefined) ?? {};
 		if (opts.persist === "idb" && typeof indexedDB !== "undefined") {
 			const { IndexeddbPersistence } = await import("y-indexeddb");
 			const p = new IndexeddbPersistence(`swal-mesh/${appId}/${topicName}`, doc);
@@ -164,7 +273,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 			} satisfies Device);
 		}
 		await publishEcdh();
-		if (devices().length > 1 && !destroyed) await start(); // already paired: resume
+		await refreshTrust();
+		if (root && trusted.size > 0 && !destroyed) await start(); // already paired: resume
 	})();
 	ready.catch(err);
 
@@ -180,17 +290,24 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const sig = b64uEncode(await vault.sign(ecdhSignedBytes(vault.deviceId, pub)));
 		meta.set(ECDH_PREFIX + vault.deviceId, { pub, sig });
 	}
-	/** Verified ECDH public key of a registered device, or null. */
+	/**
+	 * ECDH public key of an ADMITTED device, verified against the identity key from its admission (never against
+	 * the self-declared dev/<id> entry). A key verified once is remembered, so tampering with meta cannot swap it.
+	 */
 	async function peerEcdhPub(deviceId: string): Promise<Uint8Array | null> {
-		const dev = meta.get(DEV + deviceId) as Device | undefined;
+		const idPub = trusted.get(deviceId)?.pub;
+		if (!idPub) return null;
+		const slot = `${deviceId}|${idPub}`;
 		const e = meta.get(ECDH_PREFIX + deviceId) as { pub: string; sig: string } | undefined;
-		if (!dev || !e || typeof e.pub !== "string" || typeof e.sig !== "string") return null;
-		try {
-			const ok = await vault.verify(b64uDecode(dev.pub), ecdhSignedBytes(deviceId, e.pub), b64uDecode(e.sig));
-			return ok ? b64uDecode(e.pub) : null;
-		} catch {
-			return null;
+		if (e && typeof e.pub === "string" && typeof e.sig === "string" && e.pub !== ecdhOk[slot]) {
+			try {
+				if (await vault.verify(b64uDecode(idPub), ecdhSignedBytes(deviceId, e.pub), b64uDecode(e.sig))) {
+					ecdhOk = { ...ecdhOk, [slot]: e.pub };
+					await store.set("ecdh", ecdhOk);
+				}
+			} catch {}
 		}
+		return ecdhOk[slot] ? b64uDecode(ecdhOk[slot]) : null;
 	}
 
 	// ---- keys ----
@@ -455,8 +572,15 @@ export function createMesh(opts: MeshOptions): Mesh {
 		if ([...ev.keysChanged].some((k) => k.startsWith(OLD_PREFIX))) void syncLegacy().catch(err);
 	});
 
+	function forget(deviceId: string) {
+		revokedIds.set(deviceId, now());
+		trusted.delete(deviceId);
+		delete admCache[deviceId];
+		void Promise.resolve(store.set("adm", admCache)).catch(err);
+	}
+
 	async function adoptRotation(newKey: Uint8Array, newEpoch: number, revoked: string) {
-		revokedIds.add(revoked);
+		forget(revoked);
 		for (const l of [...links]) if (l.deviceId === revoked) closeRec(l);
 		const { oldEpoch, oldKey } = await switchEpoch(newKey, newEpoch);
 		doc.transact(() => {
@@ -469,17 +593,18 @@ export function createMesh(opts: MeshOptions): Mesh {
 	async function revoke(deviceId: string) {
 		await ready;
 		if (deviceId === vault.deviceId) throw new Error("cannot revoke the current device");
-		if (!meta.has(DEV + deviceId)) throw new Error("unknown device");
+		await refreshTrust();
+		if (!meta.has(DEV + deviceId) && !trusted.has(deviceId)) throw new Error("unknown device");
 		if (!running) await start();
 		// cut the revoked device off SYNCHRONOUSLY: its link must not be reachable by anything below
-		revokedIds.add(deviceId);
+		forget(deviceId);
 		for (const l of [...links]) if (l.deviceId === deviceId) closeRec(l);
 		const newKey = randomBytes(32);
 		const newEpoch = epoch + 1;
 		const priv = (await ecdhIdentity()).privateKey;
 		const wraps = new Map<string, RotateMsg>();
-		for (const d of devices()) {
-			if (d.deviceId === vault.deviceId || d.deviceId === deviceId) continue;
+		for (const d of trusted.values()) {
+			if (d.deviceId === deviceId) continue;
 			const pub = await peerEcdhPub(d.deviceId);
 			if (!pub) {
 				err(new Error(`no verified ECDH key for ${d.deviceId}: it must be re-paired after the rotation`));
@@ -497,6 +622,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const { oldEpoch, oldKey } = await switchEpoch(newKey, newEpoch);
 		doc.transact(() => {
 			meta.delete(DEV + deviceId);
+			meta.delete(ADM_PREFIX + deviceId);
 			meta.delete(ECDH_PREFIX + deviceId);
 			meta.set("epoch", newEpoch);
 			meta.set(OLD_PREFIX + oldEpoch, b64uEncode(oldKey));
@@ -506,26 +632,75 @@ export function createMesh(opts: MeshOptions): Mesh {
 	}
 
 	// ---- pairing ----
-	async function pairHost(): Promise<PairOffer> {
+	/** First pairing of a fresh mesh: this device becomes its owner (the pinned trust root). */
+	async function ensureRoot(): Promise<TrustRoot> {
+		if (root) return root;
+		const mid = typeof meta.get("mid") === "string" ? (meta.get("mid") as string) : b64uEncode(randomBytes(16));
+		meta.set("mid", mid);
+		root = { mid, deviceId: vault.deviceId, pub: b64uEncode(vault.devicePublicKey) };
+		await store.set("root", root);
+		return root;
+	}
+
+	/** Admission chain of `id` from the local cache, up to (excluding) the root. */
+	function chainOf(id: string): Admission[] {
+		const out: Admission[] = [];
+		for (let cur = id, i = 0; i < 8 && cur !== root?.deviceId; i++) {
+			const a = admCache[cur];
+			if (!a) break;
+			out.push(a);
+			cur = a.by;
+		}
+		return out;
+	}
+
+	async function pairHost(o: PairHostOptions = {}): Promise<PairOffer> {
 		await ready;
+		const guestRole: Role = o.role ?? "member";
+		const r = await ensureRoot();
+		await refreshTrust();
+		const mine = selfRole();
+		if (!mine || !canIssue(mine, guestRole)) throw new Error(`this device (${mine ?? "not admitted"}) cannot admit a ${guestRole}`);
 		const key = await vault.getOrCreateMeshKey();
-		if (!meta.has("mid")) meta.set("mid", b64uEncode(randomBytes(16)));
-		const offer = await createPairOffer(vault, { mid: meta.get("mid"), appId, topic: topicName, now: now() });
+		const offer = await createPairOffer(vault, { mid: r.mid, appId, topic: topicName, now: now() });
 		const rid = await derivePairRoomId(offer.pairSecret);
 		const pairKey = await derivePairKey(offer.pairSecret);
 		const host = new HostPairing(offer, {
 			now,
 			onSas: (p: SasPrompt) => emit("sas", { role: "host", ...p }),
-			buildGrant: async (): Promise<GrantBody> => ({
-				meshKey: b64uEncode(key),
-				epoch,
-				mid: meta.get("mid"),
-				snapshot: b64uEncode(Y.encodeStateAsUpdate(doc)),
-				hostDevice: meta.get(DEV + vault.deviceId),
-			}),
+			buildGrant: async (guest): Promise<GrantBody> => {
+				const adm = await signAdmission(vault, {
+					mid: r.mid,
+					deviceId: guest.deviceId,
+					pub: guest.pub,
+					name: guest.name,
+					role: guestRole,
+					by: vault.deviceId,
+					at: now(),
+				});
+				const dev: Device = { ...guest, addedAt: adm.at, role: guestRole, admittedBy: vault.deviceId };
+				const extra = o.extra ? await o.extra(dev) : undefined;
+				revokedIds.delete(guest.deviceId); // explicit re-admission
+				admCache[guest.deviceId] = adm;
+				trusted.set(guest.deviceId, dev);
+				doc.transact(() => {
+					meta.set(ADM_PREFIX + guest.deviceId, adm);
+					meta.set(DEV + guest.deviceId, { deviceId: dev.deviceId, pub: dev.pub, name: dev.name, addedAt: dev.addedAt });
+				});
+				await store.set("adm", admCache);
+				return {
+					meshKey: b64uEncode(key),
+					epoch,
+					mid: r.mid,
+					snapshot: b64uEncode(Y.encodeStateAsUpdate(doc)),
+					hostDevice: selfDevice(),
+					root: r,
+					admissions: [adm, ...chainOf(vault.deviceId)],
+					...(extra !== undefined ? { extra } : {}),
+				};
+			},
 			onPaired: (d) => {
-				doc.transact(() => meta.set(DEV + d.deviceId, d));
-				emit("paired", d);
+				emit("paired", trusted.get(d.deviceId) ?? d);
 				endPairing(rid);
 				void start().catch(err);
 			},
@@ -583,22 +758,47 @@ export function createMesh(opts: MeshOptions): Mesh {
 		try {
 			const g = await guest.result;
 			clearTimeout(timeout);
+			// the trust root and our admission arrive over the SAS-authenticated session; the chain must be valid and
+			// lead to the very host key that signed the QR payload
+			if (!g.root || !Array.isArray(g.admissions)) throw new Error("pairing grant carries no admission (host too old?)");
+			const grantAdm = new Map<string, Admission[]>();
+			for (const a of g.admissions) grantAdm.set(a?.deviceId, [...(grantAdm.get(a?.deviceId) ?? []), a]);
+			const gctx = { vault, root: g.root, candidates: (id: string) => grantAdm.get(id) ?? [], revokedAt: () => undefined };
+			const memo = new Map<string, Promise<Admission | null>>();
+			const mine = await verifyChain(gctx, vault.deviceId, memo);
+			if (!mine || mine.pub !== b64uEncode(vault.devicePublicKey)) throw new Error("pairing grant: invalid admission for this device");
+			const issuer = await verifyChain(gctx, mine.by, memo);
+			if (!issuer || issuer.pub !== p.dpk) throw new Error("pairing grant: admission not issued by the paired host");
+			if (root?.mid !== g.root.mid) {
+				admCache = {};
+				ecdhOk = {};
+				revokedIds.clear();
+			}
+			root = g.root;
+			await store.set("root", root);
+			for (const list of grantAdm.values()) for (const a of list) if (a.deviceId !== g.root.deviceId) admCache[a.deviceId] = a;
+			await store.set("adm", admCache);
 			const key = b64uDecode(g.meshKey);
 			await vault.setMeshKey(key);
 			await vault.setEpoch?.(g.epoch);
 			epoch = g.epoch;
 			Y.applyUpdate(doc, b64uDecode(g.snapshot), ORIGIN);
-			meta.set("epoch", g.epoch);
-			meta.set(DEV + vault.deviceId, {
-				deviceId: vault.deviceId,
-				pub: b64uEncode(vault.devicePublicKey),
-				name: opts.deviceName ?? "device",
-				addedAt: now(),
-			} satisfies Device);
+			doc.transact(() => {
+				meta.set("epoch", g.epoch);
+				meta.set(ADM_PREFIX + vault.deviceId, mine);
+				meta.set(DEV + vault.deviceId, {
+					deviceId: vault.deviceId,
+					pub: b64uEncode(vault.devicePublicKey),
+					name: opts.deviceName ?? "device",
+					addedAt: mine.at,
+				} satisfies Device);
+			});
 			await publishEcdh();
+			await refreshTrust();
 			endPairing(rid);
 			emit("paired", g.hostDevice);
 			await start();
+			return { host: g.hostDevice, extra: g.extra };
 		} catch (e) {
 			clearTimeout(timeout);
 			endPairing(rid);
@@ -615,6 +815,12 @@ export function createMesh(opts: MeshOptions): Mesh {
 		},
 		get epoch() {
 			return epoch;
+		},
+		get root() {
+			return root;
+		},
+		role(deviceId = vault.deviceId) {
+			return deviceId === vault.deviceId ? selfRole() : (trusted.get(deviceId)?.role ?? null);
 		},
 		awareness,
 		ready,
