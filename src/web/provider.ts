@@ -1517,6 +1517,9 @@ export function createMesh(opts: MeshOptions): Mesh {
 		setStatus();
 		await joinRoom(dataRid, sigKey!);
 		await syncLegacy();
+		// an owner device executes what is pending at once (a revocation recorded before a restart, or a re-key
+		// interrupted by the app tearing the mesh down): those trigger no new event once the device is back
+		void serialRot(ownerRekey).catch(err);
 	}
 
 	function stopNetwork() {
@@ -1545,12 +1548,15 @@ export function createMesh(opts: MeshOptions): Mesh {
 	awareness.on("update", onAwareness);
 
 	// ---- rotation ----
-	// The new mesh key never travels under the shared (old) key: it is wrapped per remaining device with
-	// ECDH(own static key, peer static key) -> HKDF(swal-rotate/v3|rotId|from|to) -> AES-GCM, where rotId hashes the
-	// rotation record (epoch, issuer, targets, recipients, nonce). Record and wraps are also stored in meta
+	// The new mesh key never travels under the shared (old) key: it is wrapped per remaining device with a hybrid
+	// key, HKDF(ML-KEM-768 secret || ECDH(own static key, peer static key), swal-rotate/v4|preId|from|to) -> AES-GCM,
+	// where preId hashes the rotation record (epoch, issuer, targets, recipients, nonce); the owner signs the final id. Record and wraps are also stored in meta
 	// (rotrec:<rotId>, rot:<rotId>:<deviceId>) so a peer that was offline can fetch its own wrap later through a
 	// retired room (see `legacy`); a revoked device has no wrap and cannot unwrap anyone else's.
 	async function switchEpoch(newKey: Uint8Array, newEpoch: number) {
+		// a re-key still in flight when the app destroyed the mesh must not overwrite the vault: the next instance on
+		// the same vault would start from a key nobody else ever received
+		if (destroyed) throw new Error("mesh destroyed during a key change");
 		const oldRid = dataRid;
 		const old: Legacy = { epoch, rid: oldRid, material: docMat! };
 		const oldKey = meshKey!;
@@ -1640,6 +1646,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const id = await rotationId(rec);
 		// the owner signs the id (record + wrap set) with its ML-DSA-65 identity: the rotation does not rest on P-256 alone
 		rec.sig = b64uEncode(await vault.sign(rotationSigBytes(id)));
+		if (destroyed) return; // torn down while signing: publish nothing, keep the vault as it was
 		// 1) hand each connected recipient ITS OWN wrap (under every recent key), 2) switch, 3) publish under the NEW key
 		const sends: Promise<void>[] = [];
 		for (const l of [...links]) {

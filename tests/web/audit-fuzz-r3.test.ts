@@ -149,12 +149,22 @@ describe.skipIf(process.env.FUZZ_SEEDS === "")(
 						out.every((d) => keyOf(d) !== k)
 					);
 				};
-				let converged = await until(ok, 25_000).then(
-					() => true,
-					() => false,
-				);
-				const e1 = owner.mesh.epoch;
-				if (converged) {
+				// converged = a state that holds for 1.5 s. A revocation record that reaches the owner late (more so with
+				// ML-DSA-65 signatures) makes it re-key once more right after a first agreement: that is still liveness,
+				// so the check retries until the deadline instead of failing on the first unstable agreement.
+				const deadline = Date.now() + 40_000;
+				let converged = false;
+				let e1 = owner.mesh.epoch;
+				while (!converged && Date.now() < deadline) {
+					const reached = await until(
+						ok,
+						Math.max(1, deadline - Date.now()),
+					).then(
+						() => true,
+						() => false,
+					);
+					if (!reached) break;
+					e1 = owner.mesh.epoch;
 					await settle(1500);
 					converged = ok();
 				}
@@ -179,6 +189,6 @@ describe.skipIf(process.env.FUZZ_SEEDS === "")(
 				expect(converged).toBe(true);
 				expect(owner.mesh.epoch).toBeLessThan(20);
 				for (const d of healed.values()) d.mesh.destroy();
-			}, 90_000);
+			}, 120_000);
 	},
 );

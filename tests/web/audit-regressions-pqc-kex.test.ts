@@ -336,3 +336,43 @@ describe("PQC: rotation records are signed by the owner with ML-DSA-65", () => {
 		t.close();
 	}, 30_000);
 });
+
+describe("a destroyed mesh never touches the vault", () => {
+	it("Q10/Q11: destroying the mesh while its re-key is in flight leaves the vault as it was; the owner re-keys when it starts again", async () => {
+		const hub = createLoopbackHub();
+		const { a, b, c } = await trio(hub);
+		const all = [a, b, c];
+		await until(
+			() =>
+				all.every((x) => all.every((y) => metaOf(x).has(`ecdh/${y.id}`))) &&
+				a.mesh.devices().length === 3,
+		);
+		const k0 = (a.vault.meshKey as Uint8Array).slice();
+		const sign = a.vault.sign.bind(a.vault);
+		let hit = false;
+		// the app tears the mesh down exactly while the owner signs the new rotation (ML-DSA takes ~8 ms)
+		a.vault.sign = async (d: Uint8Array) => {
+			if (new TextDecoder().decode(d.subarray(0, 17)) === '["swal-rot-sig/v1') {
+				hit = true;
+				a.mesh.destroy();
+			}
+			return sign(d);
+		};
+		await a.mesh.revoke(c.id).catch(() => {});
+		await new Promise((r) => setTimeout(r, 300));
+		expect(hit).toBe(true);
+		expect(a.vault.meshKey).toEqual(k0);
+		expect(a.vault.epoch).toBe(0);
+		// Q11: the revocation is on record but no re-key happened: the owner executes it when it starts again
+		expect(a.mesh.rekeyPending).toBe(true);
+		const a2 = await makeDev("devA", hub, undefined, {
+			doc: a.doc,
+			vault: a.vault,
+		});
+		await until(() => a2.mesh.epoch === 1 && b.mesh.epoch === 1, 8000);
+		expect(b.vault.meshKey).toEqual(a2.vault.meshKey);
+		expect(c.vault.meshKey).not.toEqual(a2.vault.meshKey);
+		expect(a2.mesh.rekeyPending).toBe(false);
+		for (const x of [a2, b, c]) x.mesh.destroy();
+	});
+});
