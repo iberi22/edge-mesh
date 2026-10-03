@@ -18,7 +18,8 @@ export async function idMatchesPub(
 	pub: string,
 ): Promise<boolean> {
 	// R4-N3: a key is accepted only in its canonical encoding (the string is what admissions and web/trust carry)
-	if (!isDeviceId(deviceId) || typeof pub !== "string" || !isCanonicalB64u(pub)) return false;
+	if (!isDeviceId(deviceId) || typeof pub !== "string" || !isCanonicalB64u(pub))
+		return false;
 	let fp = fpCache.get(pub);
 	if (fp === undefined) {
 		try {

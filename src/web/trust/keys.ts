@@ -15,7 +15,8 @@ export const SIGNATURE_BYTES = 3309;
 
 const decodeLen = (s: unknown, n: number): Uint8Array | null => {
 	// R4-N3: only the canonical encoding, so one key has one fingerprint (keyFingerprint hashes the string)
-	if (typeof s !== "string" || s.length > 2 * n || !isCanonicalB64u(s)) return null;
+	if (typeof s !== "string" || s.length > 2 * n || !isCanonicalB64u(s))
+		return null;
 	try {
 		const b = b64uDecode(s);
 		return b.length === n ? b : null;
