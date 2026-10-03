@@ -483,7 +483,7 @@ describe("audit regressions: web/trust + web/oplog", () => {
 	});
 
 	for (const n of [600, 1100])
-		it.fails(`finding 6: a fork of ${n} ops by the revoked author, delivered first, does not keep the real history out`, async () => {
+		it(`finding 6: a fork of ${n} ops by the revoked author, delivered first, does not keep the real history out`, async () => {
 			const w = await world();
 			const tA = await w.trust();
 			await tA.addMany(w.docs);
@@ -510,6 +510,39 @@ describe("audit regressions: web/trust + web/oplog", () => {
 				0,
 			);
 		}, 120_000);
+
+	it("finding 6: three forks of the same seqs, then the real history: at most 2 wait per seq and the real one wins", async () => {
+		const w = await world();
+		const tA = await w.trust();
+		await tA.addMany(w.docs);
+		const author = await w.log(w.waiter, tA);
+		const real = [];
+		for (let i = 0; i < 50; i++) real.push(await author.append(op(`o${i}`)));
+		const rev = await w.revoke(
+			w.root,
+			tA.prepareRevocation(w.g.waiter.id, await author.headIds()),
+		);
+		const tX = await w.trust();
+		await tX.addMany(w.docs);
+		await tX.add(rev);
+		const x = await w.log(undefined, tX);
+		for (let f = 0; f < 3; f++) {
+			const evil = await w.log(w.waiter, tA);
+			const fork = [];
+			for (let i = 0; i < 50; i++)
+				fork.push(await evil.append(op(`junk${f}-${i}`)));
+			await x.ingestMany(fork.map((s) => s.op));
+			const perSeq = new Map<number, number>();
+			for (const p of x.pending())
+				if (p.author === w.waiter.fp)
+					perSeq.set(p.seq, (perSeq.get(p.seq) ?? 0) + 1);
+			expect(Math.max(...perSeq.values())).toBeLessThanOrEqual(2);
+		}
+		await x.ingestMany(real.map((s) => s.op));
+		expect(real.filter((_, i) => x.isAccepted(w.waiter.fp, i + 1)).length).toBe(
+			50,
+		);
+	}, 60_000);
 });
 
 const until = async (cond: () => boolean, ms = 2000) => {

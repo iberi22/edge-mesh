@@ -157,6 +157,8 @@ export class OpLog {
 	private readonly pendingPerAuthor = new Map<string, number>();
 	/** BL2: op id -> pending key of ops parked for an anchor (backward resolution walks `prev` ids) */
 	private readonly anchorIds = new Map<string, string>();
+	/** finding 6: pending keys of ops parked for an anchor, per `author:seq` (at most 2 per seq) */
+	private readonly anchorBySeq = new Map<string, Set<string>>();
 	private readonly maxOpBytes: number;
 	private readonly clock: HlcClock;
 	private readonly verdicts = new Map<string, OpVerdict>();
@@ -439,6 +441,12 @@ export class OpLog {
 		}
 		if (p.reason === "anchor" && p.id && this.anchorIds.get(p.id) === k)
 			this.anchorIds.delete(p.id);
+		if (p.reason === "anchor") {
+			const sk = `${p.op.author}:${p.op.seq}`;
+			const set = this.anchorBySeq.get(sk);
+			set?.delete(k);
+			if (set && set.size === 0) this.anchorBySeq.delete(sk);
+		}
 		return p;
 	}
 
@@ -484,6 +492,12 @@ export class OpLog {
 		}
 		this.pendingOps.set(k, { op, reason, id, size });
 		if (reason === "anchor" && id) this.anchorIds.set(id, k);
+		if (reason === "anchor") {
+			const sk = `${op.author}:${op.seq}`;
+			const set = this.anchorBySeq.get(sk) ?? new Set<string>();
+			set.add(k);
+			this.anchorBySeq.set(sk, set);
+		}
 		this.pendingBytes += size;
 		this.pendingPerAuthor.set(
 			op.author,
@@ -541,6 +555,20 @@ export class OpLog {
 				p.id,
 			);
 		}
+	}
+
+	/** finding 6: pending keys on the (partial) chain walked back from the anchor id through `prev`. */
+	private anchoredChainKeys(author: string, anchor: Anchor): Set<string> {
+		const out = new Set<string>();
+		let want: string | null = anchor.id;
+		while (want !== null) {
+			const k = this.anchorIds.get(want);
+			const p = k ? this.pendingOps.get(k) : undefined;
+			if (!k || !p || p.op.author !== author) break;
+			out.add(k);
+			want = p.op.prev;
+		}
+		return out;
 	}
 
 	/** Is our stored op of `author` at `seq` on an anchored chain (an anchor >= seq whose op we store)? */
@@ -609,13 +637,24 @@ export class OpLog {
 					"not the op the revocation anchored",
 					id,
 				);
-			// BL2: the whole anchored span may wait (bounded by the global pending caps, not the per-author one)
+			// finding 6: at most 2 waiting ops per (author, seq); when full, the ones not on the chain walked back from
+			// the anchor so far are evicted (a fork sent first must not keep the real history out)
+			const sk = `${op.author}:${op.seq}`;
+			if ((this.anchorBySeq.get(sk)?.size ?? 0) >= 2) {
+				const onChain = this.anchoredChainKeys(op.author, anchor);
+				for (const k of [...(this.anchorBySeq.get(sk) ?? [])])
+					if (!onChain.has(k)) this.takePending(k);
+				if ((this.anchorBySeq.get(sk)?.size ?? 0) >= 2)
+					return { status: "quarantined", reason: "pending-overflow" };
+			}
+			// BL2: the whole anchored span may wait (bounded by the global pending caps, not the per-author one), twice
+			// over (a fork and the real history), finding 6
 			const r = this.park(
 				op,
 				"anchor",
 				size,
 				id,
-				Math.max(this.maxPendingPerAuthor, anchor.seq - headSeq),
+				Math.max(this.maxPendingPerAuthor, 2 * (anchor.seq - headSeq)),
 			);
 			if (r.status !== "pending") return r; // overflow is reported as such, never as a broken chain
 			await this.resolveAnchor(op.author, anchor);

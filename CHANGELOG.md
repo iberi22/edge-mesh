@@ -130,6 +130,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Finding 5 relayed wrap maps were unauthenticated**: the rotation id commits to the full wrap set (`wh`); wraps are
   bound to a pre-id; maps are relayed only when they match `wh` (else from verified meta); a corrupted copy never
   blocks a later good copy.
+- **Finding 6 a fork sent first kept the anchored history out** (`web/oplog`): at most 2 ops wait per (author, seq)
+  for an anchor; when a seq is full, those not on the chain walked back from the anchor id are evicted; the anchored
+  span budget is twice the span (a fork plus the real history). 600 / 1100-op histories are accepted in full.
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,
