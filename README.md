@@ -114,14 +114,18 @@ channel.enviarMensaje("Hello from node alpha!");
 
 `createMesh({ appId, topic, doc, vault, signaling })` syncs a `Y.Doc` between paired browser devices over WebRTC,
 end-to-end encrypted. Trust is explicit: the first device that hosts a pairing is the owner; others join through a
-QR pairing confirmed with a 6-digit SAS and receive a signed admission (`member` or `admin`). Frames are signed by
-the sender's device key, revocation rotates the key for admitted devices only, and large messages are fragmented.
-Hooks (`authorizeDevice`, `canRotate`, `authorizeUpdate`) and `mesh.channel(kind)` let a permissions layer plug in.
-Identity signatures are **ML-DSA-65** and key exchanges (pairing session, rotation wraps) are hybrid **ML-KEM-768 +
-ECDH P-256**, as AGENTS.md requires; a device's id is the fingerprint of its ML-DSA-65 key
-(`deviceIdOf(vault.devicePublicKey)`), and a pairing guest proves possession of that key. Trust is tied to mesh epochs (never to clocks), only owner devices re-key the
-mesh (an admin's revocation cuts the device off at once and is executed as a re-key by the next owner device online:
-`mesh.rekeyPending`), and links authenticate each other before carrying data.
+QR pairing confirmed with a 6-digit SAS and receive a signed `web/trust` grant (`member` or `admin`). The security
+state (grants, revocations, key records, owner rotations) is a set of signed documents kept by every device and
+exchanged over an authenticated trust channel; **none of it lives in the shared `Y.Doc`**, so a member can only add
+documents, never squat, overwrite or delete them (`mesh.security`). Membership and authority come from one place, the
+mesh's `web/trust` store: an admin revokes the devices it admitted, revocations cascade, and the owner can re-anchor.
+Frames are signed by the sender's device key, revocation rotates the key for members only, and large messages are
+fragmented. Hooks (`authorizeDevice`, `canRotate`, `authorizeUpdate`) and `mesh.channel(kind)` let a permissions layer
+plug in. Identity signatures are **ML-DSA-65** and key exchanges (pairing session, rotation wraps) are hybrid
+**ML-KEM-768 + ECDH P-256**, as AGENTS.md requires; a device's id is the fingerprint of its ML-DSA-65 key
+(`deviceIdOf(vault.devicePublicKey)`), and a pairing guest proves possession of that key. Membership never depends on
+clocks, only owner devices re-key the mesh (an admin's revocation cuts the device off at once and is executed as a
+re-key by the next owner device online: `mesh.rekeyPending`), and links authenticate each other before carrying data.
 Give the mesh a persistent device-local store (`persist: "idb"`, `store` or `vault.store`). Details and breaking
 changes: [`docs/WEB-MESH-CRYPTO.md`](docs/WEB-MESH-CRYPTO.md).
 

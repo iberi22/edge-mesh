@@ -14,7 +14,7 @@
 - Frame (default, `signFrames: true`): `F_SDATA(3) | idLen | deviceId | nonce(12) | AES-GCM(kind | sess(8) |
   seq(u32) | sigLen(u16) | sig | body)`. `sig` is the sender's identity-key signature over
   `"swal-frame/v2|" + rid + "|" + deviceId + "|" + kind + sess + seq + body`, verified against the identity key of the
-  sender's **admission** (see below). Subkeys alone give nonce separation, not sender authentication (every member
+  sender's **grant** (see "Security state" below). Subkeys alone give nonce separation, not sender authentication (every member
   can derive every sender key); the signature is what authenticates the sender.
 - **Link handshake (S1).** On every new data link each side sends `K_HELLO` with a fresh 16-byte nonce; the peer
   answers `K_AUTH = nonce | epoch(u32) | challengerId` in a signed frame (so the answer is bound to the room, the
@@ -44,53 +44,79 @@
   one per signed message (a broadcast signs once, same `seq` on every link). Receivers accept a `(sender, sess,
   seq)` once, within a window of 1024 behind the highest `seq` seen, and only with the link's bound session.
 - Unsigned legacy frames (`F_DATA(1)`) are rejected unless `signFrames: false` (must then be off on every device).
-- Signed frames from a sender whose admission has not reached this device yet are held (64 frames / 8 MiB / 30 s
+- Signed frames from a sender whose grant has not reached this device yet are held (64 frames / 8 MiB / 30 s
   per link, 16 MiB over all links; still encrypted, no key derived for unknown senders) and replayed when the trust
   state changes, so a freshly paired device converges with peers that learn about it through someone else.
 - Data rooms: `rid = HMAC(meshKey, "swal-room/v1|appId|topic[|epoch]|i:<instance>")`. `instance` (option
   `instance`, default: fingerprint of the owner's identity key) keeps two instances of the same app apart even if
   they share a mesh key and topic. `mesh.namespace = "{appId}/{instance}"`.
 
-## Trust: admissions and the pinned root
+## Security state: signed documents, not the shared doc (round 5)
 
-The shared `meta` map is writable by every member, so nothing in it is trusted by itself.
+Rounds 3 to 5 kept finding holes with one root cause: the security state (admissions, revocations, rotations, key
+records) lived in the shared Y.Doc `meta`, where any member can write predictable slots (`rev/<id>:<epoch>`), delete
+entries (`rotrec:`, `rot:`) or flood, and the provider ran its own admission system next to `web/trust`. Since round 5:
 
-- **Identity = key fingerprint.** The identity key is ML-DSA-65 (see "Post-quantum cryptography" below) and
-  `deviceId = deviceIdOf(pub)` = `base64url(SHA-256(canonicalJson({ alg: "ML-DSA-65", pub: base64url(raw key) })))`,
-  43 characters (`deviceIdOf()` in `pq.ts`; the same value as `keyFingerprint` in `web/trust`; ids match
-  `^[A-Za-z0-9_-]{43}$`). `createMesh` refuses a vault whose key is not a 1952-byte ML-DSA-65 key or whose `deviceId`
-  is not `deviceIdOf(devicePublicKey)`; `verifyChain` ignores any admission (or pinned root) whose `deviceId` is
-  not the fingerprint of its `pub`; frames whose sender id is not of that form are dropped. A device id can therefore
-  never be re-bound to another key, whoever signs the record.
-
-- The first device that hosts a pairing becomes the **owner**: its identity `{mid, deviceId, pub}` is pinned as
-  the trust root in a **device-local store** (`MeshOptions.store`, else `VaultClient.store`, else IndexedDB with
-  `persist: "idb"`, else memory). The root is never read from the shared doc.
-- `adm/<deviceId>` = admission signed by its issuer (`swal-adm/v2`, see "Epochs, not clocks" below).
-  Roles: `owner > admin > member`. The owner admits admins and members, an admin admits members, a member admits
-  nobody (`pairHost` throws). A device is a member only if its admission chain verifies up to the root (depth ≤ 4)
-  and no issuer in it is revoked. Verified admissions and ECDH keys are cached in the local store, so deleting or
-  overwriting them in `meta` cannot un-admit a device or swap its key.
-- `devices()` lists only this device plus admitted ones (`role`, `admittedBy`). Self-registered `dev/<id>`
-  entries are ignored.
+- **The security state is an append-only, content-addressed set of self-verifying signed documents**
+  (`secstate.ts`), kept in each device's local store (`MeshOptions.store`, else `VaultClient.store`, else IndexedDB
+  with `persist: "idb"`, else memory) and exchanged over the authenticated trust channel (below). **Nothing of it lives
+  in the Y.Doc**: the mesh never reads or writes `meta`. A member can only ADD documents; there are no slots to squat,
+  overwrite or delete, and a missing document is offered again by every peer that holds it.
+- Documents and their ids (inventory keys): `web/trust` grants (`g:<id>`) and revocations (`r:<id>`), whose id is the
+  hash of their canonical body; key-agreement records (`k:<id>`, see "Rotation"); owner rotations (`R:<rotId>`).
+  Signatures are accepted only in canonical base64url of exactly 3309 bytes, and every id is a content id: another
+  encoding of a signature is not "another document" (R5-B3). A document that failed verification is remembered by the
+  hash of the whole document, so a forged copy never blocks the genuine one.
+- **Membership and authority have one source: the mesh's `web/trust` `TrustStore` as single source of truth** (`mesh.security.trust`). Its
+  instance is the mesh id and its root the owner's identity key. A grant with `delegate >= 1` makes an admin, any
+  other grant a member (`MESH_SCHEMA`: module `mesh`, roles `admin`/`member`, depth 2: owner → admins → staff). Apps
+  may pass their own schema (`MeshOptions.trustSchema`) to issue app permissions into the same store.
+- **Identity = key fingerprint.** The identity key is ML-DSA-65 and `deviceId = deviceIdOf(pub)` =
+  `base64url(SHA-256(canonicalJson({ alg: "ML-DSA-65", pub })))`, 43 characters, the same value as `web/trust`
+  `keyFingerprint` (the fingerprint of a grant's subject). `createMesh` refuses a vault whose key is not a 1952-byte
+  ML-DSA-65 key or whose `deviceId` is not `deviceIdOf(devicePublicKey)`.
+- The first device that hosts a pairing becomes the **owner**: its identity `{mid, deviceId, pub}` is pinned as the
+  trust root in the local store, with a fresh random `mid` (never read from anywhere else).
+- A device is a **member** while one of its grants is in force: valid chain to the root, not cut by an effective
+  revocation of itself or of an ancestor (revocations cascade), not cut by an owner rotation (`cut`, see "Rotation"),
+  and among the first 256 grant ids of its admin (`MAX_MEMBERS_PER_ADMIN`, R5-S3: an admin cannot flood the
+  recipient list; the owner's own grants are not capped). Mesh grants have `notBefore: 0` and no expiry: membership
+  never depends on a clock (B6). `devices()` lists this device, the owner and the members (`role`, `admittedBy`).
+- **Who revokes whom** (`web/trust`): the owner revokes any grant; an admin revokes the grants it issued (directly or
+  below); a revocation always cascades, so revoking an admin also takes away the members it admitted (the owner can
+  `reanchor()` them: a grant of their own). Nobody revokes the owner. A revocation is stored only if its issuer is the
+  root or a strict ancestor of a known grant, with per-issuer pending caps: at most 256 stored grants per non-root issuer
+  and at most 4 pending revocations per distinct (issuer, target) pair (`MAX_STORED_PER_ISSUER`, `MAX_REVS_PER_ISSUER_TARGET`):
+  nobody can fill anybody's storage with revocations that can never apply, and there is no shared pool of pending requests
+  to crowd out (R4-B1, R5-B3).
+  `revoke(id, { heads })` takes `web/oplog` heads to keep the device's op history up to there (else none is kept).
+- **Re-admission** is a new grant (new id): revocations of the old grant keep voiding it, whoever replays it, and the
+  owner's new grant always counts (R5-S4).
 - Pairing ack (proof of possession): the guest's ack carries `{deviceId, pub, name, sig}` with `sig` = identity-key
-  signature over `["swal-pair-ack/v1", transcript, deviceId, pub, name]` (the SAS transcript hash binds it to this
-  session). The host admits nobody unless `deviceId = deviceIdOf(pub)` and the signature verifies, and it refuses a
-  guest claiming its own or the root's identity, or an id already admitted under another key.
+  signature over `["swal-pair-ack/v1", transcript, deviceId, pub, name]`. The host admits nobody unless
+  `deviceId = deviceIdOf(pub)` and the signature verifies, and it refuses a guest claiming its own or the root's
+  identity. `pairHost` refuses once the mesh holds `MAX_ROT_MEMBERS - 1` devices or the admin issued 256 grants.
+- Pairing grant: the mesh key, its epoch and the current rotation (read together at the moment the grant is made),
+  the root, the guest's grant and its issuer's grant chain, the key records of the host and the owner, and
+  `hostProof = {pub, sig}` (the host's ML-DSA-65 signature over `["swal-pair-host/v1", transcript, hostId, pub]`).
+  The guest verifies everything in a scratch state before pinning anything: its grant must be issued by `hostId` (from
+  the QR) and `hostId`'s key must be the `hostProof` key. `pairHost({ role, extra })` lets the app attach data for the
+  guest; `pairJoin` returns `{ host, extra }`.
 - Changing meshes: `pairJoin` into a mesh with another `mid` is refused unless the local doc is **fresh** (no shared
-  content; only this device's own `dev/` and `ecdh/` entries), because the doc of the old mesh would otherwise be
-  merged into (and served to) the new one. To move a device, create a new `Mesh` with a new `Y.Doc` **and
-  `resume: false`** (same vault and store are fine), then `pairJoin`: without `resume: false` the new instance rejoins
-  the pinned mesh as soon as it starts and its doc fills with that mesh's data. While a move is in progress the device
-  stays offline from the old mesh (and resumes it if the pairing fails). Re-pairing within the same mesh from a host
-  at an older epoch than this device is refused (it would hand back an older key). On success all trust state of the old mesh (admissions, ECDH pins, revocations, retired rooms,
-  sender keys) is dropped before the new key is installed, and nothing is sent until the network restarts.
-- Pairing grant: besides the mesh key it carries the root, the guest's admission chain and `hostProof = {pub, sig}`,
-  the host's ML-DSA-65 signature over `["swal-pair-host/v1", transcript, hostId, pub]`. The guest refuses the grant
-  unless `hostId` (from the QR) = `deviceIdOf(pub)`, the signature verifies, the admission was issued by `hostId` and
-  its chain is valid with the issuer key equal to `pub`. `pairHost({ role,
-  extra })` lets the app attach data for the guest (e.g. a signed capability grant); `pairJoin` returns
-  `{ host, extra }`.
+  content at all), because the doc of the old mesh would otherwise be merged into (and served to) the new one. To
+  move a device, create a new `Mesh` with a new `Y.Doc` **and `resume: false`**, then `pairJoin`. Re-pairing within
+  the same mesh from a host at an older epoch than this device is refused. On success the old mesh's security state
+  (documents, retired rooms, sender keys) is dropped before the new key is installed.
+
+### The trust channel
+
+Security documents travel as `K_TRUST` frames (signed, encrypted like any frame) between authenticated peers:
+`{t:"inv", ids}` (the keys a device holds, sent when a link starts), `{t:"want", ids}` and `{t:"docs", docs}`. A
+newly accepted document is announced (`inv`) to every link. These frames are also accepted under retired keys, so a
+straggler or a peer on another branch learns what it missed. Bounds: an `inv` lists at most 20 000 keys, a `want`
+2048, a `docs` message 256 documents (512 KiB); a peer may ask for 8192 documents a minute; a sender whose documents
+fail more than 64 times a minute is ignored for that minute. Documents waiting for a dependency (a revocation before
+its grant, a key record before its device's grant) are kept, bounded, and retried.
 
 ## Pairing SAS
 
@@ -153,10 +179,10 @@ drains its queue before closing.
   everywhere else, one claimed identity costs at most 128 handshake checks a minute over all links, a room keeps at
   most 32 links that have not authenticated (2 per announced peer), frames kept before a peer's `K_AUTH` share 4 MiB,
   and in a retired room a sender is answered at most twice a minute and never challenged again.
-- Writes to the shared `meta` map cannot force repeated signature checks (round 4, R4-S2): trust passes are
-  coalesced (at most one waits behind the running one), an `ecdh/` entry that failed verification is remembered by
-  the hash of the whole entry and not checked again, and the caches of verified/failed signatures (trust records,
-  revocations, rotation signatures) drop their least recently used entries instead of being cleared at once.
+- Documents cannot force repeated signature checks (round 4, R4-S2; round 5): trust passes are coalesced (at most one
+  waits behind the running one), a document that failed verification is remembered by the hash of the whole document
+  and not checked again (bounded, least recently used), a document already held is never checked again, and the
+  shared doc plays no part at all.
 
 ## Channels
 
@@ -167,10 +193,11 @@ authenticated members; `onMessage(cb(data, from))` gets the authenticated sender
 
 ## Hooks for a permissions layer
 
-- `authorizeDevice(deviceId, devicePub)`: replaces the built-in admission check. The mesh already enforces
-  `deviceId = deviceIdOf(devicePub)`; the hook decides whether that key is a member. Gates `devices()`, rotation wraps, ECDH keys, frame acceptance, and the host
-  refuses to admit a device it rejects.
-- `canRotate(issuer, target)`: replaces the built-in role ladder for revocations (local and received).
+- `authorizeDevice(deviceId, devicePub)`: an extra filter on top of the grants (it cannot make a device without a
+  grant a member). Gates `devices()`, rotation wraps and frame acceptance, and the host refuses to admit a device it
+  rejects.
+- `canRotate(issuer, target)`: an extra policy for revocations, checked before a local `revoke()` (on top of
+  `web/trust`) and for every device an incoming owner rotation cuts.
 - `authorizeUpdate(sender, update)`: called before applying each incoming Yjs update with the authenticated peer
   that delivered it (not necessarily the author of every change in it). Default: allow. Refusals emit
   `rejected`.
@@ -178,144 +205,73 @@ authenticated members; `onMessage(cb(data, from))` gets the authenticated sender
 ## Rotation on revoke: pairwise wrapping
 
 The current epoch is **device-local** state (`VaultClient.getEpoch/setEpoch`, else the mesh's local store). It is
-set by the authenticated pairing grant and advanced only by a verified rotation; nothing reads it from the shared
-doc (a member writing `meta.epoch` used to strand every device that restarted).
+set by the authenticated pairing grant and advanced only by a verified rotation. Epochs are integers in
+`[0, 2^31 - 1]` and a device adopts a rotation at most 8 epochs ahead (SF1); a lagging device steps through.
 
 The new mesh key is never sent under the old shared key (the revoked device knows it).
 
-0. Only the owner (anyone but itself) or an admin (members only) may revoke (`canRotate`); nobody revokes the
-   owner. **Only owner devices (devices holding the mesh root) re-key the mesh** (round 3): a rotation from any other
-   issuer is rejected before anything in it is processed (`rejected: "rotation not from the owner"`). Since the
-   owner signs every rotation (ML-DSA-65 over its id), **its cut list is authoritative** (round 4, R4-B2): a receiver
-   accepts it without having seen the revocation records behind it. A member that was offline while the requests were
-   published may never get them (the retired room does not sync the doc), and used to stay on the old key forever.
-   A rotation carries at most 16 records (`revs`, one per target, informative only) and receivers read the same 16.
-   Receivers drop a rotation listing more than 1024 recipients or cut devices; the owner respects the same bound
-   (R4-S3): a larger cut is split into several rotations, and a re-key with more than 1024 recipients is refused
-   with an error (never adopted alone).
-   With a custom `canRotate` hook, the hook decides who may revoke, and which targets an owner rotation may cut off.
-1. Each device has a static P-256 ECDH key (`VaultClient.getEcdhIdentity()`) and a static ML-KEM-768 key pair
-   (`VaultClient.getKemIdentity()`), both persistent; in-memory fallbacks exist but then a reloaded device cannot
-   unwrap older wraps. The public keys are published in meta as `ecdh/<deviceId> = {pub, kem, sig}`, signed
-   (ML-DSA-65, `["swal-kex/v2", deviceId, pub, kem]`) by the device identity key and verified against the identity
-   key of its **admission** (never against the self-declared `dev/<id>`). The P-256 point and the ML-KEM key (FIPS 203
-   modulus check) are validated before they are accepted, so a member cannot break the owner's re-keying by vouching
-   for a malformed key. Verified keys are pinned in the local store (`kex`).
-2. A rotation (always by the owner) is described by a **record** identical for every recipient:
-   `{epoch, from, revoked[], to[] (recipients), n (16 random bytes), revs[] (signed revocations), wh}`. The owner
-   computes `preId = SHA-256(["swal-rot/v2", epoch, from, revoked, to, n])` and, **only for admitted, non-revoked
-   devices**, a **hybrid** wrap: `(ct, ss) = ML-KEM-768.Encaps(peer kem)`, `K = HKDF-SHA-256(ikm = ss ‖ ECDH(own,
+1. **Only owner devices (devices holding the mesh root) re-key the mesh.** An admin's `revoke()` signs a revocation
+   that every device honours at once (the device is no longer listed, its links close and its frames are dropped),
+   but the key stays until an owner device re-keys: it is a request. Any owner device that holds an **unexecuted**
+   revocation re-keys at its next opportunity (immediately when online, and again after every change of the security
+   state until it works, R5-S3). Unexecuted = a grant cut by an effective revocation that no owner rotation has cut
+   yet: whoever the device is and whenever it was paired, it may hold the current key (R5-B2). `mesh.rekeyPending` is
+   true meanwhile ("pendiente de que el dueño se conecte"); the `revoked` event of an admin's revoke carries
+   `pending: true`. The owner also re-keys to include members a rotation left out although they were admitted before
+   it (grant `epoch` older than the rotation, e.g. their key record was not known yet) and members whose grant handed
+   over no key (re-anchored).
+2. **Key-agreement records.** Each device has a static P-256 ECDH key (`VaultClient.getEcdhIdentity()`) and a static
+   ML-KEM-768 key pair (`VaultClient.getKemIdentity()`), both persistent (in-memory fallbacks exist, but then a
+   reloaded device cannot unwrap older wraps). Their public keys travel as a `kex` document
+   `{t, v, inst, dev, ecdh, kem, n, sig}` signed by the device's own identity key; the highest `n` of a device wins.
+   The P-256 point and the ML-KEM key (FIPS 203 modulus check) are validated on receipt, so nobody can break the
+   owner's re-keying with a malformed key, and a record signed by anybody but the device itself is refused.
+3. **Rotation documents** (`RotDoc`, rotation.ts), signed by the owner and identical for every device:
+   `{t:"rot", v:2, inst, epoch, from, to[] (recipients), revoked[] (devices cut), cut[] (grant ids executed), revs[]
+   (ids of the revocations behind them), n (16 random bytes), wh, wraps, sig}`. The owner computes
+   `preId = SHA-256(["swal-rot/v3", inst, epoch, from, to, revoked, cut, revs, n])` and, for every member with a key
+   record, a **hybrid** wrap: `(ct, ss) = ML-KEM-768.Encaps(peer kem)`, `K = HKDF-SHA-256(ikm = ss ‖ ECDH(owner,
    peer), salt = SHA-256("swal-rotate-kem/v1" ‖ ct), info = "swal-rotate/v4|<preId>|<from>|<to>")`, `wrap =
-   base64url(ct ‖ AES-GCM(K, newMeshKey))` (1148 bytes, 1531 characters; frames refuse wraps above 1600). Any change
-   to the record (e.g. re-labelling who is revoked) makes the wrap fail; the ML-KEM half keeps the key confidential
-   against a quantum adversary. The owner then signs the final id with its ML-DSA-65 identity: `rot.sig` over
-   `["swal-rot-sig/v1", rotId]`. Every device rejects a rotation without a valid signature by the pinned root
-   (`rejected: "rotation signature invalid"`) before processing anything in it, serves stored rotations only if the
-   signature verifies, and checks it on the rotation carried by a pairing grant. So a rotation does not rest on the
-   ECDH half alone: whoever recovers the owner's P-256 key still cannot push a mesh key. A re-key still in flight
-   when the app destroys the mesh writes nothing to the vault, and an owner device re-checks for pending re-keys
-   (recorded revocations, interrupted rotations) every time it starts. `wh` = SHA-256 of the whole wrap set (sorted
-   `[deviceId, wrap]` pairs) and the rotation id is `rotId = SHA-256(["swal-rot/v2id", preId, wh])` (finding 5): a
-   wrap map travelling with a rotation is relayed only if it matches `wh`, so a relayer that corrupts other
-   recipients' wraps cannot make honest relayers pass the damage on; with no valid map at hand a device relays the
-   owner's wraps from meta once they verify, and a corrupted copy never blocks a later good one.
-3. Revoked links are removed from the link set synchronously (they cannot receive anything even if the transport
-   closes later), and each connected recipient gets only its own wrap (`K_ROTATE = {rot, to, wrap}`), sealed under
-   the current key **and** the most recent retired keys (4), so peers still on the previous key, or on a concurrent
-   branch, can open it. Receivers try those retired keys too, but only for `K_ROTATE` frames.
-4. Record and wraps are stored in meta under the NEW key: `rotrec:<rotId>` and `rot:<rotId>:<deviceId>`. The revoked
-   device has no wrap and cannot read the new meta. Each device keeps the keys IT retired in its local store (the
-   16 most recent) and rejoins those rooms after a restart; retired keys are never taken from the shared doc (SF5),
-   so a member cannot make devices join arbitrary rooms.
-5. Peers offline during the revoke: remaining devices keep the retired rooms joined in "legacy" mode. As soon as a
-   link in a retired room authenticates, each side offers the other the stored rotations it is a recipient of (best
-   first, at most 8), so a lagging peer catches up and two partitions that rotated on their own while apart (and only
-   meet in the room of their last common key) converge. Only rotations that verify on the serving device are offered
-   (SF3): the record's id is its hash, its epoch is within the peer's skip window and not past ours, its issuer is the
-   root, and the owner's signature verifies. Fake `rotrec:` entries written into the shared doc by a member are never served.
-   Rotation frames also carry every recipient's wrap (each opens only for its addressee), so a device that adopted a
-   rotation relays it once per link to connected recipients the issuer has no link to (partial topologies, healed
-   partitions).
-6. Peers adopting a rotation drop links to every revoked device and ignore its frames; `peers` never lists them.
-   An authenticated peer that keeps sending under one of our retired keys missed a rotation: it is offered the stored
-   rotations from that key's epoch (once per link and current rotation). A rotation that was replaced by a better
-   one of the same epoch stays a candidate.
-7. Each revocation is a signed record (`rev/<deviceId>:<epoch>`, see below) published in meta (and carried by the
-   owner rotation that executes it, `revs`). Every device keeps every record it could verify (issuer = root or a
-   verified admission, valid signature) in its local store, and **recomputes** the revoked set from all of them in
-   epoch order (round 3): a record of epoch R counts if its issuer was valid as of R - 1 given the records of earlier
-   epochs. So a request signed by an admin that was itself revoked earlier drops out as soon as that revocation is
-   known, whatever the arrival order. Records that can never count (other mesh, bad signature by a known issuer) are
-   remembered by the hash of the WHOLE record (B1), so a forged copy carrying a genuine signature never blocks the
-   genuine record. Verified records are republished into the shared doc. A device keeps the (void) admission of a
-   revoked device so what it signed before stays verifiable. A
-   reload or a device paired later keeps rejecting the revoked device even if an insider replays its old admission.
-   **Executed revocations are permanent** (round 4, R4-B1): a revocation signed by the owner, or a device cut by an
-   adopted owner rotation, becomes a compact tombstone (device id, epoch, record hash) in the local store
-   (`revexecuted`). Tombstones always count and are never evicted, and the device's pinned key-agreement keys are
-   dropped, so nothing is wrapped for it again. Pending requests are bounded per issuer (64; beyond that the issuer's
-   newest are set aside and retried once the owner executes some), so an admin flooding requests cannot crowd out
-   another issuer's records or un-revoke anyone. Before the first rotation only devices that were ever admitted count
-   as exposed, so made-up ids in requests do not enlarge a rotation.
+   base64url(ct ‖ AES-GCM(K, newMeshKey))` (1148 bytes). `wh` = SHA-256 of the whole wrap set, the id
+   `rotId = SHA-256(["swal-rot/v3id", preId, wh])` commits to everything, and the owner signs `["swal-rot-sig/v1",
+   rotId]` with its ML-DSA-65 identity. A rotation from anybody but the root, without a valid signature, or whose wraps
+   do not match `wh`, is refused before anything in it is used. Receivers refuse more than 1024 recipients or cut
+   devices (4096 grant / revocation ids); the owner splits a larger cut into several rotations and refuses a re-key
+   with more than 1024 recipients with an error (never adopted alone).
+4. **The cut list is authoritative: executed revocations as permanent tombstones.** Every verified rotation's `cut`
+   grant ids are recorded for good as permanent tombstones in the device's local store (`sec/cuts`), whether or not
+   this device adopts that rotation and even once the rotation document itself is pruned: a device cut by an owner
+   rotation is out everywhere, even where the revocation documents never arrived, and a straggler that jumps several
+   rotations still records the cuts of the ones in between (R5-N1, R5-N2). Rotations cannot be altered: any change
+   changes the id or breaks the signature.
+5. **Delivery.** The owner hands the rotation to every connected device under the current key, the recent retired
+   keys and the key the peer is known to hold, then adopts it, then announces it. Every device keeps the 32 most
+   recent rotations (with their wraps) in its local store and serves them itself: a straggler that comes back meets
+   the others in the room of a key it holds (each device keeps the keys IT retired, the 16 most recent, and rejoins
+   those rooms; never taken from anywhere else, SF5), gets the rotations it can adopt and the inventory, and catches
+   up. Nobody can delete them (R5-S1). A peer that keeps sending under one of our retired keys missed a rotation and is
+   handed what it missed under that key. Between owner devices running the same identity, the highest epoch wins,
+   then the lowest `rotId` (the one left behind stays a candidate).
+6. Peers adopting a rotation drop links to every revoked device and ignore its frames; `peers` never lists them. A
+   re-key still in flight when the app destroys the mesh writes nothing to the vault, and an owner device re-checks for
+   pending re-keys every time it starts.
 
-### Owner-only re-keying (round 3)
+### Trade-offs and limits
 
-Earlier versions let every owner/admin rotate the mesh key; concurrent rotations across partitions needed tie-breaks,
-voids and union re-keys, and kept producing liveness bugs. Now:
-
-- **Who re-keys.** Only owner devices (holding the mesh root) issue rotations. An admin's `revoke()` signs a
-  revocation record dated at its epoch + 1, publishes it in the shared doc and cuts the device off locally at once
-  (its links close, its frames are dropped, it is no longer listed, and the T1 trust layer cuts its writes by `seq`).
-  That record is a **request**: any owner device that sees a verified revocation whose device may still hold the
-  current key (it is in the current rotation's `to`, or no rotation happened yet) re-keys on its next opportunity
-  (immediately when online), excluding the union of every verified revoked device. The owner's own `revoke()`
-  re-keys right away.
-- **Trade-off.** After an admin revokes a device, writes are cut immediately, but read-confidentiality of NEW data
-  only starts once an owner device is online and has re-keyed: until then the revoked device still holds the current
-  mesh key (honest devices no longer talk to it, but anyone holding the key who can observe traffic could read it).
-  `mesh.rekeyPending` is true meanwhile; the UI should say "pendiente de que el dueño se conecte". The `revoked`
-  event of an admin's revoke carries `pending: true`.
-- **Coverage (b).** The owner also re-keys (a rotation with no `revoked`) when a member admitted before its current
-  rotation was left out of it (e.g. its ECDH key was not known yet); members admitted later received the key with
-  their pairing grant.
-- **Deterministic choice between owner devices.** Two devices running the owner identity may still rotate at once:
-  among the valid rotations a device knows, the highest epoch wins, then the lowest `rotId`; the rotation left
-  behind stays a candidate. The pairing grant carries the host's current rotation record so new members take part.
-- **Bounded epochs (SF1).** Epochs are integers in `[0, 2^31 - 1]` (records, admissions, local state) and a received
-  rotation may be at most 8 epochs ahead of the local one; lagging devices are served stored rotations in steps of at
-  most 8.
-- What is gone: the "evidence" path (revocations read out of a revoked device's rotation frames), void-issuer
-  handling and admin-issued union re-keys. A revocation travels only as a signed record in the shared doc or inside
-  an owner rotation.
-- Limitation: a revocation counts once its record has reached a device that passes it on. An admin cut off before its
-  record leaves the device loses that revocation; the owner sees the device still listed and revokes it.
-
-### Epochs, not clocks (B6)
-
-Authorization never compares clocks across devices. An admission carries the issuer's mesh `epoch`
-(`["swal-adm/v2", mid, deviceId, pub, role, by, epoch, at, name]`; `at` is display-only) and is valid in epochs
-`>= epoch` (an admission from a later epoch than the verifier's is not valid yet) until a revocation of that device
-with a **later** epoch. A re-admission issued at or after the revocation epoch is valid again; the revocation record
-stays and keeps voiding the older admissions. A revocation counts if its issuer's chain was valid **as of
-`epoch - 1`** (the epoch it rotated from) and the role ladder allowed it then, so concurrent revocations (an admin
-revoking a member while the owner revokes that admin) all count.
-
-What a revoked device can still do with revocations (SF2): it keeps the old key, so it can still reach devices through
-the retired rooms. Its rotation frames are ignored there entirely. On a live link (in practice only right around its
-own revocation) at most 4 of its rotation frames are considered, and from each only revocations it signed at the epoch
-of its own revocation, of devices that rotation cuts off (what it may legitimately have done concurrently), at most 8
-per frame. Records that fail verification are remembered and never verified twice. What remains possible: a revoked
-admin, **without any colluder**, can get such a revocation (dated at its own revocation epoch) of members it could
-revoke back then accepted, but only while a live link to it still exists; and a revoked admin plus a colluding member
-can put such a record into the shared doc. It exposes no key or data, and the owner re-admits the member. Every device
-republishes the revocations it verified into the shared doc (`rev/<id>:<epoch>`), so all devices end up with the same
-membership view.
+- After an admin revokes a device, writes are cut immediately, but read-confidentiality of NEW data only starts once
+  an owner device is online and has re-keyed (`rekeyPending`).
+- A revocation counts once its document has reached a device that passes it on.
+- A live relay can delay or drop frames, but not forge them; a relay that is the ONLY path between two devices can
+  keep a rotation from the second one (whole documents are signed: a corrupted copy is refused like a dropped one).
+- Revoking an admin also revokes what it admitted; the owner re-anchors whom it wants to keep (`reanchor`).
+- A malicious admin's grants beyond its 256 lowest ids do not count (which ones count may change as more of its
+  grants arrive); the owner revokes such an admin.
 
 ## Post-quantum cryptography (AGENTS.md §2)
 
 | Use | Algorithm | Where |
 |-----|-----------|-------|
-| Device identity, admissions, revocations, `K_HELLO`/`K_AUTH`, frame signatures, pairing ack and host proof, `ecdh/<id>` records, rotation records (`rot.sig`, the owner's signature over the rotation id), `web/trust` grants/revocations, `web/oplog` ops | **ML-DSA-65** (FIPS 204, pure, empty context) | `pq.ts` `identitySign`/`identityVerify`, `web/trust/keys.ts` |
+| Device identity, `web/trust` grants and revocations (mesh membership), `K_HELLO`/`K_AUTH`, frame signatures, pairing ack and host proof, key-agreement records (`kex`), rotation documents (`sig`, the owner's signature over the rotation id), `web/oplog` ops | **ML-DSA-65** (FIPS 204, pure, empty context) | `pq.ts` `identitySign`/`identityVerify`, `web/trust/keys.ts` |
 | Pairing session, rotation wraps | **ML-KEM-768** (FIPS 203) **+ ECDH P-256**, HKDF-SHA-256 over `ML-KEM secret ‖ ECDH secret` with the transcript as salt/info | `pq.ts` `hybridSecret`, `pairing.ts`, `rotation.ts` |
 | Data encryption, key derivation | AES-256-GCM, HKDF-SHA-256 (unchanged) | `crypto.ts` |
 
@@ -323,27 +279,27 @@ membership view.
   `src/web` stays browser-pure. Verification is done by the mesh itself (`identityVerify`, exact sizes, never throws):
   `VaultClient.verify` is ignored, so a vault can no longer widen what is accepted. The vault signs with ML-DSA-65.
 - No fallback: an ECDSA identity key, an ES256 document, a 22-character legacy id, a `ready` without the ML-KEM
-  ciphertext or an `ecdh/` record without `kem` are rejected.
+  ciphertext or a key record without `kem` are rejected.
 - Hybrid rule: both secrets are required (`hybridSecret` throws if either is missing); the result stays secret if
   either ML-KEM-768 or P-256 holds.
 - `canonicalJson` is byte-identical (Fize shares it); `signCanonical` / `verifyCanonical` use the ML-DSA backend.
-- One key, one encoding (round 4, R4-N3): public keys and signatures are accepted only in canonical base64url (no
-  padding, no stray bits in the last character), so a key has exactly one `web/trust` fingerprint, equal to its
-  `deviceId`.
+- One key, one encoding (round 4, R4-N3; round 5, R5-B3): public keys and the signatures of every security document
+  are accepted only in canonical base64url (no padding, no stray bits in the last character; signatures of exactly
+  3309 bytes), so a key has exactly one fingerprint, equal to its `deviceId`, and a document one id.
 
 Sizes (bytes): ML-DSA-65 public key 1952, secret key 4032, signature 3309; ML-KEM-768 encapsulation key 1184,
 decapsulation key 2400, ciphertext 1088. On the wire (measured, loopback): a signed 10-byte channel message or a
 one-key doc update is ~3.4 KB (was ~0.2 KB with ECDSA); a frame never exceeds 64 KiB (messages above it are
-fragmented and signed once); an `adm/<id>` record ~7.2 KB, an `ecdh/<id>` record ~6.1 KB; a rotation wrap 1148 B; a
-`web/oplog` op ~4.9 KB (cap 32 KiB); the QR 362 characters; the pairing grant carries at most 16 revocations of the
-current rotation (receivers only read 16), so it stays far below the 256 KiB pairing cap.
+fragmented and signed once); a grant ~7 KB, a key record ~6 KB; a rotation wrap 1148 B (a rotation document ~1.6 KB
+per recipient plus ~5 KB); a `web/oplog` op ~4.9 KB (cap 32 KiB); the QR 362 characters; the pairing grant carries
+the current rotation only if it is below 128 KiB, so it stays far below the 256 KiB pairing cap.
 
 Cost (Node 24, noble 0.6.1, one core): ML-DSA-65 keygen ~2.0 ms, sign ~7.6 ms, verify ~1.9 ms; ML-KEM-768 keygen
 ~0.7 ms, encapsulate ~0.9 ms, decapsulate ~1.0 ms (WebCrypto ECDSA P-256 for reference: sign ~0.09 ms, verify
 ~0.13 ms). End to end on loopback: pairing ~60 ms, revoke-to-adoption on a 3-device mesh ~110 ms. Every frame is
 signed and verified, so a chatty app pays ~7.6 ms per message sent and ~1.9 ms per message received; the mesh
-memoizes the verifications it repeats (admission chains, revocations). The `tests/web` suite takes ~90 s instead of
-~10 s.
+checks a security document once (documents are held by content id). The `tests/web` suite takes ~200 s (it includes
+a 1030-grant scenario) instead of ~10 s before the migration.
 
 ## Signaling cap
 
@@ -396,6 +352,25 @@ All devices must be updated together and every mesh re-paired: ids, keys and eve
   signed public-menu snapshots separately.
 - Regression tests: `tests/web/audit-regressions-pqc.test.ts` (Q1-Q4) and `tests/web/audit-regressions-pqc-kex.test.ts`
   (Q5-Q11).
+
+### Round 5: security state as signed documents (2026-10-03)
+
+All devices must be updated together and every mesh re-paired.
+
+- The mesh no longer reads or writes the shared doc's `meta` (no `adm/`, `dev/`, `rev/`, `ecdh/`, `rotrec:`, `rot:`,
+  `mid` entries). Membership is `web/trust` grants and revocations (`mesh.security.trust`), exchanged over the trust
+  channel (`K_TRUST` frames) and kept in the local store (`sec/*` keys). `admission.ts` keeps only identity helpers:
+  `Admission`, `verifyChain`, `signAdmission`, `signRevocation`, `verifyRevocation`, `ChainContext`, `canRevokeRole`
+  are gone.
+- Revocation rights follow `web/trust`: an admin revokes the devices it admitted, and revoking an admin cascades
+  (`mesh.reanchor(ids)` lets the owner keep them). `revoke(id, { heads?, reason? })`.
+- Rotations: `RotDoc` v2 (`t:"rot"`, `inst`, `cut`, `revs` as ids, `wraps` inside the document, `swal-rot/v3`
+  pre-id); `K_ROTATE` frames are gone (rotations travel as documents). Key records are `kex` documents.
+- `MeshOptions.trustSchema`, `Mesh.security` (`trust`, `docs`, `rotations`, `keyAgreement`, `executedCuts`, `add`,
+  `addMany`, `issueGrant`), `Mesh.reanchor`; `GrantBody.docs`/`rotId` replace `admissions`/`rot`; `web/trust` grants
+  may carry `epoch` and their signatures must be canonical.
+- Regression tests: `tests/web/audit-regressions-r5.test.ts` (R5-B1–B3, R5-S1–S4, the "writes to the old slots change
+  nothing" property) and `tests/web/audit-fuzz-r5.test.ts` (adversarial liveness).
 
 ### Round 2 (2026-10-03)
 

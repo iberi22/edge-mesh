@@ -136,6 +136,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Notes: links whose handshake does not complete within `handshakeTimeoutMs` (default 120 s) are closed (9); the
   evidence path is gone (7); what the handshake binds and why a live relay can only delay or drop is documented (8).
 
+### Security state as signed documents, round 5 (`docs/security/audits/2026-10-03-ronda-5.md`; breaking)
+- The mesh's security state (grants, revocations, key-agreement records, owner rotations) is an append-only set of
+  content-addressed, self-verifying signed documents kept in each device's local store and exchanged over an
+  authenticated trust channel (`K_TRUST`). The shared `Y.Doc` holds none of it any more: a member can only add
+  documents (R5-B1 slot squatting and R5-S1 deletion stranding are gone by construction).
+- Membership and authority come from the mesh's `web/trust` `TrustStore` (owner root → admins → staff): the provider's
+  own admission/revocation system is removed. An admin revokes the devices it admitted; revocations cascade
+  (`mesh.reanchor`); re-admission is a new grant and the owner's always counts (R5-S4).
+- R5-B2: every grant cut by a revocation that no owner rotation has executed yet is exposed, whenever the device was
+  paired. Owner rotations carry the cut grant ids, authoritative everywhere.
+- R5-B3: canonical signatures only, ids are content ids, no shared pool of pending requests to fill.
+- R5-S2: handshake limits across links (global replay window, per-identity budget, unauthenticated links per room,
+  shared early buffer, retired-room answers rate-limited).
+- R5-S3: at most 256 members per admin count; `pairHost` refuses a full mesh; the owner retries re-keys after every
+  change of the security state.
+- The pairing grant reads the key, its epoch and the current rotation at the same instant.
+- New API: `Mesh.security`, `Mesh.reanchor`, `revoke(id, { heads })`, `MeshOptions.trustSchema`; `web/trust` grants may
+  carry `epoch`. Removed: `Admission`, `verifyChain`, `signAdmission`, `signRevocation`, `ChainContext`,
+  `canRevokeRole`, `RotRecord`/`isRotRecord` (now `RotDoc`/`isRotDoc`), `K_ROTATE` frames.
+- Tests: `tests/web/audit-regressions-r5.test.ts`, `tests/web/audit-fuzz-r5.test.ts`; the liveness fuzz has a jitter
+  mode (`FUZZ_JITTER_MS`).
+
 ### Security audit fixes, round 4 (`docs/security/audits/2026-10-03-ronda-4.md`; `tests/web/audit-regressions-r4.test.ts`)
 - **R4-B1**: an admin flooding revocation requests (or a long-lived mesh) can no longer evict an executed revocation.
   Executed revocations are permanent tombstones (local store `revexecuted`) and the device's pinned key-agreement

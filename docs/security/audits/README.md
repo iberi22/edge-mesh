@@ -12,7 +12,7 @@ prueba de regresión que impide que vuelvan.
 | 2 | 2026-10-03 | Re-auditoría de `mesh/fix-audit` tras la ronda 1 | 3 bloqueantes, 5 a corregir y notas, todos corregidos | [2026-10-03-ronda-2.md](2026-10-03-ronda-2.md) |
 | 3 | 2026-10-03 | Re-auditoría de `mesh/fix-audit` @ `4932376` | 3 bloqueantes y 3 a corregir; rediseño a re-clave solo por el dueño; todos corregidos | [2026-10-03-ronda-3.md](2026-10-03-ronda-3.md) |
 | 4 | 2026-10-03 | Re-auditoría de `mesh/fix-audit` @ `18448f5`: migración post-cuántica y re-clave del dueño | Post-cuántica sin bloqueantes; 2 bloqueantes (R4-B1, R4-B2), 3 a corregir y notas; corregidos todos salvo las notas N1 y N4 (documentadas) | [2026-10-03-ronda-4.md](2026-10-03-ronda-4.md) |
-| 5 | 2026-10-03 | Re-auditoría de `mesh/fix-audit` @ `4c8c5f1`: correcciones de la ronda 4 | 3 bloqueantes (R5-B1–B3), 4 a corregir y notas; decisión: estado de seguridad como conjunto de documentos firmados fuera del `Y.Doc` | [2026-10-03-ronda-5.md](2026-10-03-ronda-5.md) |
+| 5 | 2026-10-03 | Re-auditoría de `mesh/fix-audit` @ `4c8c5f1`: correcciones de la ronda 4 | 3 bloqueantes (R5-B1–B3), 4 a corregir y notas; resueltos con el rediseño del estado de seguridad como documentos firmados fuera del `Y.Doc` | [2026-10-03-ronda-5.md](2026-10-03-ronda-5.md) |
 
 ## Método
 
@@ -45,6 +45,9 @@ prueba de regresión que impide que vuelvan.
 | `tests/web/audit-regressions-pqc.test.ts` | Migración post-cuántica: identidades ML-DSA-65 (Q1–Q4) |
 | `tests/web/audit-regressions-pqc-kex.test.ts` | Migración post-cuántica: intercambios híbridos, rotaciones firmadas y re-clave interrumpida (Q5–Q11) |
 | `tests/web/audit-regressions-r4.test.ts` | Ronda 4: R4-B1, R4-B2, R4-S1–S3, notas N2, N3, N6 |
+| `tests/web/audit-regressions-r5.test.ts` | Ronda 5: R5-B1–B3, R5-S1–S4 y la propiedad «escribir en las ranuras viejas del `meta` no cambia nada» |
+| `tests/web/audit-fuzz-r5.test.ts` | Ronda 5: vivacidad con adversarios (admin y miembro maliciosos, con las jugadas de R5-B1, B3 y S1) |
+| `tests/web/secstate-fuzz.test.ts` | Fuzz de vivacidad determinista: particiones, revocadores concurrentes y convergencia sobre `SecurityState` |
 | `tests/web/trust-oplog-security.test.ts` | Batería de seguridad de `web/trust` / `web/oplog` anterior a las rondas |
 
 ## Cambios posteriores a la ronda 3 (auditados en la ronda 4)
@@ -71,3 +74,21 @@ Puntos que se pidió revisar al auditor de la ronda 4 (resultado en su documento
   rotación.
 - El tamaño de los registros (unos 3,4 KB por mensaje firmado) frente a los topes de 64 KiB por trama,
   32 KiB por operación y 256 KiB por mensaje de emparejamiento.
+
+## Correcciones de la ronda 5 (2026-10-03)
+
+Rediseño integral: el estado de seguridad se extrae totalmente del `Y.Doc` (`meta`) y se modela como un conjunto
+de documentos firmados solo de alta (`src/web/secstate.ts`), almacenados localmente e intercambiados por el
+canal de confianza autenticado `K_TRUST`. La única fuente de autoridad es el `TrustStore` de `web/trust`.
+
+| Hallazgo | Severidad | Commit | Corrección | Prueba de regresión |
+|----------|-----------|--------|------------|---------------------|
+| **R5-B1** | Bloqueante | `15df79a` | El estado de seguridad se almacena fuera del Y.Doc en `secstate.ts`. Ya no existen ranuras `rev/` en `meta` que ocupar; las revocaciones viajan como documentos firmados independientes. | `audit-regressions-r5.test.ts` (`R5-B1`) |
+| **R5-B2** | Bloqueante | `15df79a` | `unexecuted()` detecta cualquier concesión revocada que ninguna rotación del dueño haya cortado todavía, sin importar cuándo se emparejó el equipo. | `audit-regressions-r5.test.ts` (`R5-B2`) |
+| **R5-B3** | Bloqueante | `15df79a` | Firmas exigidas estrictamente en base64url canónico de 3309 bytes. Identificadores por contenido evitan duplicados maleables; topes por emisor y concesión (`MAX_STORED_PER_ISSUER`, `MAX_REVS_PER_ISSUER_TARGET`). | `audit-regressions-r5.test.ts` (`R5-B3`) |
+| **R5-S1** | A corregir | `15df79a` | Las rotaciones y sus envolturas se conservan en el almacén local de cada equipo y se sirven a los rezagados a través del canal de confianza `K_TRUST`. | `audit-regressions-r5.test.ts` (`R5-S1`) |
+| **R5-S2** | A corregir | `b6a7df1` | Ventana global LRU (8192) de tramas de intercambio ya verificadas compartida entre todos los enlaces; tope de 128 verificaciones/min por identidad anunciada; máximo 32 enlaces sin autenticar por sala y 2 por par; búfer temprano compartido de 4 MiB; limitación de respuestas en salas retiradas. | `audit-regressions-r5.test.ts` (`R5-S2`) |
+| **R5-S3** | A corregir | `15df79a` | Límite de 256 miembros activos por admin (`withinCap`); `pairHost` rechaza si la malla está llena; `ownerRekey` se reintenta tras cada cambio de estado de seguridad; revocación en cascada inmediata de admitidos al revocar un admin. | `audit-regressions-r5.test.ts` (`R5-S3`) |
+| **R5-S4** | A corregir | `15df79a` | Las revocaciones de `web/trust` ya no dependen de épocas; la re-admisión es una nueva concesión con id nuevo y la firma del dueño siempre prevalece. | `audit-regressions-r5.test.ts` (`R5-S4`) |
+| **R5-N1..N5** | Notas | `15df79a` | Cortes autoritativos permanentes (`cut`) persistidos como lápidas en almacén local; deduplicación de firmas y memorización acotada; la ranura `meta` queda inerte. | `audit-regressions-r5.test.ts` (propiedad «escrituras en ranuras viejas de meta no cambian nada») |
+
