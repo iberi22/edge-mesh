@@ -143,6 +143,13 @@ drains its queue before closing.
     `drain()`; `PeerLink.sendPriority` (implemented by `dataChannelLink`) puts them at the next message boundary of
     the link's own queue. An owner's `revoke()` therefore re-keys at once even towards a slow member.
 
+- Signature checks before authentication are bounded (round 4, R4-S1): on a link that has not authenticated yet only
+  `K_HELLO`/`K_AUTH` frames are verified, at most 64 per link (a legit peer needs at most 48), and a replayed
+  handshake frame (same sender, session and sequence) is dropped unverified; past the cap the link is closed. Other
+  frames that arrive before the peer's `K_AUTH` are kept sealed and unverified (32 frames / 1 MiB) and verified once,
+  when they are run after it. On an authenticated link the session and replay window are checked before the
+  signature. Frames from a revoked sender are dropped before any signature check, in every room.
+
 ## Channels
 
 `mesh.channel(kind)` gives an own message stream (e.g. a signed operation log) over the same encrypted, signed,

@@ -207,6 +207,11 @@ const MAX_OUTSTANDING = 16 * 1024 * 1024;
 const HANDSHAKE_MAX = 8;
 /** frames kept per link while waiting for the peer's K_AUTH (also bounded by PRE_AUTH_MAX bytes) */
 const EARLY_MAX_FRAMES = 32;
+/**
+ * R4-S1: signature checks a link may cause before it authenticates (handshake frames only; a legit peer needs at most
+ * HANDSHAKE_MAX challenges under up to 1 + RETIRED_TRY keys plus HANDSHAKE_MAX answers = 48). Beyond: the link closes.
+ */
+const HS_VERIFY_MAX = 64;
 /** Replay window per sender session: seqs at most this far behind the highest one are still accepted once. */
 const REPLAY_WINDOW = 1024;
 const ORIGIN = Symbol("swal-mesh");
@@ -287,6 +292,9 @@ interface LinkRec {
 	authSent?: boolean;
 	/** SF4: handshake messages seen/sent on this link (re-sent after trust changes, capped) */
 	hellosIn?: number;
+	/** R4-S1: handshake frames verified on this link before it authenticated, and their (sender, session, seq) */
+	hsChecks?: number;
+	hsSeen?: Set<string>;
 	hellosOut?: number;
 	answers?: number;
 	started?: boolean;
@@ -854,6 +862,11 @@ export function createMesh(opts: MeshOptions): Mesh {
 	}
 	// receiver side of S1: highest seq + recently seen seqs per (sender, session)
 	const replay = new Map<string, { max: number; seen: Set<number> }>();
+	/** R4-S1: the same test as freshSeq, without recording: run BEFORE the signature check (recorded after it). */
+	function seqFresh(sender: string, sess: string, seq: number): boolean {
+		const w = replay.get(`${sender}|${sess}`);
+		return !w || !(seq + REPLAY_WINDOW <= w.max || w.seen.has(seq));
+	}
 	function freshSeq(sender: string, sess: string, seq: number): boolean {
 		const k = `${sender}|${sess}`;
 		let w = replay.get(k);
@@ -1040,12 +1053,38 @@ export function createMesh(opts: MeshOptions): Mesh {
 			if (revoked) return; // a revoked device is never listened to (its revocation requests travel as doc records)
 			const pub = trusted.get(sender)?.pub;
 			if (!pub) return;
+			// R4-S1: everything that can be decided without the (2 ms) signature check is decided first
+			const hsKey = `${sender}|${sess}|${seq}`;
+			if (rec.authed) {
+				if (sess !== rec.peerSess || !seqFresh(sender, sess, seq)) return; // replay / other link
+			} else if (kind !== K_HELLO && kind !== K_AUTH) {
+				// the peer authenticated us first and already talks: keep a few frames (unverified, still sealed) until its
+				// K_AUTH reaches us; they are verified once, when they are run again after it
+				if (!rec.early) rec.early = { frames: [], bytes: 0 };
+				const e = rec.early;
+				if (e.frames.length < EARLY_MAX_FRAMES && e.bytes + data.length <= PRE_AUTH_MAX) {
+					e.frames.push(data);
+					e.bytes += data.length;
+				}
+				return;
+			} else {
+				if (rec.hsSeen?.has(hsKey)) return; // a replayed handshake frame: dropped unverified
+				rec.hsChecks = (rec.hsChecks ?? 0) + 1;
+				if (rec.hsChecks > HS_VERIFY_MAX) {
+					reject("too many handshake frames", sender);
+					return closeRec(rec);
+				}
+			}
 			let ok = false;
 			try {
 				ok = identityVerify(b64uDecode(pub), frameSigBytes(rid, sender, kind, sessBytes, seq, body), sig);
 			} catch {}
 			if (!ok) return reject("bad frame signature", sender);
 			if (rec.closing) return;
+			if (!rec.authed) {
+				if (!rec.hsSeen) rec.hsSeen = new Set();
+				if (rec.hsSeen.size < 2 * HS_VERIFY_MAX) rec.hsSeen.add(hsKey);
+			} else if (kind === K_HELLO || kind === K_AUTH) freshSeq(sender, sess, seq); // (other kinds: recorded below)
 			// S1: a link carries nothing but its handshake until the peer signed OUR fresh challenge on it
 			// the handshake may arrive under one of our recent retired keys (a key switch raced with it, or the peer is on
 			// another branch): it is then bound to THAT key's room and epoch, and answered under the same key
@@ -1468,7 +1507,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 	function resendHello(rec: LinkRec) {
 		if (!rec.nonce || rec.authed || rec.closing || (rec.hellosOut ?? 0) >= HANDSHAKE_MAX) return;
 		rec.hellosOut = (rec.hellosOut ?? 0) + 1;
-		const nonce = rec.nonce;
+		// a fresh copy: a new signature and sequence number, so the peer sees a new frame, not a replay (R4-S1)
+		const nonce = rec.nonce.slice();
 		// under the current AND the recent retired keys: the peer may still be on (or have switched from) any of them
 		void (async () => {
 			const lg = rec.legacy;

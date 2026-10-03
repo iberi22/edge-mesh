@@ -2,10 +2,38 @@
 // (or an honest failure) and asserts that it no longer happens.
 
 import { ml_dsa65 } from "@noble/post-quantum/ml-dsa.js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { signAdmission, signRevocation } from "../../src/web/admission.js";
-import { createLoopbackHub } from "../../src/web/index.js";
+import { deriveDocMaterial } from "../../src/web/crypto.js";
+import {
+	createLoopbackHub,
+	deriveRoomId,
+	type PeerLink,
+} from "../../src/web/index.js";
 import { deviceIdOf } from "../../src/web/pq.js";
+import { craft, openFrame, TOPIC } from "./audit-r3-lib.js";
+
+// every identity verification the mesh does (all devices of this process), to count the work an attacker causes
+const verified = vi.hoisted(() => ({ data: [] as Uint8Array[] }));
+vi.mock("../../src/web/pq.js", async (importOriginal) => {
+	const m = await importOriginal<typeof import("../../src/web/pq.js")>();
+	return {
+		...m,
+		identityVerify: (p: Uint8Array, d: Uint8Array, s: Uint8Array) => {
+			verified.data.push(d);
+			return m.identityVerify(p, d, s);
+		},
+	};
+});
+const contains = (hay: Uint8Array, needle: Uint8Array) => {
+	outer: for (let i = 0; i + needle.length <= hay.length; i++) {
+		for (let j = 0; j < needle.length; j++)
+			if (hay[i + j] !== needle[j]) continue outer;
+		return true;
+	}
+	return false;
+};
+
 import { b64uEncode, randomBytes } from "../../src/web/util.js";
 import {
 	type Dev,
@@ -226,4 +254,56 @@ describe("audit round 4 regressions", () => {
 			expect(w.rec.revoked.length).toBeLessThanOrEqual(1024);
 		for (const d of all) d.mesh.destroy();
 	}, 240_000);
+
+	it("R4-S1: replayed or endless handshake frames cost a bounded number of signature checks and answers", async () => {
+		const { g, a, b, all } = await (async () => {
+			const r = await mesh(["b"]);
+			return { ...r, b: r.ms[0] as Dev };
+		})();
+		const k0 = b.vault.meshKey as Uint8Array;
+		const instance = a.mesh.namespace.split("/")[1] as string;
+		const rid = await deriveRoomId(k0, "fize", TOPIC, 0, instance);
+		const mat = await deriveDocMaterial(k0, TOPIC);
+		// an insider (holds the room key) opens a raw link to A claiming B and replays B's signed challenge
+		const t = g.transport("evil");
+		let link: PeerLink | null = null;
+		let closed = false;
+		let answers = 0;
+		t.onLink((l) => {
+			if (l.id !== a.id) return;
+			link = l;
+			l.onClose(() => {
+				closed = true;
+			});
+			l.onMessage((d) => {
+				void openFrame(mat, rid, d).then((f) => {
+					if (f?.kind === 6) answers++;
+				});
+			});
+		});
+		await t.join(rid, b.id);
+		await until(() => link !== null);
+		const sess = randomBytes(8);
+		const hello = await craft(b.vault, mat, rid, 5, randomBytes(16), sess, 1);
+		const before = verified.data.filter((d) => contains(d, sess)).length;
+		for (let i = 0; i < 40; i++) (link as unknown as PeerLink).send(hello);
+		await settle(1500);
+		const replays =
+			verified.data.filter((d) => contains(d, sess)).length - before;
+		expect(replays).toBeLessThanOrEqual(1);
+		expect(answers).toBeLessThanOrEqual(1);
+		// fresh challenges without end: the unauthenticated link is closed after a bounded number of checks
+		for (let i = 2; i < 100 && !closed; i++)
+			(link as unknown as PeerLink).send(
+				await craft(b.vault, mat, rid, 5, randomBytes(16), sess, i),
+			);
+		await settle(1500);
+		expect(
+			verified.data.filter((d) => contains(d, sess)).length - before,
+		).toBeLessThanOrEqual(64); // HS_VERIFY_MAX
+		expect(answers).toBeLessThanOrEqual(8);
+		expect(closed).toBe(true);
+		for (const d of all) d.mesh.destroy();
+		t.close();
+	}, 60_000);
 });
