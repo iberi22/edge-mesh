@@ -174,6 +174,9 @@ The new mesh key is never sent under the old shared key (the revoked device know
    rotation relays it once per link to connected recipients the issuer has no link to (partial topologies, healed
    partitions).
 6. Peers adopting a rotation drop links to every revoked device and ignore its frames; `peers` never lists them.
+   An authenticated peer that keeps sending under one of our retired keys missed a rotation: it is offered the stored
+   rotations from that key's epoch (once per link and current rotation). A rotation that was replaced by a better
+   one of the same epoch stays a candidate.
 7. Each revocation is a signed record (`rev/<deviceId>:<epoch>`, see below) published in meta (and carried by the
    owner rotation that executes it, `revs`). Every device keeps every record it could verify (issuer = root or a
    verified admission, valid signature) in its local store, and **recomputes** the revoked set from all of them in

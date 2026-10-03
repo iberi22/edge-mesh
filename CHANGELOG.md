@@ -118,6 +118,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gone. The owner also re-keys to cover members a rotation left out.
 - **B1 negative-cache poisoning**: records that can never count are remembered by the hash of the whole record,
   never by signature alone.
+- **B2/B3 convergence and `to` omission**: besides the redesign (admin rotations rejected, so nobody but the owner
+  decides who is left out) and the recomputed revoked set, the owner re-keys to cover members a rotation left out,
+  replaced same-epoch rotations stay candidates, and a peer still sending under an old key is offered the stored
+  rotations it missed. Liveness fuzz (8 devices, partitions, concurrent revokers, random heal order): 96/96 seeds
+  converge (the audit's 48 plus 48 more).
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,

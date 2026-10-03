@@ -949,6 +949,9 @@ export function createMesh(opts: MeshOptions): Mesh {
 		} else if (revoked) return;
 		if (retired) {
 			if (kind === K_ROTATE) await serialRot(() => handleRotate(body));
+			// (d) an authenticated peer still talks under one of our retired keys: it missed a rotation. Offer it the
+			// stored rotations from that key's epoch (once per link and current rotation).
+			else if (via && rec.authed) offerRotations(rec, sender, via.epoch);
 			return;
 		}
 		if (!rec.deviceId) {
@@ -1092,6 +1095,16 @@ export function createMesh(opts: MeshOptions): Mesh {
 		cands.set(id, { rec: { ...rot, id }, key: newKey });
 		await converge();
 		if (curRot?.id === id && m.wraps) relayRotation(curRot, m.wraps);
+	}
+	const offered = new Set<string>();
+	function offerRotations(rec: LinkRec, peer: string, from: number) {
+		const k = `${curRot?.id ?? epoch}|${peer}|${from}`;
+		if (offered.has(k)) return;
+		if (offered.size >= 4096) offered.clear();
+		offered.add(k);
+		void (async () => {
+			for (const m of await storedRotationsFor(peer, from)) await sendRotate(rec, m);
+		})().catch(err);
 	}
 	/** Relayed (rotation, peer) pairs: each adopted rotation is passed on at most once per peer. */
 	const relayed = new Set<string>();
