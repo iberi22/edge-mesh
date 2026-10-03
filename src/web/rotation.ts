@@ -75,7 +75,8 @@ export interface RotRecord {
 /** Bytes the owner signs (ML-DSA-65) for a rotation: its id, domain-separated. */
 export const rotationSigBytes = (rotId: string) => utf8(JSON.stringify(["swal-rot-sig/v1", rotId]));
 
-const MAX_ROT_MEMBERS = 1024;
+/** Receivers drop a rotation whose `to`, `revoked` or `revs` list is longer (R4-S3: issuers respect it too). */
+export const MAX_ROT_MEMBERS = 1024;
 const isIdList = (x: unknown): x is string[] =>
 	Array.isArray(x) && x.length <= MAX_ROT_MEMBERS && x.every((i) => isDeviceId(i));
 

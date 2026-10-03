@@ -175,6 +175,9 @@ The new mesh key is never sent under the old shared key (the revoked device know
    accepts it without having seen the revocation records behind it. A member that was offline while the requests were
    published may never get them (the retired room does not sync the doc), and used to stay on the old key forever.
    A rotation carries at most 16 records (`revs`, one per target, informative only) and receivers read the same 16.
+   Receivers drop a rotation listing more than 1024 recipients or cut devices; the owner respects the same bound
+   (R4-S3): a larger cut is split into several rotations, and a re-key with more than 1024 recipients is refused
+   with an error (never adopted alone).
    With a custom `canRotate` hook, the hook decides who may revoke, and which targets an owner rotation may cut off.
 1. Each device has a static P-256 ECDH key (`VaultClient.getEcdhIdentity()`) and a static ML-KEM-768 key pair
    (`VaultClient.getKemIdentity()`), both persistent; in-memory fallbacks exist but then a reloaded device cannot

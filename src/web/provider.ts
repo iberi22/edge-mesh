@@ -33,6 +33,7 @@ import {
 	rotationId,
 	rotationPreId,
 	rotationSigBytes,
+	MAX_ROT_MEMBERS,
 	wrapsHash,
 	unwrapMeshKey,
 	wrapMeshKey,
@@ -1401,7 +1402,14 @@ export function createMesh(opts: MeshOptions): Mesh {
 			: [];
 		const missedWithKey: string[] = [];
 		for (const t of missed) if (await peerEcdhPub(t)) missedWithKey.push(t);
-		if (exposed.length > 0 || missedWithKey.length > 0) await rotate(exposed);
+		if (exposed.length === 0 && missedWithKey.length === 0) return;
+		// R4-S3: no rotation lists more devices than a receiver accepts: cut them in several rotations (each one already
+		// leaves out every revoked device; the later ones list the rest so receivers record them as executed)
+		const sorted = [...exposed].sort();
+		for (let i = 0; i === 0 || i < sorted.length; i += MAX_ROT_MEMBERS) {
+			if (!running || destroyed) return;
+			await rotate(sorted.slice(i, i + MAX_ROT_MEMBERS));
+		}
 	}
 
 	/** Wraps of stored rotations a straggler (still on a key of epoch `from`) is a recipient of, best first. */
@@ -1709,6 +1717,11 @@ export function createMesh(opts: MeshOptions): Mesh {
 			if (pub) pubs.set(d.deviceId, pub);
 			else err(new Error(`no verified ECDH key for ${d.deviceId} yet: it gets the key with a later rotation`));
 		}
+		// R4-S3: a rotation receivers would drop as malformed must never be adopted here (the owner would end alone)
+		if (targets.length > MAX_ROT_MEMBERS || pubs.size > MAX_ROT_MEMBERS)
+			throw new Error(
+				`re-key refused: ${pubs.size} recipients and ${targets.length} cut devices; a rotation carries at most ${MAX_ROT_MEMBERS} of each`,
+			);
 		const rec: RotRecord = {
 			v: 1,
 			epoch: newEpoch,
@@ -1729,6 +1742,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		// the owner signs the id (record + wrap set) with its ML-DSA-65 identity: the rotation does not rest on P-256 alone
 		rec.sig = b64uEncode(await vault.sign(rotationSigBytes(id)));
 		if (destroyed) return; // torn down while signing: publish nothing, keep the vault as it was
+		if (!isRotRecord(rec)) throw new Error("re-key refused: the rotation record would be malformed for receivers");
 		// 1) hand each connected recipient ITS OWN wrap (under every recent key), 2) switch, 3) publish under the NEW key
 		const sends: Promise<void>[] = [];
 		for (const l of [...links]) {

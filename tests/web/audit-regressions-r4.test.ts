@@ -1,8 +1,11 @@
 // Regression tests for the round-4 audit (docs/security/audits/2026-10-03-ronda-4.md). Each one reproduces an attack
 // (or an honest failure) and asserts that it no longer happens.
+
+import { ml_dsa65 } from "@noble/post-quantum/ml-dsa.js";
 import { describe, expect, it } from "vitest";
-import { signRevocation } from "../../src/web/admission.js";
+import { signAdmission, signRevocation } from "../../src/web/admission.js";
 import { createLoopbackHub } from "../../src/web/index.js";
+import { deviceIdOf } from "../../src/web/pq.js";
 import { b64uEncode, randomBytes } from "../../src/web/util.js";
 import {
 	type Dev,
@@ -167,4 +170,60 @@ describe("audit round 4 regressions", () => {
 		);
 		for (const d of [a2, x2, b2, s2]) d.mesh.destroy();
 	}, 180_000);
+
+	it("R4-S3: an owner re-key that cuts more devices than a receiver accepts (1024) is split, and everybody follows", async () => {
+		const { a, x, ms, all } = await mesh(["b"]);
+		const [b] = ms as [Dev];
+		const root = a.mesh.root as { mid: string };
+		// 1025 devices the owner admitted (keys only: they never come online), then revoked in one batch
+		const fakes: string[] = [];
+		const adms: unknown[] = [];
+		const revs: unknown[] = [];
+		for (let i = 0; i < 1025; i++) {
+			const pub = ml_dsa65.keygen().publicKey;
+			const id = await deviceIdOf(pub);
+			fakes.push(id);
+			adms.push(
+				await signAdmission(a.vault, {
+					mid: root.mid,
+					deviceId: id,
+					pub: b64uEncode(pub),
+					name: `t${i}`,
+					role: "member",
+					by: a.id,
+					epoch: 0,
+					at: 0,
+				}),
+			);
+			revs.push(
+				await signRevocation(a.vault, {
+					mid: root.mid,
+					target: id,
+					by: a.id,
+					epoch: 1,
+				}),
+			);
+		}
+		a.doc.transact(() => {
+			for (const [i, id] of fakes.entries()) {
+				metaOf(a).set(`adm/${id}`, adms[i]);
+				metaOf(a).set(`rev/${id}:1`, revs[i]);
+			}
+		});
+		await until(
+			() =>
+				a.mesh.epoch >= 2 &&
+				b.mesh.epoch === a.mesh.epoch &&
+				x.mesh.epoch === a.mesh.epoch,
+			120_000,
+		).catch(() => {});
+		await settle(2000);
+		expect(a.mesh.epoch).toBeGreaterThanOrEqual(2); // split: no rotation lists more than 1024
+		expect(b.mesh.epoch).toBe(a.mesh.epoch);
+		expect(keyOf(b)).toBe(keyOf(a));
+		expect(keyOf(x)).toBe(keyOf(a));
+		for (const w of storedWraps(a))
+			expect(w.rec.revoked.length).toBeLessThanOrEqual(1024);
+		for (const d of all) d.mesh.destroy();
+	}, 240_000);
 });
