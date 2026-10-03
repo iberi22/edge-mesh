@@ -66,11 +66,22 @@ describe("H1: only admitted devices are trusted (rotation wraps, ECDH keys, devi
 
 	it("authorizeDevice can veto a device (hook for capability-based trust)", async () => {
 		const hub = createLoopbackHub();
-		const { a, b, c } = await trio(hub, { a: { authorizeDevice: (id: string) => id !== "devB" } as any });
+		let veto = false;
+		const { a, b, c } = await trio(hub, { a: { authorizeDevice: (id: string) => !(veto && id === "devB") } });
+		veto = true; // e.g. its grant expired
+		metaOf(a).set("touch", 1); // any change re-evaluates trust
+		await until(() => !a.mesh.devices().some((d) => d.deviceId === "devB"));
 		expect(a.mesh.devices().map((d) => d.deviceId).sort()).toEqual(["devA", "devC"]);
 		await a.mesh.revoke("devC");
 		expect(metaOf(a).has("rot:1:devB")).toBe(false);
-		for (const x of [a, b, c]) x.mesh.destroy();
+		// and the host does not admit a device its policy rejects
+		const d = await makeDev("devB2", hub);
+		const veto2 = await makeDev("hostV", hub, undefined, { authorizeDevice: (id: string) => id !== "devB2" });
+		veto2.mesh.on("sas", (p) => p.confirm());
+		const offer = await veto2.mesh.pairHost();
+		await expect(d.mesh.pairJoin(offer.payload, { confirmSas: () => true })).rejects.toThrow(/refused/);
+		expect(veto2.mesh.devices().map((x) => x.deviceId)).toEqual(["hostV"]);
+		for (const x of [a, b, c, d, veto2]) x.mesh.destroy();
 	});
 
 	it("admission ladder: members cannot admit, the owner admits admins, an admin admits members; roles are verified", async () => {

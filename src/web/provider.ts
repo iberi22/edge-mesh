@@ -62,6 +62,12 @@ export interface MeshOptions {
 	 * for every incoming rotation. Default: built-in roles (owner > admin > member; nobody revokes the owner).
 	 */
 	canRotate?: (issuer: string, target: string) => boolean | Promise<boolean>;
+	/**
+	 * Sign every data frame with the device identity key and require valid signatures from ADMITTED devices
+	 * (default true). Per-sender subkeys alone do not authenticate the sender: every member can derive them.
+	 * `false` restores the legacy unsigned wire; it must then be off on every device of the mesh.
+	 */
+	signFrames?: boolean;
 	/** Largest message handed to a link; bigger ones are fragmented (H5). Default 64 KiB. */
 	maxFrameBytes?: number;
 	/** Largest reassembled message accepted from a peer. Default 64 MiB. */
@@ -108,8 +114,9 @@ export interface Mesh {
 	on(event: MeshEvent, cb: (data: any) => void): () => void;
 }
 
-const F_DATA = 1;
+const F_DATA = 1; // legacy unsigned data frame (only with signFrames:false)
 const F_PAIR = 2;
+const F_SDATA = 3; // signed data frame: plaintext = kind | sigLen(u16) | sig | body
 const K_SV = 0;
 const K_UPDATE = 1;
 const K_AWARENESS = 2;
@@ -139,7 +146,17 @@ interface LinkRec {
 	closing?: boolean;
 	/** link on a retired epoch room: only used to hand pairwise wraps to peers that missed the rotation */
 	legacy?: Legacy;
+	/** signed frames from a sender whose admission has not reached us yet (bounded; replayed on trust changes) */
+	held?: { frames: Uint8Array[]; bytes: number; since: number };
 }
+
+const HOLD_MAX_FRAMES = 64;
+const HOLD_MAX_BYTES = 8 * 1024 * 1024;
+const HOLD_MS = 30_000;
+
+/** What a device signs for a data frame: bound to the room (mesh key + epoch), the sender and the kind. */
+const frameSigBytes = (rid: string, sender: string, kind: number, body: Uint8Array) =>
+	concat(utf8(`swal-frame/v1|${rid}|${sender}|`), new Uint8Array([kind]), body);
 
 interface Legacy {
 	epoch: number;
@@ -191,6 +208,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 	let pairRids = new Set<string>();
 
 	const maxFrame = opts.maxFrameBytes ?? DEFAULT_MAX_FRAME;
+	const signFrames = opts.signFrames !== false;
 	const peerIds = () => [...new Set([...links].filter((l) => l.deviceId && l.rid !== "pair" && !l.legacy && !l.closing).map((l) => l.deviceId!))];
 	const setStatus = () => {
 		const s: MeshStatus = !running ? "off" : peerIds().length > 0 ? "online" : "connecting";
@@ -294,6 +312,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		// verify (and remember) each member's ECDH key now, so a later overwrite in meta cannot replace it
 		for (const id of next.keys()) await peerEcdhPub(id);
 		emit("devices", devices());
+		replayHeld();
 	}
 	meta.observe(() => void refreshTrust());
 
@@ -395,15 +414,31 @@ export function createMesh(opts: MeshOptions): Mesh {
 	// ---- framing ----
 	// Every sender seals under its OWN subkey (HKDF over the sender's deviceId); receivers derive it
 	// from the deviceId in the frame header (also bound in the AAD). Wire: F_DATA | idLen | id | nonce | ct+tag.
+	// With signFrames (default) the plaintext also carries the sender's identity signature over
+	// (rid, sender, kind, body): F_SDATA | idLen | id | nonce | AES-GCM(kind | sigLen | sig | body).
+	const signCache = new WeakMap<Uint8Array, { rid: string; kind: number; sig: Promise<Uint8Array> }>();
+	function signFor(rid: string, kind: number, body: Uint8Array): Promise<Uint8Array> {
+		const c = signCache.get(body); // a broadcast signs once for all links
+		if (c && c.rid === rid && c.kind === kind) return c.sig;
+		const sig = vault.sign(frameSigBytes(rid, vault.deviceId, kind, body));
+		signCache.set(body, { rid, kind, sig });
+		return sig;
+	}
 	async function sendFrame(rec: LinkRec, kind: number, body: Uint8Array) {
 		const lg = rec.legacy;
 		const mat = lg ? lg.material : docMat;
 		if (!mat || rec.closing) return;
+		const rid = lg ? lg.rid : dataRid;
 		const key = await senderKey(mat, lg ? lg.epoch : epoch, vault.deviceId);
 		const id = utf8(vault.deviceId);
-		const sealed = await sealUpdate(key, concat(new Uint8Array([kind]), body), `${lg ? lg.rid : dataRid}|${vault.deviceId}`);
+		let inner: Uint8Array;
+		if (signFrames) {
+			const sig = await signFor(rid, kind, body);
+			inner = concat(new Uint8Array([kind, sig.length >> 8, sig.length & 0xff]), sig, body);
+		} else inner = concat(new Uint8Array([kind]), body);
+		const sealed = await sealUpdate(key, inner, `${rid}|${vault.deviceId}`);
 		if (rec.closing) return;
-		await sendBytes(rec.link, concat(new Uint8Array([F_DATA, id.length]), id, sealed), () => !rec.closing);
+		await sendBytes(rec.link, concat(new Uint8Array([signFrames ? F_SDATA : F_DATA, id.length]), id, sealed), () => !rec.closing);
 	}
 	const established = () =>
 		[...links].filter(
@@ -433,27 +468,66 @@ export function createMesh(opts: MeshOptions): Mesh {
 		return f;
 	}
 
+	const reject = (reason: string, from?: string) => emit("rejected", { reason, from });
+	function hold(rec: LinkRec, data: Uint8Array) {
+		const h = (rec.held ??= { frames: [], bytes: 0, since: now() });
+		h.frames.push(data);
+		h.bytes += data.length;
+		while (h.frames.length > HOLD_MAX_FRAMES || h.bytes > HOLD_MAX_BYTES) h.bytes -= h.frames.shift()!.length;
+	}
+	/** Re-run held frames once the trust state changed (a pending admission may have arrived). */
+	function replayHeld() {
+		for (const rec of links) {
+			const h = rec.held;
+			if (!h || rec.closing) continue;
+			rec.held = undefined;
+			if (now() - h.since > HOLD_MS) continue;
+			for (const f of h.frames) rec.chain = rec.chain.then(() => onData(rec, f)).catch(err);
+		}
+	}
+
 	async function onData(rec: LinkRec, data: Uint8Array) {
 		const lg = rec.legacy;
 		const mat = lg ? lg.material : docMat;
 		if (!mat || !running || rec.closing) return;
+		const signed = data[0] === F_SDATA;
+		if (!signed && signFrames) return reject("unsigned frame");
 		const idLen = data[1];
 		const sender = fromUtf8(data.subarray(2, 2 + idLen));
 		if (isRevoked(sender)) return;
+		if (rec.deviceId && rec.deviceId !== sender) return reject("frame sender does not match the link", sender);
+		const rid = lg ? lg.rid : dataRid;
 		let plain: Uint8Array;
 		try {
 			const key = await senderKey(mat, lg ? lg.epoch : epoch, sender);
-			plain = await openUpdate(key, data.subarray(2 + idLen), `${lg ? lg.rid : dataRid}|${sender}`);
+			plain = await openUpdate(key, data.subarray(2 + idLen), `${rid}|${sender}`);
 		} catch {
 			return; // wrong key / tampered / other epoch: drop silently
 		}
 		if (rec.closing) return;
+		const kind = plain[0];
+		let body = plain.subarray(1);
+		if (signed) {
+			const sigLen = plain.length >= 3 ? (plain[1] << 8) | plain[2] : -1;
+			if (sigLen < 0 || plain.length < 3 + sigLen) return reject("malformed signed frame", sender);
+			const sig = plain.subarray(3, 3 + sigLen);
+			body = plain.subarray(3 + sigLen);
+			const pub = trusted.get(sender)?.pub;
+			if (!pub) {
+				if (!lg) hold(rec, data); // its admission may still be on its way through another peer
+				return;
+			}
+			let ok = false;
+			try {
+				ok = await vault.verify(b64uDecode(pub), frameSigBytes(rid, sender, kind, body), sig);
+			} catch {}
+			if (!ok) return reject("bad frame signature", sender);
+			if (rec.closing) return;
+		}
 		if (!rec.deviceId) {
 			rec.deviceId = sender;
 			setStatus();
 		}
-		const kind = plain[0];
-		const body = plain.subarray(1);
 		if (lg) {
 			// retired room: the only thing we do is hand THIS peer its own pairwise wrap for the next epoch
 			if (kind === K_SV) {
@@ -520,7 +594,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		links.add(rec);
 		const reasm = new Reassembler({ maxMessageBytes: opts.maxMessageBytes });
 		const dispatch = (d: Uint8Array) =>
-			d[0] === F_PAIR ? onPairFrame({ ...rec, rid: rid === "" ? ([...pairRids][0] ?? "") : rid }, d) : d[0] === F_DATA ? onData(rec, d) : undefined;
+			d[0] === F_PAIR ? onPairFrame({ ...rec, rid: rid === "" ? ([...pairRids][0] ?? "") : rid }, d) : d[0] === F_DATA || d[0] === F_SDATA ? onData(rec, d) : undefined;
 		link.onMessage((d) => {
 			if (rec.closing) return;
 			rec.chain = rec.chain
@@ -533,6 +607,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		});
 		link.onClose(() => {
 			reasm.clear();
+			rec.held = undefined;
 			links.delete(rec);
 			setStatus();
 		});
@@ -767,6 +842,9 @@ export function createMesh(opts: MeshOptions): Mesh {
 				});
 				const dev: Device = { ...guest, addedAt: adm.at, role: guestRole, admittedBy: vault.deviceId };
 				const extra = o.extra ? await o.extra(dev) : undefined;
+				if (opts.authorizeDevice && !(await opts.authorizeDevice(guest.deviceId, b64uDecode(guest.pub)))) {
+					throw new Error("device not authorized by the mesh policy");
+				}
 				revokedIds.delete(guest.deviceId); // explicit re-admission (its new admission post-dates the revocation)
 				await persistRevoked();
 				admCache[guest.deviceId] = adm;
