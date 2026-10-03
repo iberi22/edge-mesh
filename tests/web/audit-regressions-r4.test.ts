@@ -85,7 +85,7 @@ describe("audit round 4 regressions", () => {
 		for (const d of all) d.mesh.destroy();
 	}, 120_000);
 
-	it.fails("R4-B2: a member offline while 17 requests were published adopts the owner's rotation that executes them all", async () => {
+	it("R4-B2: a member offline while 17 requests were published adopts the owner's rotation that executes them all", async () => {
 		const { g, a, x, ms } = await mesh(["b", "straggler"]);
 		const [b, s] = ms as [Dev, Dev];
 		// 17 old tablets, admitted then put away (offline)

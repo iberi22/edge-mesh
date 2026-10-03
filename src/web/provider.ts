@@ -223,6 +223,8 @@ const LOCALCUTS_KEY = "localcuts";
  * owner, or cut by an adopted owner rotation) are kept for good as compact tombstones (`executed`), never evicted.
  */
 const MAX_PENDING_PER_ISSUER = 64;
+/** Revocation records a rotation carries and a receiver reads (R4-B2: the same bound on both ends). */
+const REVS_CARRIED = 16;
 /** Full records of executed revocations kept to carry/republish; the fact itself lives on in the tombstones. */
 const MAX_SETTLED_RECORDS = 256;
 /** local store: executed revocations, deviceId -> [[epoch, record hash ("" if cut by a rotation alone)]] */
@@ -1206,14 +1208,19 @@ export function createMesh(opts: MeshOptions): Mesh {
 		}
 		return ok;
 	}
-	/** Every device a rotation cuts off has a valid signed revocation of an epoch <= the rotation's (or the hook says so). */
+	/**
+	 * R4-B2: the owner decides who a rotation cuts off. Only owner devices re-key and every rotation carries the owner's
+	 * ML-DSA-65 signature over its id (record + wraps, checked before this), so its cut list is authoritative: a receiver
+	 * never needs to have seen the revocation records behind it (an offline member may never get them: the retired room
+	 * does not sync the doc). Records a rotation carries (`revs`, at most REVS_CARRIED) are only learned. A custom
+	 * `canRotate` hook still vets every target.
+	 */
 	async function rotationAuthorized(r: RotRecord): Promise<boolean> {
-		if (r.from !== root?.deviceId) return false;
+		if (r.from !== root?.deviceId || r.revoked.includes(root.deviceId)) return false;
 		if (opts.canRotate) {
 			for (const t of r.revoked) if (!(await opts.canRotate(r.from, t))) return false;
-			return true;
 		}
-		return r.revoked.every((t) => t !== root?.deviceId && (revokedIds.get(t) ?? []).some((e) => e <= r.epoch));
+		return true;
 	}
 
 	async function handleRotate(body: Uint8Array) {
@@ -1231,7 +1238,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 			return;
 		}
 		let added = false;
-		for (const r of rot.revs.slice(0, 16)) added = (await addRecord(r)) || added;
+		for (const r of rot.revs.slice(0, REVS_CARRIED)) added = (await addRecord(r)) || added;
 		if (added && (await recomputeRevoked())) await applyRevoked();
 		const me = vault.deviceId;
 		// finding 5: a wrap map is used (relayed) only if it is exactly the set the owner committed to
@@ -1686,8 +1693,13 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const newEpoch = epoch + 1;
 		if (newEpoch > MAX_EPOCH) throw new Error("epoch limit reached: re-create the mesh");
 		const newKey = randomBytes(32);
+		// R4-B2: carry what receivers read (REVS_CARRIED): one record per target, informative only (the cut list is
+		// authoritative through the owner's signature)
 		const revs: Revocation[] = [];
-		for (const t of targets) revs.push(...(revRecs.get(t) ?? []));
+		for (const t of targets) {
+			const r = (revRecs.get(t) ?? [])[0];
+			if (r && revs.length < REVS_CARRIED) revs.push(r);
+		}
 		for (const l of [...links]) if (l.deviceId && isRevoked(l.deviceId)) closeRec(l);
 		const priv = (await ecdhIdentity()).privateKey;
 		const pubs = new Map<string, { pub: Uint8Array; kem: Uint8Array }>();
@@ -1854,7 +1866,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 					admissions: [adm, ...chainOf(vault.deviceId)],
 					// receivers only read the first 16 revocations of a rotation (handleRotate); with ML-DSA-65 each is ~4.6 KB,
 					// so a rotation that cut many devices at once would otherwise push the grant past PAIR_MAX
-					...(curRot ? { rot: { ...curRot, revs: curRot.revs.slice(0, 16) } } : {}),
+					...(curRot ? { rot: { ...curRot, revs: curRot.revs.slice(0, REVS_CARRIED) } } : {}),
 					...(extra !== undefined ? { extra } : {}),
 				};
 			},

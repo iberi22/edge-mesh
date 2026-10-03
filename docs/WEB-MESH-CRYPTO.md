@@ -170,9 +170,12 @@ The new mesh key is never sent under the old shared key (the revoked device know
 
 0. Only the owner (anyone but itself) or an admin (members only) may revoke (`canRotate`); nobody revokes the
    owner. **Only owner devices (devices holding the mesh root) re-key the mesh** (round 3): a rotation from any other
-   issuer is rejected before anything in it is processed (`rejected: "rotation not from the owner"`). A received
-   owner rotation is accepted only if every device it cuts off has a **valid signed revocation** (see 7). With a
-   custom `canRotate` hook, the hook decides who may revoke, and which targets an owner rotation may cut off.
+   issuer is rejected before anything in it is processed (`rejected: "rotation not from the owner"`). Since the
+   owner signs every rotation (ML-DSA-65 over its id), **its cut list is authoritative** (round 4, R4-B2): a receiver
+   accepts it without having seen the revocation records behind it. A member that was offline while the requests were
+   published may never get them (the retired room does not sync the doc), and used to stay on the old key forever.
+   A rotation carries at most 16 records (`revs`, one per target, informative only) and receivers read the same 16.
+   With a custom `canRotate` hook, the hook decides who may revoke, and which targets an owner rotation may cut off.
 1. Each device has a static P-256 ECDH key (`VaultClient.getEcdhIdentity()`) and a static ML-KEM-768 key pair
    (`VaultClient.getKemIdentity()`), both persistent; in-memory fallbacks exist but then a reloaded device cannot
    unwrap older wraps. The public keys are published in meta as `ecdh/<deviceId> = {pub, kem, sig}`, signed
@@ -211,7 +214,7 @@ The new mesh key is never sent under the old shared key (the revoked device know
    first, at most 8), so a lagging peer catches up and two partitions that rotated on their own while apart (and only
    meet in the room of their last common key) converge. Only rotations that verify on the serving device are offered
    (SF3): the record's id is its hash, its epoch is within the peer's skip window and not past ours, its issuer is the
-   root, and every device it cuts off is validly revoked. Fake `rotrec:` entries written into the shared doc by a member are never served.
+   root, and the owner's signature verifies. Fake `rotrec:` entries written into the shared doc by a member are never served.
    Rotation frames also carry every recipient's wrap (each opens only for its addressee), so a device that adopted a
    rotation relays it once per link to connected recipients the issuer has no link to (partial topologies, healed
    partitions).
@@ -229,6 +232,13 @@ The new mesh key is never sent under the old shared key (the revoked device know
    genuine record. Verified records are republished into the shared doc. A device keeps the (void) admission of a
    revoked device so what it signed before stays verifiable. A
    reload or a device paired later keeps rejecting the revoked device even if an insider replays its old admission.
+   **Executed revocations are permanent** (round 4, R4-B1): a revocation signed by the owner, or a device cut by an
+   adopted owner rotation, becomes a compact tombstone (device id, epoch, record hash) in the local store
+   (`revexecuted`). Tombstones always count and are never evicted, and the device's pinned key-agreement keys are
+   dropped, so nothing is wrapped for it again. Pending requests are bounded per issuer (64; beyond that the issuer's
+   newest are set aside and retried once the owner executes some), so an admin flooding requests cannot crowd out
+   another issuer's records or un-revoke anyone. Before the first rotation only devices that were ever admitted count
+   as exposed, so made-up ids in requests do not enlarge a rotation.
 
 ### Owner-only re-keying (round 3)
 
