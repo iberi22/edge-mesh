@@ -108,6 +108,24 @@ export async function makeDev(
 	return { doc, mesh, vault, id: vault.deviceId };
 }
 
+/**
+ * R4-N7: true once `cond` holds without interruption for `hold` ms, within `deadline` ms. Convergence checks use it
+ * instead of "first agreement, then a fixed pause": with ML-DSA a slow device can trigger one more legitimate re-key
+ * right after a first agreement.
+ */
+export const stable = async (cond: () => boolean, deadline = 30_000, hold = 1000): Promise<boolean> => {
+	const end = Date.now() + deadline;
+	let since: number | null = null;
+	while (Date.now() < end) {
+		if (cond()) {
+			since ??= Date.now();
+			if (Date.now() - since >= hold) return true;
+		} else since = null;
+		await new Promise((r) => setTimeout(r, 20));
+	}
+	return false;
+};
+
 export const until = async (cond: () => boolean, ms = 3000) => {
 	const t = Date.now();
 	while (!cond()) {

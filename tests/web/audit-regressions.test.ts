@@ -37,6 +37,7 @@ import {
 	metaOf,
 	pair,
 	pairDirect,
+	stable,
 	trio,
 	until,
 } from "./helpers.js";
@@ -535,12 +536,15 @@ describe("audit regressions: web/provider", () => {
 		await Promise.all([x1.mesh.revoke(m1.id), x2.mesh.revoke(m2.id)]);
 		const rest = [a, x1, x2, c];
 		const key = (d: Dev) => b64uEncode(d.vault.meshKey!);
-		await until(
+		// both requests executed (possibly by two re-keys), and everybody on the owner's key for a while (R4-N7)
+		const converged = await stable(
 			() =>
+				!a.mesh.rekeyPending &&
 				rest.every((d) => key(d) === key(a) && d.mesh.epoch === a.mesh.epoch),
-			8000,
+			20_000,
+			500,
 		);
-		await settle(500);
+		expect(converged).toBe(true);
 		expect(new Set(rest.map(key)).size).toBe(1);
 		expect(key(m1)).not.toBe(key(a));
 		expect(key(m2)).not.toBe(key(a));
@@ -556,7 +560,7 @@ describe("audit regressions: web/provider", () => {
 		await x1.mesh.channel("t").send(new Uint8Array([1]));
 		await until(() => got.includes(x1.id));
 		for (const d of all) d.mesh.destroy();
-	}, 20_000);
+	}, 45_000);
 
 	/** Owner + two admins + members, everyone connected and every ECDH key known everywhere. */
 	async function adminMesh(

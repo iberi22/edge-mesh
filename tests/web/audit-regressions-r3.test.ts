@@ -30,6 +30,7 @@ import {
 	makeVault,
 	metaOf,
 	pair,
+	stable,
 	until,
 } from "./helpers.js";
 
@@ -312,9 +313,7 @@ describe("audit round 3 regressions: owner-only re-keying", () => {
 					) && out.every((d) => keyOf(d) !== keyOf(owner))
 				);
 			};
-			await until(ok, 15_000);
-			await settle(800);
-			expect(ok()).toBe(true);
+			expect(await stable(ok, 30_000, 800)).toBe(true);
 			expect(owner.mesh.devices().some((d) => d.deviceId === x3.id)).toBe(
 				false,
 			);
