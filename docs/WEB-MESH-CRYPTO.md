@@ -150,8 +150,10 @@ The new mesh key is never sent under the old shared key (the revoked device know
    closes later), and each connected recipient gets only its own wrap (`K_ROTATE = {rot, to, wrap}`), sealed under
    the current key **and** the most recent retired keys (4), so peers still on the previous key, or on a concurrent
    branch, can open it. Receivers try those retired keys too, but only for `K_ROTATE` frames.
-4. Record and wraps are stored in meta under the NEW key: `rotrec:<rotId>` and `rot:<rotId>:<deviceId>`, plus
-   `old:<rid> = {e, k}` (retired key). The revoked device has no wrap and cannot read the new meta.
+4. Record and wraps are stored in meta under the NEW key: `rotrec:<rotId>` and `rot:<rotId>:<deviceId>`. The revoked
+   device has no wrap and cannot read the new meta. Each device keeps the keys IT retired in its local store (the
+   16 most recent) and rejoins those rooms after a restart; retired keys are never taken from the shared doc (SF5),
+   so a member cannot make devices join arbitrary rooms.
 5. Peers offline during the revoke: remaining devices keep the retired rooms joined in "legacy" mode. As soon as a
    link in a retired room authenticates, each side offers the other the stored rotations it is a recipient of (best
    first, at most 8), so a lagging peer catches up and two partitions that rotated on their own while apart (and only
@@ -239,7 +241,7 @@ for every finding: `tests/web/audit-regressions.test.ts` and `tests/web/audit-re
   a doc snapshot and does carry the current rotation record; pairing messages are capped at 256 KiB.
 - Trust records: `swal-adm/v2` (adds `epoch`; `at` is display-only), `swal-rev/v2` (no `at`), stored as
   `rev/<id>:<epoch>`; local store key `revoked/v2` (epoch lists). Older records are ignored.
-- Rotation: record + `rotId`, wraps `swal-rotate/v3`, meta `rotrec:<rotId>`, `rot:<rotId>:<id>`, `old:<rid> = {e, k}`;
+- Rotation: record + `rotId`, wraps `swal-rotate/v3`, meta `rotrec:<rotId>`, `rot:<rotId>:<id>` (retired keys in the local store);
   `wrapMeshKey(priv, toPub, rotId, from, to, key)` / `unwrapMeshKey(priv, fromPub, rotId, from, to, wrap)`.
 - Frames: `swal-frame/v2` with sender session + sequence, and the `K_HELLO`/`K_AUTH` link handshake.
 - `meta.epoch` is gone (the epoch is device-local).

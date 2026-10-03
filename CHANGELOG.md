@@ -93,6 +93,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   device (id = hash of the record, epoch window, authorized issuer not void, targets validly revoked).
 - **SF4 expired held handshakes left dead links**: unauthenticated links re-send their `K_HELLO` on every trust change,
   and a repeated `K_HELLO` is answered and returned (capped at 8 per link).
+- **SF5 unverified `old:` entries made devices join unbounded rooms**: retired keys are only those a device retired
+  itself, kept in its local store (16 most recent); `old:` entries in the shared doc are no longer written or read.
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,
@@ -115,7 +117,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 - `wrapMeshKey(priv, toPub, rotId, from, to, key)` / `unwrapMeshKey(priv, fromPub, rotId, from, to, wrap)` (v3);
-  meta layout of stored wraps is `rotrec:<rotId>` + `rot:<rotId>:<deviceId>` and `old:<rid> = {e, k}`.
+  meta layout of stored wraps is `rotrec:<rotId>` + `rot:<rotId>:<deviceId>` (no `old:` entries: retired keys stay in
+  the local store).
 - Pairing QR payload v3 (adds the root); `createPairOffer` takes `root`; transcript `swal-pair-transcript/v3`.
 - Pairing grant: no `snapshot` (the guest receives the doc through the normal sync right after pairing).
   `Reassembler`: `setLimits()` and a `shared` byte budget.

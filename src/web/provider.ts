@@ -183,7 +183,9 @@ const REVOKED_KEY = "revoked/v2"; // local store: deviceId -> revocation epochs 
 const ECDH_PREFIX = "ecdh/"; // ecdh/<deviceId> = { pub, sig } (sig by the device identity key)
 const ROTREC_PREFIX = "rotrec:"; // rotrec:<rotId> = RotRecord (public part of a rotation, same for every recipient)
 const ROT_PREFIX = "rot:"; // rot:<rotId>:<deviceId> = that rotation's new key, wrapped pairwise for deviceId
-const OLD_PREFIX = "old:"; // old:<rid> = { e: epoch, k: retired mesh key (b64u) }; meta travels under the CURRENT key
+/** SF5: retired keys this device itself held, kept in its LOCAL store (never read from the shared doc) */
+const RETIRED_KEY = "retired";
+const MAX_RETIRED = 16;
 /** Retired keys tried on (and used to seal) rotation frames, so devices on another branch/epoch still get them. */
 const RETIRED_TRY = 4;
 const MAX_CANDIDATES = 16;
@@ -995,7 +997,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		for (const [id, x] of cands) if (id === c.rec.id || x.rec.epoch < epoch) cands.delete(id);
 		if (opts.canRotate) for (const t of c.rec.revoked) forget(t, c.rec.epoch); // hook mode: the rotation is the record
 		for (const l of [...links]) if (l.deviceId && isRevoked(l.deviceId)) closeRec(l);
-		meta.set(OLD_PREFIX + oldRid, { e: oldEpoch, k: b64uEncode(oldKey) });
+		await rememberRetired(oldEpoch, oldKey, oldRid);
 		void refreshTrust();
 		for (const t of c.rec.revoked) emit("revoked", { deviceId: t, epoch });
 	}
@@ -1229,17 +1231,30 @@ export function createMesh(opts: MeshOptions): Mesh {
 		for (const l of links) if (l.rid === oldRid && !l.legacy) l.rid = dataRid;
 		legacy.set(oldRid, old);
 		legacy.delete(dataRid);
+		// SF5: a bounded number of retired rooms (the oldest are left)
+		while (legacy.size > MAX_RETIRED) {
+			const oldest = [...legacy.values()].sort((x, y) => x.epoch - y.epoch)[0] as Legacy;
+			legacy.delete(oldest.rid);
+			leaveRoom(oldest.rid);
+		}
 		await joinRoom(dataRid, sigKey!);
 		return { oldEpoch: old.epoch, oldKey, oldRid };
 	}
 
+	/** SF5: persist a key this device retired, so a restart keeps serving stragglers from that room. */
+	async function rememberRetired(e: number, key: Uint8Array, rid: string) {
+		const list = ((await store.get(RETIRED_KEY)) as Array<{ e: number; k: string; rid: string }> | undefined) ?? [];
+		const next = [...list.filter((x) => x.rid !== rid), { e, k: b64uEncode(key), rid }].slice(-MAX_RETIRED);
+		await store.set(RETIRED_KEY, next);
+	}
+
+	/** SF5: rejoin the rooms of keys this device retired (from its local store; the shared doc is never trusted). */
 	async function syncLegacy() {
 		if (!running) return;
-		for (const k of [...meta.keys()]) {
-			if (!k.startsWith(OLD_PREFIX)) continue;
-			const v = meta.get(k) as { e?: unknown; k?: unknown } | undefined;
+		const list = ((await store.get(RETIRED_KEY)) as Array<{ e?: unknown; k?: unknown }> | undefined) ?? [];
+		for (const v of list.slice(-MAX_RETIRED)) {
 			const e = v?.e;
-			if (typeof e !== "number" || !Number.isSafeInteger(e) || e < 0 || e > epoch || typeof v?.k !== "string") continue;
+			if (!isEpoch(e) || e > epoch || typeof v?.k !== "string") continue;
 			let raw: Uint8Array;
 			try {
 				raw = b64uDecode(v.k);
@@ -1253,9 +1268,6 @@ export function createMesh(opts: MeshOptions): Mesh {
 			await joinRoom(rid, await importAesKey(await hkdf(raw, `swal-signal/v1|${topicName}`)));
 		}
 	}
-	meta.observe((ev) => {
-		if ([...ev.keysChanged].some((k) => k.startsWith(OLD_PREFIX))) void syncLegacy().catch(err);
-	});
 
 	/** Cut `deviceId` off locally from epoch `ep` on (B6: the revocation epoch, no clock). */
 	function forget(deviceId: string, ep: number) {
@@ -1538,6 +1550,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 				admittedAt = new Map();
 				selfAdm = null;
 				legacy.clear();
+				await store.set(RETIRED_KEY, []);
 				await store.set("ecdh", ecdhOk);
 				await persistRevoked();
 			}

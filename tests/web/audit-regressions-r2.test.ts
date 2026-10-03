@@ -433,44 +433,69 @@ describe("audit round 2 regressions: web/provider", () => {
 			for (const x of [a, b, c, d2]) x.mesh.destroy();
 		}, 20_000);
 
-	open(
-		"SF5: old:<x> entries written by a member do not make devices join rooms",
-		async () => {
-			const hub = createLoopbackHub();
-			const joins: string[] = [];
-			const inner = hub.transport();
-			const counting: LinkTransport = {
-				...inner,
-				join: (rid, id) => {
-					joins.push(rid);
-					return inner.join(rid, id);
-				},
-				leave: (r) => inner.leave(r),
-				onLink: (cb) => inner.onLink(cb),
-				close: () => inner.close(),
-			};
-			const a = await makeDev("devA", hub, undefined, {
-				signaling: [counting],
-			});
-			const b = await makeDev("devB", hub);
-			await pair(a, b);
-			await until(() => a.mesh.peers.includes(b.id));
-			const before = joins.length;
-			b.doc.transact(() => {
-				for (let i = 0; i < 300; i++)
-					metaOf(b).set(`old:junk${i}`, {
-						e: 0,
-						k: b64uEncode(randomBytes(32)),
-					});
-			});
-			await until(() => metaOf(a).has("old:junk299"));
-			await settle(500);
-			expect(joins.length - before).toBeLessThan(5);
-			a.mesh.destroy();
-			b.mesh.destroy();
-		},
-		20_000,
-	);
+	it("SF5: old:<x> entries written by a member do not make devices join rooms", async () => {
+		const hub = createLoopbackHub();
+		const joins: string[] = [];
+		const inner = hub.transport();
+		const counting: LinkTransport = {
+			...inner,
+			join: (rid, id) => {
+				joins.push(rid);
+				return inner.join(rid, id);
+			},
+			leave: (r) => inner.leave(r),
+			onLink: (cb) => inner.onLink(cb),
+			close: () => inner.close(),
+		};
+		const a = await makeDev("devA", hub, undefined, {
+			signaling: [counting],
+		});
+		const b = await makeDev("devB", hub);
+		await pair(a, b);
+		await until(() => a.mesh.peers.includes(b.id));
+		const before = joins.length;
+		b.doc.transact(() => {
+			for (let i = 0; i < 300; i++)
+				metaOf(b).set(`old:junk${i}`, {
+					e: 0,
+					k: b64uEncode(randomBytes(32)),
+				});
+		});
+		await until(() => metaOf(a).has("old:junk299"));
+		await settle(500);
+		expect(joins.length - before).toBeLessThan(5);
+		a.mesh.destroy();
+		b.mesh.destroy();
+	}, 20_000);
+
+	it("SF5: a restarted device still serves stragglers from its retired rooms (kept in its local store)", async () => {
+		const hub = createLoopbackHub();
+		const a = await makeDev("devA", hub);
+		const b = await makeDev("devB", hub);
+		const c = await makeDev("devC", hub);
+		await pair(a, b);
+		await pair(a, c);
+		const all = [a, b, c];
+		await until(
+			() =>
+				all.every((x) => all.every((y) => metaOf(x).has(`ecdh/${y.id}`))) &&
+				all.every((x) => x.mesh.devices().length === 3),
+			5000,
+		);
+		b.mesh.destroy(); // B offline
+		await a.mesh.revoke(c.id);
+		a.mesh.destroy();
+		const a2 = await makeDev("devA", hub, undefined, {
+			doc: a.doc,
+			vault: a.vault,
+		}); // restart: rejoins its retired room
+		const b2 = await makeDev("devB", hub, undefined, {
+			doc: b.doc,
+			vault: b.vault,
+		});
+		await until(() => b2.mesh.epoch === 1 && keyOf(b2) === keyOf(a2), 5000);
+		for (const x of [a2, b2, c]) x.mesh.destroy();
+	}, 20_000);
 
 	for (const target of [1000, 2 ** 32, Number.MAX_SAFE_INTEGER])
 		it(`SF1: an admin jumping the epoch to ${target} does not brick the mesh`, async () => {
