@@ -108,6 +108,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   host at an older epoch is refused; the signed QR bytes are a canonical JSON array; the local epoch is known before
   the network starts.
 
+### Security audit round 3 (2026-10-03; regression tests in `tests/web/audit-regressions-r3.test.ts`,
+`audit-fuzz-r3.test.ts` and `audit-regressions-oplog.test.ts`)
+- **Owner-only re-keying (redesign)**: only owner devices (holding the mesh root) rotate the mesh key; rotations from
+  any other issuer are rejected outright. An admin's `revoke()` publishes a signed revocation request and cuts the
+  device off locally; the next owner device online re-keys without every verified revoked device
+  (`mesh.rekeyPending`, `revoked` event with `pending: true`). The revoked set is recomputed from every known
+  revocation record in epoch order, so stale requests of an admin revoked earlier drop out (B2). The evidence path is
+  gone. The owner also re-keys to cover members a rotation left out.
+- **B1 negative-cache poisoning**: records that can never count are remembered by the hash of the whole record,
+  never by signature alone.
+
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,
   `maxFrameBytes`, `maxMessageBytes`. `VaultClient.store` (optional).
@@ -134,6 +145,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pairing QR payload v3 (adds the root); `createPairOffer` takes `root`; transcript `swal-pair-transcript/v3`.
 - Pairing grant: no `snapshot` (the guest receives the doc through the normal sync right after pairing).
   `Reassembler`: `setLimits()` and a `shared` byte budget.
+- Only owner devices re-key; `Mesh.rekeyPending`; `RotRecord.revoked` may be empty (coverage follow-up); local store
+  keys `revrecords` / `localcuts` replace `revoked/v2`.
 - `web/oplog`: new pending reason `anchor`; `OpLog.headIds()`. `web/trust`: `Revocation.lastId` / `upToIds`,
   `TrustStore.anchorsOf(fp)`.
 - `web/trust`: `Revocation.upTo` is keyed by grant id (was device fp); `prepareRevocation` fills it that way.

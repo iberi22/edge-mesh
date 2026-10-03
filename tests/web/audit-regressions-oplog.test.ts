@@ -481,6 +481,35 @@ describe("audit regressions: web/trust + web/oplog", () => {
 		expect(res.some((r) => r.reason === "broken-chain")).toBe(false);
 		expect(res.some((r) => r.reason === "pending-overflow")).toBe(true);
 	});
+
+	for (const n of [600, 1100])
+		it.fails(`finding 6: a fork of ${n} ops by the revoked author, delivered first, does not keep the real history out`, async () => {
+			const w = await world();
+			const tA = await w.trust();
+			await tA.addMany(w.docs);
+			const author = await w.log(w.waiter, tA);
+			const real = [];
+			for (let i = 0; i < n; i++) real.push(await author.append(op(`o${i}`)));
+			const rev = await w.revoke(
+				w.root,
+				tA.prepareRevocation(w.g.waiter.id, await author.headIds()),
+			);
+			const evil = await w.log(w.waiter, tA); // the revoked waiter keeps its key and writes another history
+			const fork = [];
+			for (let i = 0; i < n; i++) fork.push(await evil.append(op(`junk${i}`)));
+			const tX = await w.trust();
+			await tX.addMany(w.docs);
+			await tX.add(rev);
+			const x = await w.log(undefined, tX);
+			await x.ingestMany(fork.map((s) => s.op));
+			await x.ingestMany(real.map((s) => s.op));
+			expect(
+				real.filter((_, i) => x.isAccepted(w.waiter.fp, i + 1)).length,
+			).toBe(n);
+			expect(x.pending().filter((p) => p.author === w.waiter.fp).length).toBe(
+				0,
+			);
+		}, 120_000);
 });
 
 const until = async (cond: () => boolean, ms = 2000) => {

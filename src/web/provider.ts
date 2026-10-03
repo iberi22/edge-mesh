@@ -17,6 +17,7 @@ import {
 	signAdmission,
 	signRevocation,
 	verifyChain,
+	revocationBytes,
 	verifyRevocation,
 } from "./admission.js";
 import { deriveDocMaterial, deriveSenderKey, hkdf, importAesKey, openUpdate, sealUpdate } from "./crypto.js";
@@ -44,7 +45,7 @@ import {
 import { derivePairRoomId, deriveRoomId, fingerprint, meshNamespace } from "./rooms.js";
 import { type MeshStore, idbStore, memoryStore } from "./store.js";
 import type { Device, PeerLink, RtcOptions, SigTransport, VaultClient } from "./types.js";
-import { b64uDecode, b64uEncode, concat, equalBytes, fromUtf8, randomBytes, utf8 } from "./util.js";
+import { b64uDecode, b64uEncode, bs, concat, equalBytes, fromUtf8, randomBytes, utf8 } from "./util.js";
 import { connectViaSignaling } from "./webrtc.js";
 
 export type MeshStatus = "off" | "connecting" | "online";
@@ -159,7 +160,14 @@ export interface Mesh {
 	devices(): Device[];
 	/** Verified role of a device (default: this one), or null if it is not admitted. */
 	role(deviceId?: string): Role | null;
+	/**
+	 * Revoke a device: its writes and links are cut at once. Only owner devices re-key the mesh; after an admin's
+	 * revocation `rekeyPending` stays true until an owner device is online and has re-keyed (UI: "pendiente de que el
+	 * dueño se conecte"): until then the revoked device still holds the current mesh key.
+	 */
 	revoke(deviceId: string): Promise<void>;
+	/** A known revocation has not been followed by an owner re-key yet (the revoked device may still read new data). */
+	readonly rekeyPending: boolean;
 	leave(): void;
 	destroy(): void;
 	on(event: MeshEvent, cb: (data: any) => void): () => void;
@@ -187,7 +195,11 @@ const DEV = "dev/"; // dev/<deviceId> = Device (informative only: trust comes fr
 const ADM_PREFIX = "adm/"; // adm/<deviceId> = Admission signed by an owner/admin, verified against the local root pin
 const REV_PREFIX = "rev/"; // rev/<deviceId>:<epoch> = Revocation signed by the revoker (H4: replicated + persisted locally)
 const revKey = (r: { target: string; epoch: number }) => `${REV_PREFIX}${r.target}:${r.epoch}`;
-const REVOKED_KEY = "revoked/v2"; // local store: deviceId -> revocation epochs (v1 held wall-clock times)
+/** local store: every signed revocation record kept (the revoked set is recomputed from them) */
+const REVRECORDS_KEY = "revrecords";
+/** local store: cuts not backed by a built-in-valid record (custom `canRotate` hook) */
+const LOCALCUTS_KEY = "localcuts";
+const MAX_REV_RECORDS = 512;
 const ECDH_PREFIX = "ecdh/"; // ecdh/<deviceId> = { pub, sig } (sig by the device identity key)
 const ROTREC_PREFIX = "rotrec:"; // rotrec:<rotId> = RotRecord (public part of a rotation, same for every recipient)
 const ROT_PREFIX = "rot:"; // rot:<rotId>:<deviceId> = that rotation's new key, wrapped pairwise for deviceId
@@ -305,8 +317,13 @@ export function createMesh(opts: MeshOptions): Mesh {
 	// per-sender AES-GCM keys, cached PER KEY MATERIAL (never by epoch number: two meshes, or two concurrent
 	// rotations, can share an epoch number). Reset by loadKeys (B3).
 	let senderKeys = new WeakMap<Uint8Array, Map<string, Promise<CryptoKey>>>();
-	// deviceId -> epochs of its valid revocations (B6: epochs, never clocks; persisted in the local store)
+	// deviceId -> epochs of its valid revocations (B6: epochs, never clocks). DERIVED: recomputed from every known
+	// revocation record (`revStore`) in epoch order, so a record that is no longer valid drops out (round 3, B2)
 	const revokedIds = new Map<string, number[]>();
+	// every signed revocation record seen (shared doc, owner rotations, own), keyed by the hash of the whole record
+	const revStore = new Map<string, Revocation>();
+	// local cuts that are not backed by a record valid under the built-in ladder (custom `canRotate` hook)
+	const localCuts = new Map<string, number[]>();
 	const store: MeshStore =
 		opts.store ??
 		vault.store ??
@@ -377,8 +394,25 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const tr = target === root?.deviceId ? "owner" : (roleOf(target) ?? "member");
 		return ir !== null && canRevokeRole(ir, tr);
 	};
+	// signature checks of trust records (admissions, revocations) are memoized: they are re-evaluated often
+	const sigMemo = new Map<string, Promise<boolean>>();
+	const memoVault: VaultClient = {
+		...vault,
+		deviceId: vault.deviceId,
+		devicePublicKey: vault.devicePublicKey,
+		verify: (pub, data, sig) => {
+			const k = `${b64uEncode(pub)}|${b64uEncode(sig)}|${fromUtf8(data)}`;
+			let p = sigMemo.get(k);
+			if (!p) {
+				if (sigMemo.size >= 8192) sigMemo.clear();
+				p = vault.verify(pub, data, sig).catch(() => false);
+				sigMemo.set(k, p);
+			}
+			return p;
+		},
+	};
 	const chainCtx = (r: TrustRoot): ChainContext => ({
-		vault,
+		vault: memoVault,
 		root: r,
 		epoch,
 		candidates: (id: string) => {
@@ -392,13 +426,88 @@ export function createMesh(opts: MeshOptions): Mesh {
 	});
 	let trustChain: Promise<void> = Promise.resolve();
 	const refreshTrust = () => (trustChain = trustChain.then(computeTrust).catch(err));
-	const persistRevoked = async () => store.set(REVOKED_KEY, Object.fromEntries(revokedIds));
-	/** Record a valid revocation of `id` effective from epoch `ep`. Returns true if it is new. */
-	function addRevocation(id: string, ep: number): boolean {
-		const list = revokedIds.get(id) ?? [];
-		if (list.includes(ep)) return false;
-		revokedIds.set(id, [...list, ep].sort((x, y) => x - y).slice(-64));
+	const persistRevoked = async () => {
+		await store.set(REVRECORDS_KEY, [...revStore.values()]);
+		await store.set(LOCALCUTS_KEY, Object.fromEntries(localCuts));
+	};
+	const recHash = async (r: Revocation) =>
+		b64uEncode(new Uint8Array(await crypto.subtle.digest("SHA-256", bs(utf8(JSON.stringify([r.v, r.mid, r.target, r.by, r.epoch, r.sig]))))));
+	/** Records that can never count (malformed for this mesh, or a bad signature by a known issuer), by RECORD hash (B1). */
+	const badRevs = new Set<string>();
+	/**
+	 * Keep a signed revocation record if its issuer is the root or a verified admission and the signature verifies.
+	 * Whether it COUNTS is decided by recomputeRevoked (issuer valid as of the epoch before, role ladder).
+	 */
+	async function addRecord(x: unknown): Promise<boolean> {
+		if (!root || !isRevocation(x)) return false;
+		const r: Revocation = { v: x.v, mid: x.mid, target: x.target, by: x.by, epoch: x.epoch, sig: x.sig };
+		const h = await recHash(r);
+		if (revStore.has(h) || badRevs.has(h)) return false;
+		const bad = () => {
+			if (badRevs.size >= 4096) badRevs.clear();
+			badRevs.add(h);
+			return false;
+		};
+		if (r.mid !== root.mid || r.target === root.deviceId || r.by === r.target || !isDeviceId(r.target)) return bad();
+		const pub = r.by === root.deviceId ? root.pub : admCache[r.by]?.pub;
+		if (!pub) return false; // issuer not known (yet): not cached, the record comes back with the doc
+		const { sig, ...body } = r;
+		let ok = false;
+		try {
+			ok = await memoVault.verify(b64uDecode(pub), revocationBytes(body), b64uDecode(sig));
+		} catch {}
+		if (!ok) return bad();
+		revStore.set(h, r);
+		if (revStore.size > MAX_REV_RECORDS) {
+			const oldest = [...revStore.entries()].sort((a, b) => a[1].epoch - b[1].epoch)[0] as [string, Revocation];
+			revStore.delete(oldest[0]);
+		}
+		// note V2: republish what we verified, so devices that never saw where it came from learn it too
+		if (!meta.has(revKey(r))) meta.set(revKey(r), r);
 		return true;
+	}
+	/**
+	 * B2: the revoked set is a pure function of the known records. Records are evaluated in epoch order: one of epoch R
+	 * counts if its issuer was valid as of R - 1 given the records of earlier epochs (and the ladder allowed it). So a
+	 * revocation signed by an admin that was itself revoked before, learned only later, drops out again.
+	 */
+	async function recomputeRevoked(): Promise<boolean> {
+		if (!root) return false;
+		const acc = new Map<string, number[]>();
+		const add = (id: string, ep: number) => {
+			const l = acc.get(id) ?? [];
+			if (!l.includes(ep)) acc.set(id, [...l, ep].sort((x, y) => x - y).slice(-64));
+		};
+		for (const [id, eps] of localCuts) for (const e of eps) add(id, e);
+		const ctx: ChainContext = { ...chainCtx(root), revokedAt: (id) => acc.get(id) };
+		const recs = [...revStore.values()].sort((x, y) => x.epoch - y.epoch);
+		const nextRecs = new Map<string, Revocation[]>();
+		for (let i = 0; i < recs.length; ) {
+			const ep = (recs[i] as Revocation).epoch;
+			const group: Revocation[] = [];
+			while (i < recs.length && (recs[i] as Revocation).epoch === ep) group.push(recs[i++] as Revocation);
+			const memo = new Map<string, Promise<Admission | null>>();
+			const ok: Revocation[] = [];
+			for (const r of group) if (await verifyRevocation(ctx, r, memo)) ok.push(r);
+			for (const r of ok) {
+				add(r.target, r.epoch);
+				nextRecs.set(r.target, [...(nextRecs.get(r.target) ?? []), r].slice(-4));
+			}
+		}
+		revRecs.clear();
+		for (const [k, v] of nextRecs) revRecs.set(k, v);
+		const same =
+			acc.size === revokedIds.size && [...acc].every(([k, v]) => JSON.stringify(v) === JSON.stringify(revokedIds.get(k)));
+		if (same) return false;
+		revokedIds.clear();
+		for (const [k, v] of acc) revokedIds.set(k, v);
+		return true;
+	}
+	/** After the revoked set changed: cut links, persist, and (owner) re-key. */
+	async function applyRevoked() {
+		await persistRevoked();
+		for (const l of [...links]) if (l.deviceId && isRevoked(l.deviceId)) closeRec(l);
+		void serialRot(ownerRekey).catch(err);
 	}
 	/** A device is cut off if revoked and not re-admitted afterwards (an admission issued at or after the revocation epoch). */
 	const isRevoked = (id: string) => {
@@ -407,23 +516,14 @@ export function createMesh(opts: MeshOptions): Mesh {
 		return !(trusted.has(id) && (admittedAt.get(id) ?? -1) >= revs[revs.length - 1]);
 	};
 	async function computeTrust() {
-		// 1) signed revocations replicated in the doc (only valid ones count; the local map only ever grows)
+		// 1) signed revocation records replicated in the doc; the revoked set is recomputed from all known records
 		if (root) {
-			const rctx = chainCtx(root);
-			let changed = false;
 			for (const k of meta.keys()) {
 				if (!k.startsWith(REV_PREFIX)) continue;
 				const r = meta.get(k) as Revocation;
-				if (!isRevocation(r) || k !== revKey(r) || revokedIds.get(r.target)?.includes(r.epoch)) continue;
-				if (!(await verifyRevocation(rctx, r))) continue;
-				keepRevRecord(r);
-				changed = addRevocation(r.target, r.epoch) || changed;
+				if (isRevocation(r) && k === revKey(r)) await addRecord(r);
 			}
-			if (changed) {
-				await persistRevoked();
-				for (const l of [...links]) if (l.deviceId && isRevoked(l.deviceId)) closeRec(l);
-				void serialRot(coverCheck).catch(err); // a revoked device may hold the current key: re-key (B4)
-			}
+			if (await recomputeRevoked()) await applyRevoked();
 		}
 		const ids = new Set<string>(Object.keys(admCache));
 		for (const k of meta.keys()) {
@@ -479,11 +579,13 @@ export function createMesh(opts: MeshOptions): Mesh {
 		}
 		const r = (await store.get("root")) as TrustRoot | undefined;
 		if (r && typeof r.deviceId === "string" && typeof r.pub === "string" && typeof r.mid === "string") root = r;
-		const rv = (await store.get(REVOKED_KEY)) as Record<string, unknown> | undefined;
-		for (const [id, eps] of Object.entries(rv ?? {})) {
-			if (Array.isArray(eps)) for (const e of eps) if (Number.isSafeInteger(e) && e >= 1) addRevocation(id, e);
-		}
 		admCache = ((await store.get("adm")) as Record<string, Admission> | undefined) ?? {};
+		const recs = (await store.get(REVRECORDS_KEY)) as unknown[] | undefined;
+		for (const r of Array.isArray(recs) ? recs : []) if (isRevocation(r)) revStore.set(await recHash(r), r);
+		const lc = (await store.get(LOCALCUTS_KEY)) as Record<string, unknown> | undefined;
+		for (const [id, eps] of Object.entries(lc ?? {})) {
+			if (Array.isArray(eps)) localCuts.set(id, eps.filter((e) => isEpoch(e) && e >= 1) as number[]);
+		}
 		const cr = (await store.get("rot")) as Rot | undefined;
 		if (isRotRecord(cr) && typeof cr.id === "string" && cr.id === (await rotationId(cr))) curRot = cr;
 		ecdhOk = ((await store.get("ecdh")) as Record<string, string> | undefined) ?? {};
@@ -791,13 +893,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 			const sig = plain.subarray(15, 15 + sigLen);
 			body = plain.subarray(15 + sigLen);
 			sess = b64uEncode(sessBytes);
-			if (revoked) {
-				// a revoked device is never listened to... except, on a LIVE link, for the revocations its rotation carries
-				// that it signed concurrently with its own revocation (B4 union). Never through a retired room (SF2): a
-				// revoked device keeps the old key and could otherwise back-date revocations of everybody.
-				if (kind === K_ROTATE && !lg) await serialRot(() => rotationEvidence(body, sender));
-				return;
-			}
+			if (revoked) return; // a revoked device is never listened to (its revocation requests travel as doc records)
 			const pub = trusted.get(sender)?.pub;
 			if (!pub) return;
 			let ok = false;
@@ -944,65 +1040,17 @@ export function createMesh(opts: MeshOptions): Mesh {
 			return null;
 		}
 	}
-	function keepRevRecord(r: Revocation) {
-		const list = revRecs.get(r.target) ?? [];
-		if (!list.some((x) => x.sig === r.sig)) revRecs.set(r.target, [...list, r].slice(-4));
-	}
-	/** Verify and record the signed revocations a rotation carries. They count whatever happens to its key. */
-	const badRevs = new Set<string>(); // SF2/R1b: signatures of records that did not verify (never checked twice)
-	async function ingestRevs(revs: readonly unknown[], max = 16): Promise<boolean> {
-		if (!root) return false;
-		let changed = false;
-		for (const r of revs.slice(0, max)) {
-			if (!isRevocation(r) || revokedIds.get(r.target)?.includes(r.epoch) || badRevs.has(r.sig)) continue;
-			if (!(await verifyRevocation(chainCtx(root), r))) {
-				if (badRevs.size >= 4096) badRevs.clear();
-				badRevs.add(r.sig);
-				continue;
-			}
-			keepRevRecord(r);
-			// note V2: republish what we verified, so devices that never saw the rotation carrying it learn it too
-			if (!meta.has(revKey(r))) meta.set(revKey(r), r);
-			changed = addRevocation(r.target, r.epoch) || changed;
-		}
-		if (changed) {
-			await persistRevoked();
-			for (const l of [...links]) if (l.deviceId && isRevoked(l.deviceId)) closeRec(l);
-			void refreshTrust();
-		}
-		return changed;
-	}
-	const evidenceSeen = new Map<string, number>(); // SF2: evidence frames accepted per revoked sender
-	/**
-	 * A rotation from a device we already consider revoked: only the revocations IT signed at the epoch of its own
-	 * revocation, of devices that rotation cuts off, are taken into account (what it may have done concurrently).
-	 */
-	async function rotationEvidence(body: Uint8Array, sender: string) {
-		const m = parseRotate(body);
-		if (!m || m.rot.from !== sender) return;
-		const n = evidenceSeen.get(sender) ?? 0;
-		if (n >= 4) return; // a handful per revoked device is all a concurrent rotation needs
-		evidenceSeen.set(sender, n + 1);
-		const own = revokedIds.get(sender) ?? [];
-		const revs = m.rot.revs.filter(
-			(r) => isRevocation(r) && r.by === sender && own.includes(r.epoch) && m.rot.revoked.includes(r.target),
-		);
-		if (await ingestRevs(revs, 8)) await coverCheck();
-	}
-	/** Its issuer was revoked at an epoch <= the rotation's: the rotation is void (its key must not be used). */
+	/** Its issuer is not the owner, or was revoked at an epoch <= the rotation's: the rotation is void. */
 	function rotIssuerRevoked(r: { from: string; epoch: number }): boolean {
-		if (r.from === root?.deviceId || r.from === vault.deviceId) return false;
-		const since = trusted.has(r.from) ? (admittedAt.get(r.from) ?? -1) : -1;
-		return (revokedIds.get(r.from) ?? []).some((e) => e > since && e <= r.epoch);
+		return r.from !== root?.deviceId;
 	}
-	/** Default: issued by the owner or an admin, and every target has a valid signed revocation (epoch <= rotation). */
+	/** Every device a rotation cuts off has a valid signed revocation of an epoch <= the rotation's (or the hook says so). */
 	async function rotationAuthorized(r: RotRecord): Promise<boolean> {
+		if (r.from !== root?.deviceId) return false;
 		if (opts.canRotate) {
 			for (const t of r.revoked) if (!(await opts.canRotate(r.from, t))) return false;
 			return true;
 		}
-		const role = r.from === root?.deviceId ? "owner" : trusted.get(r.from)?.role;
-		if (role !== "owner" && role !== "admin") return false;
 		return r.revoked.every((t) => t !== root?.deviceId && (revokedIds.get(t) ?? []).some((e) => e <= r.epoch));
 	}
 
@@ -1010,18 +1058,25 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const m = parseRotate(body);
 		if (!m) return;
 		const rot = m.rot;
-		await ingestRevs(rot.revs);
+		// round 3: only the owner (the mesh root) re-keys. Anything else is rejected before any of it is processed.
+		if (!root || rot.from !== root.deviceId) {
+			emit("rejected", { reason: "rotation not from the owner", from: rot.from, epoch: rot.epoch });
+			return;
+		}
+		let added = false;
+		for (const r of rot.revs.slice(0, 16)) added = (await addRecord(r)) || added;
+		if (added && (await recomputeRevoked())) await applyRevoked();
 		const me = vault.deviceId;
 		const id = await rotationId(rot);
-		if (m.to !== me || rot.from === me || rot.revoked.includes(me) || !rot.to.includes(me)) return coverCheck();
-		if (curRot?.id === id || cands.has(id) || rot.epoch < epoch || rotIssuerRevoked(rot)) return coverCheck();
+		if (m.to !== me || rot.from === me || rot.revoked.includes(me) || !rot.to.includes(me)) return;
+		if (curRot?.id === id || cands.has(id) || rot.epoch < epoch) return;
 		if (rot.epoch > epoch + MAX_EPOCH_SKIP) {
-			// SF1: an admin cannot push everybody to an epoch near an integer edge (or strand them far ahead)
+			// SF1: nobody is pushed to an epoch near an integer edge (or stranded far ahead)
 			emit("rejected", { reason: "rotation epoch too far ahead", from: rot.from, epoch: rot.epoch });
 			return;
 		}
 		const fromPub = await peerEcdhPub(rot.from);
-		if (!fromPub) return coverCheck();
+		if (!fromPub) return;
 		const info = { from: rot.from, revoked: rot.revoked, epoch: rot.epoch };
 		let newKey: Uint8Array;
 		try {
@@ -1040,7 +1095,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 	}
 	/** Relayed (rotation, peer) pairs: each adopted rotation is passed on at most once per peer. */
 	const relayed = new Set<string>();
-	/** Hand an adopted rotation to connected recipients (the issuer may have no link to them). */
+	/** Hand an adopted rotation to connected recipients (the owner may have no link to them). */
 	function relayRotation(rot: Rot, wraps: Record<string, string>) {
 		for (const l of [...links]) {
 			const p = l.deviceId;
@@ -1055,53 +1110,72 @@ export function createMesh(opts: MeshOptions): Mesh {
 	}
 
 	/**
-	 * Adopt the best valid rotation we know (highest epoch, then lowest id), then make sure no revoked device holds the
-	 * resulting key. Every device applies the same rule to the same set of rotations, so all of them end up on one key.
+	 * Adopt the best valid rotation we know (highest epoch, then lowest id). Only owner-identity devices issue them, so
+	 * concurrency only exists between devices of the owner; every device applies the same rule to the same set.
 	 */
 	async function converge() {
-		// genesis/unknown, or a void current rotation (issuer revoked), loses to any valid rotation of its epoch
-		const cur = { epoch, id: curRot && !rotIssuerRevoked(curRot) ? curRot.id : "\uffff" };
+		const cur = { epoch, id: curRot ? curRot.id : "\uffff" }; // genesis/unknown loses to any rotation of its epoch
 		let best: { rec: Rot; key: Uint8Array } | null = null;
 		for (const [id, c] of cands) {
-			if (c.rec.epoch < epoch || rotIssuerRevoked(c.rec)) {
-				if (c.rec.epoch < epoch) cands.delete(id);
+			if (c.rec.epoch < epoch) {
+				cands.delete(id);
 				continue;
 			}
 			if (betterRot(c.rec, best ? best.rec : cur)) best = c;
 		}
 		if (best) await adopt(best);
 		while (cands.size > MAX_CANDIDATES) cands.delete(cands.keys().next().value as string);
-		await coverCheck();
+		await ownerRekey();
 	}
 
 	async function adopt(c: { rec: Rot; key: Uint8Array }) {
+		// (c) the rotation we leave stays a candidate (same epoch): nothing is lost if the choice has to be revisited
+		if (curRot && meshKey && curRot.epoch === c.rec.epoch && curRot.id !== c.rec.id) cands.set(curRot.id, { rec: curRot, key: meshKey });
 		const { oldEpoch, oldKey, oldRid } = await switchEpoch(c.key, c.rec.epoch);
 		curRot = c.rec;
 		await store.set("rot", curRot);
-		for (const [id, x] of cands) if (id === c.rec.id || x.rec.epoch < epoch) cands.delete(id);
-		if (opts.canRotate) for (const t of c.rec.revoked) forget(t, c.rec.epoch); // hook mode: the rotation is the record
+		cands.delete(c.rec.id);
+		for (const [id, x] of cands) if (x.rec.epoch < epoch) cands.delete(id);
+		if (opts.canRotate) {
+			// hook mode: the rotation itself is the record of who is cut off
+			for (const t of c.rec.revoked) {
+				const l = localCuts.get(t) ?? [];
+				if (!l.includes(c.rec.epoch)) localCuts.set(t, [...l, c.rec.epoch]);
+			}
+			if (await recomputeRevoked()) await persistRevoked();
+		}
 		for (const l of [...links]) if (l.deviceId && isRevoked(l.deviceId)) closeRec(l);
 		await rememberRetired(oldEpoch, oldKey, oldRid);
 		void refreshTrust();
 		for (const t of c.rec.revoked) emit("revoked", { deviceId: t, epoch });
 	}
 
-	/**
-	 * Union of concurrent revocations (B4): if the current key went to a device that is now validly revoked (it lost a
-	 * tie-break, or its revocation arrived later), or its issuer was revoked, an owner/admin re-keys at epoch + 1.
-	 */
-	async function coverCheck() {
-		if (!running || !root || !curRot) return;
+	/** Devices that may hold the current key although they are validly revoked (the owner must re-key without them). */
+	function exposedRevoked(): string[] {
 		const me = vault.deviceId;
-		const role = selfRole();
-		if (!opts.canRotate && role !== "owner" && role !== "admin") return;
-		const exposed = new Set(curRot.to.filter((t) => t !== me && isRevoked(t)));
-		if (curRot.from !== me && rotIssuerRevoked(curRot)) exposed.add(curRot.from);
-		if (opts.canRotate) for (const t of [...exposed]) if (!(await opts.canRotate(me, t))) exposed.delete(t);
-		if (exposed.size > 0) await rotate([...exposed], false);
+		return [...revokedIds.keys()].filter((t) => t !== me && isRevoked(t) && (curRot ? curRot.to.includes(t) : true));
+	}
+	/** A revocation is known here whose device the current key has not been taken away from yet (UI: pending owner). */
+	const rekeyPending = () => exposedRevoked().length > 0;
+	/**
+	 * Owner devices only: re-key at epoch + 1 without every verified revoked device that may hold the current key (a
+	 * revocation by an admin is a request the owner executes here), and (b) to include members admitted before the
+	 * current rotation that it left out (e.g. their ECDH key was not known yet).
+	 */
+	async function ownerRekey() {
+		if (!running || !root || root.deviceId !== vault.deviceId) return;
+		const exposed = exposedRevoked();
+		const missed = curRot
+			? [...trusted.keys()].filter(
+					(t) => !isRevoked(t) && !curRot?.to.includes(t) && (admittedAt.get(t) ?? Number.POSITIVE_INFINITY) < (curRot?.epoch ?? 0),
+				)
+			: [];
+		const missedWithKey: string[] = [];
+		for (const t of missed) if (await peerEcdhPub(t)) missedWithKey.push(t);
+		if (exposed.length > 0 || missedWithKey.length > 0) await rotate(exposed);
 	}
 
-	/** Wraps of stored rotations a straggler (still on the retired room of epoch `from`) is a recipient of, best first. */
+	/** Wraps of stored rotations a straggler (still on a key of epoch `from`) is a recipient of, best first. */
 	async function storedRotationsFor(deviceId: string, from: number): Promise<RotateMsg[]> {
 		const out: Array<RotateMsg & { id: string }> = [];
 		for (const k of meta.keys()) {
@@ -1113,22 +1187,11 @@ export function createMesh(opts: MeshOptions): Mesh {
 			if (!isRotRecord(rot) || rot.epoch < from || rot.epoch > from + MAX_EPOCH_SKIP || rot.epoch > epoch) continue;
 			if (typeof wrap !== "string" || !rot.to.includes(deviceId)) continue;
 			// SF3: the shared doc is writable by every member: serve only rotations that verify here
-			if (id !== (await rotationId(rot)) || !(await servableRotation(rot))) continue;
+			if (id !== (await rotationId(rot)) || !(await rotationAuthorized(rot))) continue;
 			out.push({ rot, to: deviceId, wrap, id });
 		}
 		out.sort((x, y) => (betterRot({ epoch: x.rot.epoch, id: x.id }, { epoch: y.rot.epoch, id: y.id }) ? -1 : 1));
 		return out.slice(0, 8).map(({ id: _id, ...msg }) => msg);
-	}
-	/** SF3: issued by the root or a verified admin that was not void then, cutting off validly revoked devices. */
-	async function servableRotation(r: RotRecord): Promise<boolean> {
-		if (rotIssuerRevoked(r)) return false;
-		if (opts.canRotate) {
-			for (const t of r.revoked) if (!(await opts.canRotate(r.from, t))) return false;
-			return true;
-		}
-		const role = r.from === root?.deviceId ? "owner" : r.from === vault.deviceId ? selfRole() : admCache[r.from]?.role;
-		if (role !== "owner" && role !== "admin") return false;
-		return r.revoked.every((t) => t !== root?.deviceId && (revokedIds.get(t) ?? []).some((e) => e <= r.epoch));
 	}
 
 	async function onPairFrame(rec: LinkRec, data: Uint8Array) {
@@ -1374,33 +1437,18 @@ export function createMesh(opts: MeshOptions): Mesh {
 		}
 	}
 
-	/** Cut `deviceId` off locally from epoch `ep` on (B6: the revocation epoch, no clock). */
-	function forget(deviceId: string, ep: number) {
-		addRevocation(deviceId, ep);
-		trusted.delete(deviceId);
-		admittedAt.delete(deviceId);
-		void persistRevoked().catch(err);
-	}
-
 	/**
-	 * Re-key at epoch + 1 for every admitted, non-revoked device except `targets`. `fresh`: a new revocation of the
-	 * targets (signed now); otherwise a re-rotation for devices already validly revoked that still hold the key (B4).
+	 * Owner only: re-key at epoch + 1 for every admitted, non-revoked device. `targets` are the revoked devices this
+	 * rotation takes the key away from (their signed revocations travel with it).
 	 */
-	async function rotate(targets: string[], fresh: boolean) {
+	async function rotate(targets: string[]) {
 		const me = vault.deviceId;
+		if (root?.deviceId !== me) throw new Error("only the owner re-keys the mesh");
 		const newEpoch = epoch + 1;
 		if (newEpoch > MAX_EPOCH) throw new Error("epoch limit reached: re-create the mesh");
 		const newKey = randomBytes(32);
 		const revs: Revocation[] = [];
-		for (const t of targets) {
-			if (fresh && root) {
-				const r = await signRevocation(vault, { mid: root.mid, target: t, by: me, epoch: newEpoch });
-				if (await verifyRevocation(chainCtx(root), r)) keepRevRecord(r);
-				else revs.push(r); // not valid under the built-in ladder (custom canRotate): still sent, receivers decide
-			}
-			if (fresh) forget(t, newEpoch);
-			revs.push(...(revRecs.get(t) ?? []));
-		}
+		for (const t of targets) revs.push(...(revRecs.get(t) ?? []));
 		for (const l of [...links]) if (l.deviceId && isRevoked(l.deviceId)) closeRec(l);
 		const priv = (await ecdhIdentity()).privateKey;
 		const pubs = new Map<string, Uint8Array>();
@@ -1408,7 +1456,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 			if (targets.includes(d.deviceId) || isRevoked(d.deviceId)) continue;
 			const pub = await peerEcdhPub(d.deviceId);
 			if (pub) pubs.set(d.deviceId, pub);
-			else err(new Error(`no verified ECDH key for ${d.deviceId}: it must be re-paired after the rotation`));
+			else err(new Error(`no verified ECDH key for ${d.deviceId} yet: it gets the key with a later rotation`));
 		}
 		const rec: RotRecord = {
 			v: 1,
@@ -1431,12 +1479,10 @@ export function createMesh(opts: MeshOptions): Mesh {
 		await Promise.all(sends);
 		await adopt({ rec: { ...rec, id }, key: newKey });
 		doc.transact(() => {
-			if (fresh) {
-				for (const t of targets) {
-					// its admission stays: void from now on (B6), still needed to verify what it signed before
-					meta.delete(DEV + t);
-					meta.delete(ECDH_PREFIX + t);
-				}
+			for (const t of targets) {
+				// its admission stays: void from now on (B6), still needed to verify what it signed before
+				meta.delete(DEV + t);
+				meta.delete(ECDH_PREFIX + t);
 			}
 			for (const r of revs) meta.set(revKey(r), r);
 			meta.set(ROTREC_PREFIX + id, rec);
@@ -1444,6 +1490,11 @@ export function createMesh(opts: MeshOptions): Mesh {
 		});
 	}
 
+	/**
+	 * Revoke a device. Its writes and links are cut here at once, and a signed revocation record goes into the shared
+	 * doc. On the owner the mesh is re-keyed right away; on an admin it is a REQUEST that the next owner device online
+	 * executes (until then `rekeyPending` is true: the revoked device still holds the current key).
+	 */
 	async function revoke(deviceId: string) {
 		await ready;
 		if (deviceId === vault.deviceId) throw new Error("cannot revoke the current device");
@@ -1451,10 +1502,24 @@ export function createMesh(opts: MeshOptions): Mesh {
 		if (!meta.has(DEV + deviceId) && !trusted.has(deviceId)) throw new Error("unknown device");
 		if (!(await canRotate(vault.deviceId, deviceId))) throw new Error(`not authorized to revoke ${deviceId}`);
 		if (!running) await start();
+		const r = root ? await signRevocation(vault, { mid: root.mid, target: deviceId, by: vault.deviceId, epoch: epoch + 1 }) : null;
+		if (r) {
+			await addRecord(r);
+			if (!meta.has(revKey(r))) meta.set(revKey(r), r);
+		}
+		await recomputeRevoked();
+		if (!isRevoked(deviceId)) {
+			// a custom `canRotate` allowed it although the built-in ladder does not: a local cut
+			const l = localCuts.get(deviceId) ?? [];
+			localCuts.set(deviceId, [...l, epoch + 1]);
+			await recomputeRevoked();
+		}
+		await persistRevoked();
 		// cut the revoked device off SYNCHRONOUSLY: its link must not be reachable by anything below
-		forget(deviceId, epoch + 1);
-		for (const l of [...links]) if (l.deviceId === deviceId) closeRec(l);
-		await serialRot(() => rotate([deviceId], true));
+		for (const l of [...links]) if (l.deviceId === deviceId || (l.deviceId && isRevoked(l.deviceId))) closeRec(l);
+		void refreshTrust();
+		emit("revoked", { deviceId, epoch, pending: root?.deviceId !== vault.deviceId });
+		await serialRot(ownerRekey);
 	}
 
 	// ---- pairing ----
@@ -1660,7 +1725,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 				legacy.clear();
 				revRecs.clear();
 				badRevs.clear();
-				evidenceSeen.clear();
+				revStore.clear();
+				localCuts.clear();
 				replay.clear();
 				cands.clear();
 				curRot = null;
@@ -1716,6 +1782,9 @@ export function createMesh(opts: MeshOptions): Mesh {
 		},
 		get root() {
 			return root;
+		},
+		get rekeyPending() {
+			return rekeyPending();
 		},
 		get namespace() {
 			return meshNamespace(appId, instanceId);

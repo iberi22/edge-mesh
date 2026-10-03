@@ -20,9 +20,11 @@ export async function generateEcdhIdentity(): Promise<EcdhIdentity> {
 export const ecdhSignedBytes = (deviceId: string, pubB64: string) => utf8(`swal-ecdh/v1|${deviceId}|${pubB64}`);
 
 /**
- * Public part of one key rotation, identical for every recipient (B4). `to` lists the devices that received a wrap of
- * the new key, `revoked` the devices it cuts off, `revs` the signed revocations that justify it. Two rotations for the
- * same epoch are resolved deterministically by `rotationId` (see provider: highest epoch, then lowest id, wins).
+ * Public part of one key rotation, identical for every recipient. Only the owner (the mesh root) issues rotations.
+ * `to` lists the devices that received a wrap of the new key, `revoked` the devices it cuts off (empty for a follow-up
+ * that only adds members a previous rotation missed), `revs` the signed revocations that justify it. Two rotations for
+ * the same epoch (two devices running the owner identity) are resolved deterministically by `rotationId` (see
+ * provider: highest epoch, then lowest id, wins).
  */
 export interface RotRecord {
 	v: 1;
@@ -49,7 +51,7 @@ export function isRotRecord(x: unknown): x is RotRecord {
 		r.epoch >= 1 &&
 		isDeviceId(r.from) &&
 		isIdList(r.revoked) &&
-		r.revoked.length >= 1 &&
+
 		isIdList(r.to) &&
 		typeof r.n === "string" &&
 		r.n.length <= 64 &&

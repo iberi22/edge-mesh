@@ -143,14 +143,15 @@ doc (a member writing `meta.epoch` used to strand every device that restarted).
 The new mesh key is never sent under the old shared key (the revoked device knows it).
 
 0. Only the owner (anyone but itself) or an admin (members only) may revoke (`canRotate`); nobody revokes the
-   owner. A received rotation is accepted only from the owner or an admin, and only if every device it cuts off has
-   a **valid signed revocation** (carried in the rotation itself, see 7), so a member that bypasses its own check is
-   ignored. With a custom `canRotate` hook, the hook decides instead.
+   owner. **Only owner devices (devices holding the mesh root) re-key the mesh** (round 3): a rotation from any other
+   issuer is rejected before anything in it is processed (`rejected: "rotation not from the owner"`). A received
+   owner rotation is accepted only if every device it cuts off has a **valid signed revocation** (see 7). With a
+   custom `canRotate` hook, the hook decides who may revoke, and which targets an owner rotation may cut off.
 1. Each device has a static P-256 ECDH key (`VaultClient.getEcdhIdentity()`, persistent; an in-memory
    fallback exists but then a reloaded device cannot unwrap older wraps). Its public key is published in
    meta as `ecdh/<deviceId> = {pub, sig}`, signed by the device identity key and verified against the identity
    key of its **admission** (never against the self-declared `dev/<id>`).
-2. A rotation is described by a **record** identical for every recipient:
+2. A rotation (always by the owner) is described by a **record** identical for every recipient:
    `{epoch, from, revoked[], to[] (recipients), n (16 random bytes), revs[] (signed revocations)}` and identified by
    `rotId = SHA-256(["swal-rot/v1", epoch, from, revoked, to, n])`. The revoker computes, **only for admitted,
    non-revoked devices**, `wrap = AES-GCM(HKDF(ECDH(own, peer), "swal-rotate/v3|<rotId>|<from>|<to>"), newMeshKey)`:
@@ -166,45 +167,55 @@ The new mesh key is never sent under the old shared key (the revoked device know
 5. Peers offline during the revoke: remaining devices keep the retired rooms joined in "legacy" mode. As soon as a
    link in a retired room authenticates, each side offers the other the stored rotations it is a recipient of (best
    first, at most 8), so a lagging peer catches up and two partitions that rotated on their own while apart (and only
-   meet in the room of their last common key) converge, then re-key without every revoked device. Only rotations that
-   verify on the serving device are offered (SF3): the record's id is its hash, its epoch is within the peer's skip
-   window and not past ours, its issuer is the root or a verified admin that was not void, and every device it cuts
-   off is validly revoked. Fake `rotrec:` entries written into the shared doc by a member are never served.
+   meet in the room of their last common key) converge. Only rotations that verify on the serving device are offered
+   (SF3): the record's id is its hash, its epoch is within the peer's skip window and not past ours, its issuer is the
+   root, and every device it cuts off is validly revoked. Fake `rotrec:` entries written into the shared doc by a member are never served.
    Rotation frames also carry every recipient's wrap (each opens only for its addressee), so a device that adopted a
    rotation relays it once per link to connected recipients the issuer has no link to (partial topologies, healed
    partitions).
 6. Peers adopting a rotation drop links to every revoked device and ignore its frames; `peers` never lists them.
-7. Each fresh revocation is signed (`rev/<deviceId>:<epoch>`, see below) and travels inside the rotation (`revs`) and
-   in meta. Every device verifies these records on their own, keeps a local map `deviceId -> [revocation epochs]` in
-   its store, and keeps the (void) admission of a revoked device so what it signed before stays verifiable. A
+7. Each revocation is a signed record (`rev/<deviceId>:<epoch>`, see below) published in meta (and carried by the
+   owner rotation that executes it, `revs`). Every device keeps every record it could verify (issuer = root or a
+   verified admission, valid signature) in its local store, and **recomputes** the revoked set from all of them in
+   epoch order (round 3): a record of epoch R counts if its issuer was valid as of R - 1 given the records of earlier
+   epochs. So a request signed by an admin that was itself revoked earlier drops out as soon as that revocation is
+   known, whatever the arrival order. Records that can never count (other mesh, bad signature by a known issuer) are
+   remembered by the hash of the WHOLE record (B1), so a forged copy carrying a genuine signature never blocks the
+   genuine record. Verified records are republished into the shared doc. A device keeps the (void) admission of a
+   revoked device so what it signed before stays verifiable. A
    reload or a device paired later keeps rejecting the revoked device even if an insider replays its old admission.
 
-### Concurrent revocations converge (B4)
+### Owner-only re-keying (round 3)
 
-Two owners/admins may revoke different devices at the same time, both rotating to epoch N. Without a rule, each
-device adopted whichever wrap arrived first and the mesh split into two keys (and each new key went to the device the
-other one revoked). Now:
+Earlier versions let every owner/admin rotate the mesh key; concurrent rotations across partitions needed tie-breaks,
+voids and union re-keys, and kept producing liveness bugs. Now:
 
-- **Deterministic choice.** Among the valid rotations a device knows, the one with the highest epoch wins, then the
-  lowest `rotId`. A device that adopted the loser switches to the winner when it sees it (same epoch, other key: the
-  loser's room becomes a retired room). Every device applies the same rule to the same records, so all of them end
-  up on one key. The pairing grant carries the host's current rotation record so new members take part.
-- **Void issuer.** A rotation whose issuer is revoked at an epoch <= its own is void (e.g. the owner revokes an admin
-  while that admin rotates); its key is never kept, but the signed revocations it carries still count (they are
-  verified as of the epoch before, B6).
-- **Union.** After converging, every owner/admin checks whether the current key went to a device that is now validly
-  revoked (it is in the winner's `to` but was cut off by the losing rotation) or to a void issuer; if so it rotates
-  immediately to N+1 excluding the union of all revoked devices, attaching their signed revocations. Several admins
-  may do so at once: the same rule picks one of those N+1 rotations, and since each excludes every revocation its
-  issuer knew, the process ends when no revoked device holds the key.
+- **Who re-keys.** Only owner devices (holding the mesh root) issue rotations. An admin's `revoke()` signs a
+  revocation record dated at its epoch + 1, publishes it in the shared doc and cuts the device off locally at once
+  (its links close, its frames are dropped, it is no longer listed, and the T1 trust layer cuts its writes by `seq`).
+  That record is a **request**: any owner device that sees a verified revocation whose device may still hold the
+  current key (it is in the current rotation's `to`, or no rotation happened yet) re-keys on its next opportunity
+  (immediately when online), excluding the union of every verified revoked device. The owner's own `revoke()`
+  re-keys right away.
+- **Trade-off.** After an admin revokes a device, writes are cut immediately, but read-confidentiality of NEW data
+  only starts once an owner device is online and has re-keyed: until then the revoked device still holds the current
+  mesh key (honest devices no longer talk to it, but anyone holding the key who can observe traffic could read it).
+  `mesh.rekeyPending` is true meanwhile; the UI should say "pendiente de que el dueño se conecte". The `revoked`
+  event of an admin's revoke carries `pending: true`.
+- **Coverage (b).** The owner also re-keys (a rotation with no `revoked`) when a member admitted before its current
+  rotation was left out of it (e.g. its ECDH key was not known yet); members admitted later received the key with
+  their pairing grant.
+- **Deterministic choice between owner devices.** Two devices running the owner identity may still rotate at once:
+  among the valid rotations a device knows, the highest epoch wins, then the lowest `rotId`; the rotation left
+  behind stays a candidate. The pairing grant carries the host's current rotation record so new members take part.
 - **Bounded epochs (SF1).** Epochs are integers in `[0, 2^31 - 1]` (records, admissions, local state) and a received
   rotation may be at most 8 epochs ahead of the local one; lagging devices are served stored rotations in steps of at
-  most 8. An admin can therefore neither push the mesh to an integer edge (where `K_AUTH` or `epoch + 1` break) nor
-  strand everybody far ahead.
-- Limitation: a revocation counts once it has reached a remaining device. An admin that is cut off (revoked) before
-  its own rotation leaves the device loses that revocation; the owner sees the device still listed and revokes it.
-- Trade-off (vs. an owner-only rotation leader): no single device has to be online for a revocation to take effect.
-  The cost is a short burst of extra rotations when revocations really collide.
+  most 8.
+- What is gone: the "evidence" path (revocations read out of a revoked device's rotation frames), void-issuer
+  handling and admin-issued union re-keys. A revocation travels only as a signed record in the shared doc or inside
+  an owner rotation.
+- Limitation: a revocation counts once its record has reached a device that passes it on. An admin cut off before its
+  record leaves the device loses that revocation; the owner sees the device still listed and revokes it.
 
 ### Epochs, not clocks (B6)
 

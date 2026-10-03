@@ -118,8 +118,9 @@ QR pairing confirmed with a 6-digit SAS and receive a signed admission (`member`
 the sender's device key, revocation rotates the key for admitted devices only, and large messages are fragmented.
 Hooks (`authorizeDevice`, `canRotate`, `authorizeUpdate`) and `mesh.channel(kind)` let a permissions layer plug in.
 A device's id is the fingerprint of its identity key (`fingerprint(vault.devicePublicKey)`), and a pairing guest
-proves possession of that key. Trust is tied to mesh epochs (never to clocks), concurrent revocations converge to
-one key that excludes every revoked device, and links authenticate each other before carrying data.
+proves possession of that key. Trust is tied to mesh epochs (never to clocks), only owner devices re-key the
+mesh (an admin's revocation cuts the device off at once and is executed as a re-key by the next owner device online:
+`mesh.rekeyPending`), and links authenticate each other before carrying data.
 Give the mesh a persistent device-local store (`persist: "idb"`, `store` or `vault.store`). Details and breaking
 changes: [`docs/WEB-MESH-CRYPTO.md`](docs/WEB-MESH-CRYPTO.md).
 

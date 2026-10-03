@@ -654,10 +654,12 @@ describe("audit regressions: web/provider", () => {
 			signaling: [slowFromX1(hub.transport())],
 		});
 		const [m1, c] = ms as [Dev, Dev];
+		// round 3: x1's revocation is a request (only the owner re-keys); the owner revokes x1 concurrently. x1's request
+		// was signed while x1 was still valid (as of epoch 0), so it counts: the owner re-keys without both
 		const p1 = x1.mesh.revoke(m1.id);
-		await until(() => x2.mesh.epoch === 1 && c.mesh.epoch === 1);
+		await until(() => !x2.mesh.devices().some((d) => d.deviceId === m1.id));
 		expect(a.mesh.epoch).toBe(0);
-		await a.mesh.revoke(x1.id); // concurrent: epoch 1 on both sides, x1's rotation is void (issuer revoked)
+		await a.mesh.revoke(x1.id);
 		await p1;
 		const rest = [a, x2, c];
 		// one key for the rest, without x1 nor m1 (at epoch 1 if m1's revocation reached the owner before it rotated,

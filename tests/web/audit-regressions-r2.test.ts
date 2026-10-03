@@ -186,11 +186,13 @@ describe("audit round 2 regressions: web/provider", () => {
 				(P1[1] as Dev).mesh.revoke(m2.id),
 				(P2[0] as Dev).mesh.revoke(m1.id),
 			]);
+			// round 3: only the owner re-keys. P1 (with the owner) re-keys; P2 only records x2's request (pending)
 			await until(
 				() =>
 					sameKey([P1[0] as Dev, P1[1] as Dev]) &&
-					sameKey([P2[0] as Dev, P2[2] as Dev]) &&
-					(P2[2] as Dev).mesh.epoch >= 1,
+					(P1[0] as Dev).mesh.epoch >= 1 &&
+					(P2[2] as Dev).mesh.rekeyPending &&
+					(P2[2] as Dev).mesh.epoch === 0,
 				5000,
 			);
 			for (const d of [...P1, ...P2]) d.mesh.destroy();
