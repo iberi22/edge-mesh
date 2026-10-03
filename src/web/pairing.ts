@@ -104,15 +104,42 @@ export async function verifyPairPayload(vault: VaultClient, p: PairPayload): Pro
 	return vault.verify(b64uDecode(p.dpk), signedBytes(rest), b64uDecode(sig));
 }
 
-async function session(shared: Uint8Array, pairSecret: Uint8Array, guestPub: string, hostPub: string) {
-	const key = await importAesKey(await hkdf(shared, "swal-pair-session/v1", pairSecret));
-	const sasBytes = await hkdf(shared, `swal-sas/v1|${guestPub}|${hostPub}`, pairSecret);
-	const n = new DataView(sasBytes.buffer, sasBytes.byteOffset).getUint32(0, false) % 10000;
-	return { key, sas: String(n).padStart(4, "0") };
+/**
+ * Pairing transcript hash: binds the SAS and the session key to BOTH ephemeral ECDH keys, BOTH nonces
+ * (host: pairSecret from the QR; guest: fresh `n` in its hello), the host identity key and the mesh/app/topic.
+ */
+export async function pairTranscript(p: PairPayload, guestPub: string, guestNonce: string): Promise<Uint8Array> {
+	const t = JSON.stringify([
+		"swal-pair-transcript/v2",
+		p.appId,
+		p.topic,
+		p.mid,
+		p.dpk,
+		p.hostPub,
+		guestPub,
+		p.pairSecret,
+		guestNonce,
+		p.exp,
+	]);
+	return new Uint8Array(await crypto.subtle.digest("SHA-256", bs(utf8(t))));
 }
 
+/** 6-digit Short Authentication String: HKDF(ECDH shared secret, salt = transcript hash), 40 bits mod 10^6. */
+export async function sasCode(shared: Uint8Array, transcript: Uint8Array): Promise<string> {
+	const b = await hkdf(shared, "swal-sas/v2", transcript);
+	const n = (b[0] * 2 ** 32 + new DataView(b.buffer, b.byteOffset).getUint32(1, false)) % 1_000_000;
+	return String(n).padStart(6, "0");
+}
+
+async function session(shared: Uint8Array, transcript: Uint8Array) {
+	const key = await importAesKey(await hkdf(shared, "swal-pair-session/v2", transcript));
+	return { key, sas: await sasCode(shared, transcript) };
+}
+
+const helloProof = async (secret: Uint8Array, e: string, n: string) => hmac(await pairMacKey(secret), utf8(`hello/v2|${e}|${n}`));
+
 type Msg =
-	| { t: "hello"; e: string; p: string }
+	| { t: "hello"; e: string; n: string; p: string }
 	| { t: "ready" }
 	| { t: "ack"; ct: string }
 	| { t: "grant"; ct: string }
@@ -182,20 +209,21 @@ export class HostPairing {
 		if (this.expired) return send({ t: "err", e: "expired" });
 		if (this.burned) return send({ t: "err", e: "used" });
 		const secret = this.offer.pairSecret;
-		const expect = await hmac(await pairMacKey(secret), utf8(`hello|${msg.e}`));
 		let got: Uint8Array;
 		try {
+			if (typeof msg.e !== "string" || typeof msg.n !== "string" || b64uDecode(msg.n).length !== 16) throw new Error();
 			got = b64uDecode(msg.p);
 		} catch {
 			return send({ t: "err", e: "bad proof" });
 		}
+		const expect = await helloProof(secret, msg.e, msg.n);
 		if (!equalBytes(expect, got)) return send({ t: "err", e: "bad proof" });
 		if (this.burned) return send({ t: "err", e: "used" }); // re-check: another hello may have won during the awaits above
 		this.burned = true; // single use, enforced by the host (no await between check and set)
 		this.send = send;
 		const guestPub = await crypto.subtle.importKey("raw", bs(b64uDecode(msg.e)), ECDH, false, []);
 		const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: guestPub }, this.offer.hostKeys.privateKey, 256));
-		this.sess = await session(shared, secret, msg.e, this.offer.payload.hostPub);
+		this.sess = await session(shared, await pairTranscript(this.offer.payload, msg.e, msg.n));
 		send({ t: "ready" });
 		this.hooks.onSas({
 			code: this.sess.sas,
@@ -241,6 +269,7 @@ export class HostPairing {
 export class GuestPairing {
 	private sess: { key: CryptoKey; sas: string } | null = null;
 	private ePub = "";
+	private nonce = "";
 	private proof = "";
 	private sent = new WeakSet<object>();
 	private settled = false;
@@ -271,18 +300,19 @@ export class GuestPairing {
 		const g = new GuestPairing(payload, vault, hooks);
 		const eph = (await crypto.subtle.generateKey(ECDH, false, ["deriveBits"])) as CryptoKeyPair;
 		g.ePub = b64uEncode(new Uint8Array(await crypto.subtle.exportKey("raw", eph.publicKey)));
+		g.nonce = b64uEncode(randomBytes(16));
 		const secret = b64uDecode(payload.pairSecret);
 		const hostPub = await crypto.subtle.importKey("raw", bs(b64uDecode(payload.hostPub)), ECDH, false, []);
 		const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: hostPub }, eph.privateKey, 256));
-		g.sess = await session(shared, secret, g.ePub, payload.hostPub);
-		g.proof = b64uEncode(await hmac(await pairMacKey(secret), utf8(`hello|${g.ePub}`)));
+		g.sess = await session(shared, await pairTranscript(payload, g.ePub, g.nonce));
+		g.proof = b64uEncode(await helloProof(secret, g.ePub, g.nonce));
 		return g;
 	}
 
 	/** Called for every new link in the pairing room; says hello over it. */
 	attach(send: PairSend) {
 		if (this.settled) return;
-		send({ t: "hello", e: this.ePub, p: this.proof });
+		send({ t: "hello", e: this.ePub, n: this.nonce, p: this.proof });
 		this.sent.add(send);
 	}
 

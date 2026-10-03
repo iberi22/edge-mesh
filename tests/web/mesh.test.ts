@@ -26,7 +26,7 @@ describe("mesh", () => {
 		const b = await makeDev("devB", hub);
 		a.doc.getMap("data").set("before", 1);
 		const { codes, offer } = await pair(a, b);
-		expect(codes.host).toMatch(/^\d{4}$/);
+		expect(codes.host).toMatch(/^\d{6}$/);
 		expect(codes.guest).toBe(codes.host);
 		expect(offer.payload.length).toBeLessThan(700);
 		expect(decodePairPayload(offer.payload).v).toBe(2);
