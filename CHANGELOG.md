@@ -127,6 +127,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`PeerLink.sendPriority`, never wait on `drain()`); bulk backlog per link is capped at 16 MiB beyond the message in
   progress (the link is closed, the peer resyncs on reconnect). Docs now distinguish the 1 MiB drain mark from the
   16 MiB caps.
+- **Finding 5 relayed wrap maps were unauthenticated**: the rotation id commits to the full wrap set (`wh`); wraps are
+  bound to a pre-id; maps are relayed only when they match `wh` (else from verified meta); a corrupted copy never
+  blocks a later good copy.
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,
@@ -154,6 +157,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Pairing QR payload v3 (adds the root); `createPairOffer` takes `root`; transcript `swal-pair-transcript/v3`.
 - Pairing grant: no `snapshot` (the guest receives the doc through the normal sync right after pairing).
   `Reassembler`: `setLimits()` and a `shared` byte budget.
+- Rotation ids v2 (`rotationPreId`, `wrapsHash`, `RotRecord.wh`); `wrapMeshKey`/`unwrapMeshKey` take the pre-id.
 - Only owner devices re-key; `Mesh.rekeyPending`; `RotRecord.revoked` may be empty (coverage follow-up); local store
   keys `revrecords` / `localcuts` replace `revoked/v2`.
 - `web/oplog`: new pending reason `anchor`; `OpLog.headIds()`. `web/trust`: `Revocation.lastId` / `upToIds`,

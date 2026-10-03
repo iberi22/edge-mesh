@@ -160,10 +160,14 @@ The new mesh key is never sent under the old shared key (the revoked device know
    meta as `ecdh/<deviceId> = {pub, sig}`, signed by the device identity key and verified against the identity
    key of its **admission** (never against the self-declared `dev/<id>`).
 2. A rotation (always by the owner) is described by a **record** identical for every recipient:
-   `{epoch, from, revoked[], to[] (recipients), n (16 random bytes), revs[] (signed revocations)}` and identified by
-   `rotId = SHA-256(["swal-rot/v1", epoch, from, revoked, to, n])`. The revoker computes, **only for admitted,
-   non-revoked devices**, `wrap = AES-GCM(HKDF(ECDH(own, peer), "swal-rotate/v3|<rotId>|<from>|<to>"), newMeshKey)`:
-   any change to the record (e.g. re-labelling who is revoked) makes the wrap fail.
+   `{epoch, from, revoked[], to[] (recipients), n (16 random bytes), revs[] (signed revocations), wh}`. The owner
+   computes `preId = SHA-256(["swal-rot/v2", epoch, from, revoked, to, n])` and, **only for admitted, non-revoked
+   devices**, `wrap = AES-GCM(HKDF(ECDH(own, peer), "swal-rotate/v3|<preId>|<from>|<to>"), newMeshKey)`: any change to
+   the record (e.g. re-labelling who is revoked) makes the wrap fail. `wh` = SHA-256 of the whole wrap set (sorted
+   `[deviceId, wrap]` pairs) and the rotation id is `rotId = SHA-256(["swal-rot/v2id", preId, wh])` (finding 5): a
+   wrap map travelling with a rotation is relayed only if it matches `wh`, so a relayer that corrupts other
+   recipients' wraps cannot make honest relayers pass the damage on; with no valid map at hand a device relays the
+   owner's wraps from meta once they verify, and a corrupted copy never blocks a later good one.
 3. Revoked links are removed from the link set synchronously (they cannot receive anything even if the transport
    closes later), and each connected recipient gets only its own wrap (`K_ROTATE = {rot, to, wrap}`), sealed under
    the current key **and** the most recent retired keys (4), so peers still on the previous key, or on a concurrent

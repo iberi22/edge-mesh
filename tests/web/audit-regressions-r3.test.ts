@@ -5,7 +5,11 @@ import { signRevocation } from "../../src/web/admission.js";
 import { deriveDocMaterial } from "../../src/web/crypto.js";
 import type { LinkTransport, PeerLink } from "../../src/web/index.js";
 import { createLoopbackHub, deriveRoomId } from "../../src/web/index.js";
-import { rotationId, wrapMeshKey } from "../../src/web/rotation.js";
+import {
+	rotationPreId,
+	wrapMeshKey,
+	wrapsHash,
+} from "../../src/web/rotation.js";
 import {
 	b64uDecode,
 	b64uEncode,
@@ -90,8 +94,9 @@ describe("audit round 3 regressions: owner-only re-keying", () => {
 			to,
 			n: b64uEncode(randomBytes(16)),
 			revs: [rev],
+			wh: "",
 		};
-		const id = await rotationId(rec);
+		const id = await rotationPreId(rec); // a well-formed rotation in every respect but its issuer
 		const newKey = randomBytes(32);
 		const priv = (await x1.vault.getEcdhIdentity()).privateKey;
 		const wraps: Record<string, string> = {};
@@ -104,6 +109,7 @@ describe("audit round 3 regressions: owner-only re-keying", () => {
 				t,
 				newKey,
 			);
+		rec.wh = await wrapsHash(wraps);
 		const rejected: string[] = [];
 		c.mesh.on("rejected", (e) => rejected.push(e.reason));
 		const t = hub.transport("evil");
@@ -214,6 +220,7 @@ describe("audit round 3 regressions: owner-only re-keying", () => {
 								revoked: [x.id],
 								to: [b.id],
 								n: "p",
+								wh: "",
 								revs: [bogus],
 							},
 							to: b.id,
@@ -401,154 +408,148 @@ describe("audit round 3 regressions: owner-only re-keying", () => {
 		for (const x of all) x.mesh.destroy();
 	}, 60_000);
 
-	open(
-		"finding 5: a relayer that corrupts other recipients' wraps does not keep them off the new key",
-		async () => {
-			const hub = createLoopbackHub();
-			const va = await makeVault("devA");
-			const vh = await makeVault("devH");
-			const vv = await makeVault("devV");
-			const vm = await makeVault("devM");
-			const vx = await makeVault("devX");
-			let enforce = false;
-			let instance = "";
-			let k0: Uint8Array | null = null;
-			const mref = { dev: null as Dev | null };
-			const tamper = (l: PeerLink): PeerLink => {
-				let q: Promise<void> = Promise.resolve();
-				return {
-					...l,
-					id: l.id,
-					onMessage: (cb) => l.onMessage(cb),
-					onClose: (cb) => l.onClose(cb),
-					close: () => l.close(),
-					send: (d) => {
-						const copy = d.slice();
-						q = q.then(async () => {
-							if (!enforce || !k0 || copy[0] !== 3) return l.send(copy);
-							const keys: Array<[Uint8Array, number]> = [[k0, 0]];
-							if (mref.dev?.vault.meshKey)
-								keys.push([mref.dev.vault.meshKey, mref.dev.mesh.epoch]);
-							for (const [k, ep] of keys) {
-								const rid = await deriveRoomId(k, "fize", TOPIC, ep, instance);
-								const mat = await deriveDocMaterial(k, TOPIC);
-								const f = await openFrame(mat, rid, copy);
-								if (!f) continue;
-								if (f.kind !== 3) return l.send(copy);
-								const msg = JSON.parse(fromUtf8(f.body));
-								const bad = (w: string) =>
-									w[5] === "A"
-										? `${w.slice(0, 5)}B${w.slice(6)}`
-										: `${w.slice(0, 5)}A${w.slice(6)}`;
-								if (msg.wraps?.[vv.deviceId])
-									msg.wraps[vv.deviceId] = bad(msg.wraps[vv.deviceId]);
-								if (msg.to === vv.deviceId) msg.wrap = bad(msg.wrap);
-								return l.send(
-									await craft(
-										vm,
-										mat,
-										rid,
-										3,
-										utf8(JSON.stringify(msg)),
-										f.sess,
-										f.seq,
-									),
-								);
-							}
-							l.send(copy);
-						});
-					},
-				};
+	it("finding 5: a relayer that corrupts other recipients' wraps does not keep them off the new key", async () => {
+		const hub = createLoopbackHub();
+		const va = await makeVault("devA");
+		const vh = await makeVault("devH");
+		const vv = await makeVault("devV");
+		const vm = await makeVault("devM");
+		const vx = await makeVault("devX");
+		let enforce = false;
+		let instance = "";
+		let k0: Uint8Array | null = null;
+		const mref = { dev: null as Dev | null };
+		const tamper = (l: PeerLink): PeerLink => {
+			let q: Promise<void> = Promise.resolve();
+			return {
+				...l,
+				id: l.id,
+				onMessage: (cb) => l.onMessage(cb),
+				onClose: (cb) => l.onClose(cb),
+				close: () => l.close(),
+				send: (d) => {
+					const copy = d.slice();
+					q = q.then(async () => {
+						if (!enforce || !k0 || copy[0] !== 3) return l.send(copy);
+						const keys: Array<[Uint8Array, number]> = [[k0, 0]];
+						if (mref.dev?.vault.meshKey)
+							keys.push([mref.dev.vault.meshKey, mref.dev.mesh.epoch]);
+						for (const [k, ep] of keys) {
+							const rid = await deriveRoomId(k, "fize", TOPIC, ep, instance);
+							const mat = await deriveDocMaterial(k, TOPIC);
+							const f = await openFrame(mat, rid, copy);
+							if (!f) continue;
+							if (f.kind !== 3) return l.send(copy);
+							const msg = JSON.parse(fromUtf8(f.body));
+							const bad = (w: string) =>
+								w[5] === "A"
+									? `${w.slice(0, 5)}B${w.slice(6)}`
+									: `${w.slice(0, 5)}A${w.slice(6)}`;
+							if (msg.wraps?.[vv.deviceId])
+								msg.wraps[vv.deviceId] = bad(msg.wraps[vv.deviceId]);
+							if (msg.to === vv.deviceId) msg.wrap = bad(msg.wrap);
+							return l.send(
+								await craft(
+									vm,
+									mat,
+									rid,
+									3,
+									utf8(JSON.stringify(msg)),
+									f.sess,
+									f.seq,
+								),
+							);
+						}
+						l.send(copy);
+					});
+				},
 			};
-			const partial = (
-				blocked: () => string[],
-				tw?: (l: PeerLink) => PeerLink,
-			): LinkTransport => {
-				const inner = hub.transport();
-				return {
-					...inner,
-					join: (r, i) => inner.join(r, i),
-					leave: (r) => inner.leave(r),
-					close: () => inner.close(),
-					onLink: (cb) =>
-						inner.onLink((l, rid) => {
-							if (!rid.startsWith("p_") && blocked().includes(l.id))
-								return l.close();
-							cb(tw && !rid.startsWith("p_") ? tw(l) : l, rid);
-						}),
-				};
+		};
+		const partial = (
+			blocked: () => string[],
+			tw?: (l: PeerLink) => PeerLink,
+		): LinkTransport => {
+			const inner = hub.transport();
+			return {
+				...inner,
+				join: (r, i) => inner.join(r, i),
+				leave: (r) => inner.leave(r),
+				close: () => inner.close(),
+				onLink: (cb) =>
+					inner.onLink((l, rid) => {
+						if (!rid.startsWith("p_") && blocked().includes(l.id))
+							return l.close();
+						cb(tw && !rid.startsWith("p_") ? tw(l) : l, rid);
+					}),
 			};
-			const blk = (xs: string[]) => () => (enforce ? xs : []);
-			const a = await makeDev("devA", hub, undefined, {
-				vault: va,
-				signaling: [partial(blk([vh.deviceId, vv.deviceId]))],
-			});
-			const h = await makeDev("devH", hub, undefined, {
-				vault: vh,
-				signaling: [partial(blk([va.deviceId]))],
-			});
-			const v = await makeDev("devV", hub, undefined, {
-				vault: vv,
-				signaling: [partial(blk([va.deviceId]))],
-			});
-			const md = await makeDev("devM", hub, undefined, {
-				vault: vm,
-				signaling: [partial(() => [], tamper)],
-			});
-			const x = await makeDev("devX", hub, undefined, { vault: vx });
-			for (const d of [h, v, md, x]) await pair(a, d);
-			const all = [a, h, v, md, x];
-			await until(
-				() =>
-					all.every((p) => all.every((q) => metaOf(p).has(`ecdh/${q.id}`))) &&
-					all.every((p) => p.mesh.devices().length === 5),
-				8000,
-			);
-			instance = a.mesh.namespace.split("/")[1] as string;
-			k0 = (a.vault.meshKey as Uint8Array).slice();
-			x.mesh.destroy();
-			for (const d of [a, h, v, md]) d.mesh.destroy();
-			enforce = true;
-			const a2 = await makeDev("devA", hub, undefined, {
-				doc: a.doc,
-				vault: va,
-				signaling: [partial(blk([vh.deviceId, vv.deviceId]))],
-			});
-			const h2 = await makeDev("devH", hub, undefined, {
-				doc: h.doc,
-				vault: vh,
-				signaling: [partial(blk([va.deviceId]))],
-			});
-			const v2 = await makeDev("devV", hub, undefined, {
-				doc: v.doc,
-				vault: vv,
-				signaling: [partial(blk([va.deviceId]))],
-			});
-			const m2 = await makeDev("devM", hub, undefined, {
-				doc: md.doc,
-				vault: vm,
-				signaling: [partial(() => [], tamper)],
-			});
-			mref.dev = m2;
-			await until(
-				() =>
-					a2.mesh.peers.includes(vm.deviceId) &&
-					h2.mesh.peers.includes(vm.deviceId) &&
-					v2.mesh.peers.includes(vh.deviceId),
-				5000,
-			);
-			await a2.mesh.revoke(vx.deviceId);
-			await until(
-				() =>
-					[h2, v2, m2].every(
-						(d) => d.mesh.epoch === 1 && keyOf(d) === keyOf(a2),
-					),
-				8000,
-			);
-			for (const d of [a2, h2, v2, m2]) d.mesh.destroy();
-		},
-		40_000,
-	);
+		};
+		const blk = (xs: string[]) => () => (enforce ? xs : []);
+		const a = await makeDev("devA", hub, undefined, {
+			vault: va,
+			signaling: [partial(blk([vh.deviceId, vv.deviceId]))],
+		});
+		const h = await makeDev("devH", hub, undefined, {
+			vault: vh,
+			signaling: [partial(blk([va.deviceId]))],
+		});
+		const v = await makeDev("devV", hub, undefined, {
+			vault: vv,
+			signaling: [partial(blk([va.deviceId]))],
+		});
+		const md = await makeDev("devM", hub, undefined, {
+			vault: vm,
+			signaling: [partial(() => [], tamper)],
+		});
+		const x = await makeDev("devX", hub, undefined, { vault: vx });
+		for (const d of [h, v, md, x]) await pair(a, d);
+		const all = [a, h, v, md, x];
+		await until(
+			() =>
+				all.every((p) => all.every((q) => metaOf(p).has(`ecdh/${q.id}`))) &&
+				all.every((p) => p.mesh.devices().length === 5),
+			8000,
+		);
+		instance = a.mesh.namespace.split("/")[1] as string;
+		k0 = (a.vault.meshKey as Uint8Array).slice();
+		x.mesh.destroy();
+		for (const d of [a, h, v, md]) d.mesh.destroy();
+		enforce = true;
+		const a2 = await makeDev("devA", hub, undefined, {
+			doc: a.doc,
+			vault: va,
+			signaling: [partial(blk([vh.deviceId, vv.deviceId]))],
+		});
+		const h2 = await makeDev("devH", hub, undefined, {
+			doc: h.doc,
+			vault: vh,
+			signaling: [partial(blk([va.deviceId]))],
+		});
+		const v2 = await makeDev("devV", hub, undefined, {
+			doc: v.doc,
+			vault: vv,
+			signaling: [partial(blk([va.deviceId]))],
+		});
+		const m2 = await makeDev("devM", hub, undefined, {
+			doc: md.doc,
+			vault: vm,
+			signaling: [partial(() => [], tamper)],
+		});
+		mref.dev = m2;
+		await until(
+			() =>
+				a2.mesh.peers.includes(vm.deviceId) &&
+				h2.mesh.peers.includes(vm.deviceId) &&
+				v2.mesh.peers.includes(vh.deviceId),
+			5000,
+		);
+		await a2.mesh.revoke(vx.deviceId);
+		await until(
+			() =>
+				[h2, v2, m2].every((d) => d.mesh.epoch === 1 && keyOf(d) === keyOf(a2)),
+			8000,
+		);
+		for (const d of [a2, h2, v2, m2]) d.mesh.destroy();
+	}, 40_000);
 
 	it("finding 4: a priority frame overtakes queued bulk messages at a message boundary, never inside one", () => {
 		const listeners: Record<string, Array<() => void>> = {};

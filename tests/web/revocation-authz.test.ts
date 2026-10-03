@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createLoopbackHub } from "../../src/web/index.js";
-import { rotationId, unwrapMeshKey } from "../../src/web/rotation.js";
+import { rotationPreId, unwrapMeshKey } from "../../src/web/rotation.js";
 import { b64uDecode } from "../../src/web/util.js";
 import { devLabels, makeDev, metaOf, pair, storedWraps, trio, until } from "./helpers.js";
 
@@ -81,9 +81,9 @@ describe("H2: only authorized issuers revoke / rotate", () => {
 		// ...and the wrap itself is bound to the record: under the tampered record's id it does not open
 		const bEcdh = await b.vault.getEcdhIdentity!();
 		const aPub = b64uDecode(metaOf(a).get(`ecdh/${a.id}`).pub);
-		const tamperedId = await rotationId({ ...w.rec, revoked: [d.id] });
+		const tamperedId = await rotationPreId({ ...w.rec, revoked: [d.id] });
 		await expect(unwrapMeshKey(bEcdh.privateKey, aPub, tamperedId, a.id, b.id, w.wrap)).rejects.toThrow();
-		expect((await unwrapMeshKey(bEcdh.privateKey, aPub, w.id, a.id, b.id, w.wrap)).length).toBe(32);
+		expect((await unwrapMeshKey(bEcdh.privateKey, aPub, await rotationPreId(w.rec), a.id, b.id, w.wrap)).length).toBe(32);
 		for (const x of [a, b2, c, d]) x.mesh.destroy();
 	});
 });

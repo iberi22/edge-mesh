@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createLoopbackHub, createMesh, deriveRoomId, fingerprint } from "../../src/web/index.js";
 import type { LoopbackHub, LinkTransport } from "../../src/web/index.js";
 import { __setNonceCounter, deriveDocMaterial, deriveSenderKey, openUpdate, sealUpdate } from "../../src/web/crypto.js";
-import { unwrapMeshKey } from "../../src/web/rotation.js";
+import { rotationPreId, unwrapMeshKey } from "../../src/web/rotation.js";
 import { b64uDecode, b64uEncode, randomBytes } from "../../src/web/util.js";
 import { type Dev, makeVault, pair, storedWraps, until } from "./helpers.js";
 
@@ -129,8 +129,9 @@ async function revokedCannotLearn(a: Dev, c: Dev, inbox: Uint8Array[], oldKey: U
 	expect(wraps.map((w) => w.to)).not.toContain(c.id);
 	for (const w of wraps) {
 		expect(w.rec.to).not.toContain(c.id);
-		await expect(unwrapMeshKey(cEcdh.privateKey, aPub, w.id, w.rec.from, c.id, w.wrap)).rejects.toThrow();
-		await expect(unwrapMeshKey(cEcdh.privateKey, aPub, w.id, w.rec.from, w.to, w.wrap)).rejects.toThrow();
+		const pid = await rotationPreId(w.rec);
+		await expect(unwrapMeshKey(cEcdh.privateKey, aPub, pid, w.rec.from, c.id, w.wrap)).rejects.toThrow();
+		await expect(unwrapMeshKey(cEcdh.privateKey, aPub, pid, w.rec.from, w.to, w.wrap)).rejects.toThrow();
 	}
 }
 

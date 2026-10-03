@@ -266,6 +266,7 @@ describe("audit round 2 regressions: web/provider", () => {
 					revoked: [m1.id, m2.id],
 					to: [],
 					n: "x",
+					wh: "",
 					revs,
 				},
 				to: "",
@@ -325,6 +326,7 @@ describe("audit round 2 regressions: web/provider", () => {
 					revoked: [x1.id],
 					to: [],
 					n: "x",
+					wh: "",
 					revs: bad,
 				},
 				to: "",
@@ -374,6 +376,7 @@ describe("audit round 2 regressions: web/provider", () => {
 					revoked: [m1.id],
 					to: [],
 					n: "x",
+					wh: "",
 					revs: [rev],
 				},
 				to: "",
@@ -532,6 +535,7 @@ describe("audit round 2 regressions: web/provider", () => {
 			revoked: ["B".repeat(22)],
 			to: [],
 			n: "x",
+			wh: "",
 			revs: [],
 		};
 		expect(isRotRecord({ ...base, epoch: 5 })).toBe(true);

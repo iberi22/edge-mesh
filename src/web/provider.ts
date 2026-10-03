@@ -29,6 +29,8 @@ import {
 	generateEcdhIdentity,
 	isRotRecord,
 	rotationId,
+	rotationPreId,
+	wrapsHash,
 	unwrapMeshKey,
 	wrapMeshKey,
 } from "./rotation.js";
@@ -1107,8 +1109,14 @@ export function createMesh(opts: MeshOptions): Mesh {
 		if (added && (await recomputeRevoked())) await applyRevoked();
 		const me = vault.deviceId;
 		const id = await rotationId(rot);
+		// finding 5: a wrap map is used (relayed) only if it is exactly the set the owner committed to
+		const mapOk = m.wraps !== undefined && (await wrapsHash(m.wraps)) === rot.wh;
+		if (curRot?.id === id) {
+			if (mapOk && m.wraps) relayRotation(curRot, m.wraps); // a good copy after a corrupted one still goes on
+			return;
+		}
 		if (m.to !== me || rot.from === me || rot.revoked.includes(me) || !rot.to.includes(me)) return;
-		if (curRot?.id === id || cands.has(id) || rot.epoch < epoch) return;
+		if (cands.has(id) || rot.epoch < epoch) return;
 		if (rot.epoch > epoch + MAX_EPOCH_SKIP) {
 			// SF1: nobody is pushed to an epoch near an integer edge (or stranded far ahead)
 			emit("rejected", { reason: "rotation epoch too far ahead", from: rot.from, epoch: rot.epoch });
@@ -1119,7 +1127,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const info = { from: rot.from, revoked: rot.revoked, epoch: rot.epoch };
 		let newKey: Uint8Array;
 		try {
-			newKey = await unwrapMeshKey((await ecdhIdentity()).privateKey, fromPub, id, rot.from, me, m.wrap);
+			newKey = await unwrapMeshKey((await ecdhIdentity()).privateKey, fromPub, await rotationPreId(rot), rot.from, me, m.wrap);
 		} catch {
 			emit("rejected", { reason: "rotation wrap does not authenticate", ...info });
 			return;
@@ -1130,8 +1138,27 @@ export function createMesh(opts: MeshOptions): Mesh {
 		}
 		cands.set(id, { rec: { ...rot, id }, key: newKey });
 		await converge();
-		if (curRot?.id === id && m.wraps) relayRotation(curRot, m.wraps);
+		if (curRot?.id === id) {
+			if (mapOk && m.wraps) relayRotation(curRot, m.wraps);
+			else void relayFromMeta(); // corrupted or missing map: relay once the owner's own wraps are in meta
+		}
 	}
+	/** Relay the current rotation with the wrap set stored in meta (written by the owner), if it matches `wh`. */
+	async function relayFromMeta() {
+		const cur = curRot;
+		if (!cur) return;
+		const wraps: Record<string, string> = {};
+		for (const t of cur.to) {
+			const w = meta.get(`${ROT_PREFIX}${cur.id}:${t}`);
+			if (typeof w !== "string") return;
+			wraps[t] = w;
+		}
+		if ((await wrapsHash(wraps)) === cur.wh && curRot?.id === cur.id) relayRotation(cur, wraps);
+	}
+	meta.observe((ev) => {
+		const cur = curRot;
+		if (cur && [...ev.keysChanged].some((k) => k.startsWith(`${ROT_PREFIX}${cur.id}:`))) void relayFromMeta().catch(err);
+	});
 	const offered = new Set<string>();
 	function offerRotations(rec: LinkRec, peer: string, from: number) {
 		const k = `${curRot?.id ?? epoch}|${peer}|${from}`;
@@ -1517,10 +1544,14 @@ export function createMesh(opts: MeshOptions): Mesh {
 			to: [...pubs.keys()].sort(),
 			n: b64uEncode(randomBytes(16)),
 			revs,
+			wh: "",
 		};
-		const id = await rotationId(rec);
+		// wraps are bound to the pre-id; the final id also commits to the whole wrap set (finding 5)
+		const pid = await rotationPreId(rec);
 		const wraps = new Map<string, string>();
-		for (const [to, pub] of pubs) wraps.set(to, await wrapMeshKey(priv, pub, id, me, to, newKey));
+		for (const [to, pub] of pubs) wraps.set(to, await wrapMeshKey(priv, pub, pid, me, to, newKey));
+		rec.wh = await wrapsHash(Object.fromEntries(wraps));
+		const id = await rotationId(rec);
 		// 1) hand each connected recipient ITS OWN wrap (under every recent key), 2) switch, 3) publish under the NEW key
 		const sends: Promise<void>[] = [];
 		for (const l of [...links]) {

@@ -1,7 +1,7 @@
 import * as Y from "yjs";
 import { describe, expect, it } from "vitest";
 import { createLoopbackHub, createMesh } from "../../src/web/index.js";
-import { ecdhSignedBytes, unwrapMeshKey } from "../../src/web/rotation.js";
+import { ecdhSignedBytes, rotationPreId, unwrapMeshKey } from "../../src/web/rotation.js";
 import { b64uDecode, b64uEncode } from "../../src/web/util.js";
 import { type Dev, devLabels, idOf, makeDev, makeVault, metaOf, pair, storedWraps, trio, until } from "./helpers.js";
 
@@ -57,7 +57,7 @@ describe("H1: only admitted devices are trusted (rotation wraps, ECDH keys, devi
 		await a.mesh.revoke(c.id);
 		const aPub = b64uDecode(metaOf(a).get(`ecdh/${a.id}`).pub);
 		for (const w of storedWraps(a, 1).filter((x) => x.to === b.id)) {
-			await expect(unwrapMeshKey(ecdh.privateKey, aPub, w.id, a.id, b.id, w.wrap)).rejects.toThrow();
+			await expect(unwrapMeshKey(ecdh.privateKey, aPub, await rotationPreId(w.rec), a.id, b.id, w.wrap)).rejects.toThrow();
 		}
 		// B keeps its real key pinned: it adopts the new epoch (wrap made for its REAL ECDH key)
 		await until(() => b.mesh.epoch === 1);
