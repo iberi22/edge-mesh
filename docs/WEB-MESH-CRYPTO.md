@@ -92,6 +92,10 @@ authenticated members; `onMessage(cb(data, from))` gets the authenticated sender
 
 ## Rotation on revoke: pairwise wrapping
 
+The current epoch is **device-local** state (`VaultClient.getEpoch/setEpoch`, else the mesh's local store). It is
+set by the authenticated pairing grant and advanced only by a verified rotation; nothing reads it from the shared
+doc (a member writing `meta.epoch` used to strand every device that restarted).
+
 The new mesh key is never sent under the old shared key (the revoked device knows it).
 
 0. Only the owner (anyone but itself) or an admin (members only) may revoke (`canRotate`); nobody revokes the

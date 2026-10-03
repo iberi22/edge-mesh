@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (vault self-check, `verifyChain`, `authorizeDevice` path, frame sender ids). The guest signs the pairing transcript
   with its identity key inside the ack; the host verifies it and refuses guests that claim the host/root identity or
   an id admitted under another key.
+- **B2 epoch hijack**: the epoch is never derived from the shared doc any more (no `meta.epoch`); it lives in the
+  vault / device-local store and only moves through the pairing grant or a verified rotation.
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,

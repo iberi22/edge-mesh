@@ -140,23 +140,20 @@ describe("audit regressions: web/provider", () => {
 		for (const x of [a, twin]) x.mesh.destroy();
 	});
 
-	open(
-		"P2 (B2): a member writing meta.epoch cannot strand devices that restart",
-		async () => {
-			const hub = createLoopbackHub();
-			const { a, b, c } = await trio(hub);
-			metaOf(b).set("epoch", 1000); // malicious member
-			await until(() => metaOf(c).get("epoch") === 1000);
-			c.mesh.destroy();
-			const c2 = await makeDev("devC", hub, undefined, {
-				doc: c.doc,
-				vault: c.vault,
-			});
-			await until(() => c2.mesh.peers.includes(a.id));
-			expect(c2.mesh.epoch).toBe(0);
-			for (const x of [a, b, c2]) x.mesh.destroy();
-		},
-	);
+	it("P2 (B2): a member writing meta.epoch cannot strand devices that restart", async () => {
+		const hub = createLoopbackHub();
+		const { a, b, c } = await trio(hub);
+		metaOf(b).set("epoch", 1000); // malicious member
+		await until(() => metaOf(c).get("epoch") === 1000);
+		c.mesh.destroy();
+		const c2 = await makeDev("devC", hub, undefined, {
+			doc: c.doc,
+			vault: c.vault,
+		});
+		await until(() => c2.mesh.peers.includes(a.id));
+		expect(c2.mesh.epoch).toBe(0);
+		for (const x of [a, b, c2]) x.mesh.destroy();
+	});
 
 	open(
 		"P3 (B3): re-pairing an online device into ANOTHER mesh is refused and leaks nothing",

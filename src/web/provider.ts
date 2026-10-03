@@ -429,9 +429,16 @@ export function createMesh(opts: MeshOptions): Mesh {
 		if (!key) senderKeys.set(k, (key = await deriveSenderKey(material, topicName, deviceId)));
 		return key;
 	}
+	const localNum = (x: unknown) => (typeof x === "number" && Number.isSafeInteger(x) && x >= 0 ? x : 0);
+	async function persistEpoch(n: number) {
+		await vault.setEpoch?.(n);
+		await store.set("epoch", n);
+	}
 	async function loadKeys(raw?: Uint8Array) {
 		meshKey = raw ?? (await vault.getOrCreateMeshKey());
-		epoch = Math.max(Number((await vault.getEpoch?.()) ?? 0), Number((await store.get("epoch")) ?? 0), Number(meta.get("epoch") ?? 0), epoch);
+		// B2: the epoch is device-local state (vault / local store), advanced only by a verified rotation or by the
+		// authenticated pairing grant. It is NEVER read from the shared doc, which every member can write.
+		epoch = Math.max(localNum(await vault.getEpoch?.()), localNum(await store.get("epoch")), epoch);
 		docMat = await deriveDocMaterial(meshKey, topicName);
 		sigKey = await importAesKey(await hkdf(meshKey, `swal-signal/v1|${topicName}`));
 		instanceId = opts.instance ?? (root ? await fingerprint(b64uDecode(root.pub)) : "");
@@ -801,8 +808,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const old: Legacy = { epoch, rid: oldRid, material: docMat! };
 		const oldKey = meshKey!;
 		await vault.setMeshKey(newKey);
-		await vault.setEpoch?.(newEpoch);
-		await store.set("epoch", newEpoch);
+		await persistEpoch(newEpoch);
 		epoch = newEpoch;
 		await loadKeys(newKey);
 		// links stay up across the rotation; the retired room stays joined ONLY to serve wraps to stragglers
@@ -841,10 +847,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		forget(revoked);
 		for (const l of [...links]) if (l.deviceId === revoked) closeRec(l);
 		const { oldEpoch, oldKey } = await switchEpoch(newKey, newEpoch);
-		doc.transact(() => {
-			meta.set(OLD_PREFIX + oldEpoch, b64uEncode(oldKey));
-			meta.set("epoch", newEpoch);
-		});
+		meta.set(OLD_PREFIX + oldEpoch, b64uEncode(oldKey));
 		emit("revoked", { deviceId: revoked, epoch });
 	}
 
@@ -887,7 +890,6 @@ export function createMesh(opts: MeshOptions): Mesh {
 			meta.delete(ADM_PREFIX + deviceId);
 			meta.delete(ECDH_PREFIX + deviceId);
 			if (rev) meta.set(REV_PREFIX + deviceId, rev);
-			meta.set("epoch", newEpoch);
 			meta.set(OLD_PREFIX + oldEpoch, b64uEncode(oldKey));
 			for (const [to, m] of wraps) meta.set(`${ROT_PREFIX}${newEpoch}:${to}`, { from: m.from, wrap: m.wrap, revoked: deviceId });
 		});
@@ -1057,12 +1059,12 @@ export function createMesh(opts: MeshOptions): Mesh {
 			for (const list of grantAdm.values()) for (const a of list) if (a.deviceId !== g.root.deviceId) admCache[a.deviceId] = a;
 			await store.set("adm", admCache);
 			const key = b64uDecode(g.meshKey);
+			if (!Number.isSafeInteger(g.epoch) || g.epoch < 0) throw new Error("pairing grant: bad epoch");
 			await vault.setMeshKey(key);
-			await vault.setEpoch?.(g.epoch);
+			await persistEpoch(g.epoch);
 			epoch = g.epoch;
 			Y.applyUpdate(doc, b64uDecode(g.snapshot), ORIGIN);
 			doc.transact(() => {
-				meta.set("epoch", g.epoch);
 				meta.set(ADM_PREFIX + vault.deviceId, mine);
 				meta.set(DEV + vault.deviceId, {
 					deviceId: vault.deviceId,

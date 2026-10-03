@@ -16,7 +16,10 @@ export interface VaultClient {
 	 * so a device that reloads while peers hold wraps for its old key cannot catch up: provide it in production.
 	 */
 	getEcdhIdentity?(): Promise<{ privateKey: CryptoKey; publicKey: Uint8Array }>;
-	/** Optional: persist the rotation epoch (otherwise it lives in memory + the encrypted doc). */
+	/**
+	 * Optional: persist the rotation epoch (otherwise it lives in the mesh's device-local store). The epoch is never
+	 * taken from the shared doc.
+	 */
 	getEpoch?(): Promise<number> | number;
 	setEpoch?(epoch: number): Promise<void> | void;
 	/**
