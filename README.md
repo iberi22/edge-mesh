@@ -120,6 +120,67 @@ Hooks (`authorizeDevice`, `canRotate`, `authorizeUpdate`) and `mesh.channel(kind
 Give the mesh a persistent device-local store (`persist: "idb"`, `store` or `vault.store`). Details and breaking
 changes: [`docs/WEB-MESH-CRYPTO.md`](docs/WEB-MESH-CRYPTO.md).
 
+### Browser permissions: `web/trust`, `web/oplog`, `web/merge`
+
+Browser-pure (WebCrypto only; works in browsers and workerd), app-agnostic building blocks for "every device is a node
+with its own permissions". The core never hard-codes modules or roles: each app passes a schema.
+
+| Entry point | What it does |
+| :--- | :--- |
+| `@iberi22/edge-mesh/web/trust` | Device keys (ECDSA P-256, JWK fingerprint), signed **grants** (role + per-module `ver`/`editar`/`administrar` + delegation budget + validity + optional seq cut-off + issuer chain) and **revocations** (cut by the revoker's last-seen `seq`, always cascading). `TrustStore` ingests documents from any source in any order, keeps only chains that reach the configured root, enforces delegation (depth, admins cannot mint admins, permissions ⊆ issuer's) and answers `can(deviceFp, module, level, { seq, time })` |
+| `@iberi22/edge-mesh/web/oplog` | One append-only, signed, hash-chained log per device (`seq`, `prev`, HLC). Receivers verify signature → chain (gap = pending, fork = equivocation evidence) → capability at the op's `seq`/HLC. Rejected ops go to quarantine with a reason; held ops are re-evaluated when grants/revocations arrive. Catch-up protocol (`have` version vector → `want` ranges → `ops` frames ≤ 64 KiB) and a channel adapter |
+| `@iberi22/edge-mesh/web/merge` | Deterministic projections of accepted ops: `lwwField` (per-field LWW by HLC, causal `base`, optional owner precedence, tombstones), `eventLog` (app reducer / state machine, invalid transitions become conflicts), `ledger` (signed movements summed, negative rejected/flagged/allowed) |
+
+Signatures and fingerprints use the same canonical JSON + ES256/P1363/base64url contract as Fize's
+`publicMenuSignature.ts`, so apps can share helpers. Yjs stays for presence and the device list only.
+
+Integration sketch (Fize as the example app; the module list lives in the app, not in the core):
+
+```typescript
+import { createTrustStore, generateSigner, issueGrant, issueRevocation, rolePreset } from "@iberi22/edge-mesh/web/trust";
+import { attachOpLogSync, openOpLog } from "@iberi22/edge-mesh/web/oplog";
+import { createProjector, eventLog, ledger, lwwField } from "@iberi22/edge-mesh/web/merge";
+
+const schema = {
+  modules: ["carta", "pedidos", "cocina", "caja", "inventario", "recetas", "costos", "compras",
+            "analitica", "ajustes", "personal", "publicar", "copias"],
+  roles: {
+    admin:  { permissions: { carta: "administrar", pedidos: "administrar", personal: "ver" /* … */ }, delegate: 1 },
+    mesero: { permissions: { carta: "ver", pedidos: "editar", cocina: "editar" } },
+    cocina: { permissions: { carta: "ver", pedidos: "ver", cocina: "editar", inventario: "ver", recetas: "ver" } },
+  },
+  actionLevel: (module, action) => (action.endsWith(".void") ? "administrar" : "editar"),
+  maxDepth: 2, // root (owner) -> admin -> staff
+};
+
+// Owner device: the restaurant root key signs a grant for a newly paired device (pub key from the SAS-confirmed pairing).
+const trust = await createTrustStore({ inst: "local-<fp>", root: rootPublicJwk, schema });
+const grant = await issueGrant(rootSigner, { subject: { jwk: guestJwk }, name: "Ana", ...rolePreset(schema, "mesero") },
+  { inst: trust.inst });
+await trust.add(grant); // replicate trust.docs() to every node; they re-add them on boot
+
+// Every device: its own non-extractable key signs its own log.
+const device = await generateSigner(); // keep device.keyPair in IndexedDB
+const log = await openOpLog({ trust, signer: device /*, store: idbOpStore, quarantine: idbQuarantine */ });
+attachOpLogSync(log, meshChannel); // T2: the provider's channel("oplog")
+await log.append({ module: "pedidos", action: "order.created", entity: "order", entityId: id, payload: { table: 4 } });
+
+// Projections: recompute a module on "change" (late grants, revocations or forks can retract ops).
+const projector = createProjector({ carta: lwwField({ rank }), pedidos: eventLog(orderMachine), inventario: ledger() });
+log.on("change", async ({ modules }) => {
+  for (const m of modules) render(m, projector.project(m, await log.accepted(m)));
+});
+
+// Revoking a device: cut by what this device has already seen from it (and from devices it added).
+await trust.add(await issueRevocation(rootSigner, trust.prepareRevocation(grant.id, await log.heads()), { inst: trust.inst }));
+```
+
+Transport contract expected by `attachOpLogSync` (wired to `web/provider.ts` in T2): `send(to | null, bytes)`,
+`onMessage((from, bytes) => …)` and optional `onPeer(peer => …)`. The provider should also call
+`trust.isMember(deviceFp)` to admit devices and `trust.can(fp, "personal", "administrar")` before honouring a rotation.
+Pruning/checkpoints are an interface only (`CheckpointHook`, `OpStore.prune`); an IndexedDB `OpStore` lives in the app
+for now.
+
 ---
 
 ## Feature Matrix

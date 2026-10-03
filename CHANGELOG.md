@@ -30,6 +30,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Mesh`: `root`, `role()`, `namespace`, `channel(kind)`, `pairHost({ role, extra })`; `rejected` event.
 - Exports: `Admission`, `Role`, `TrustRoot`, `verifyChain`, `canIssue`, `canRevokeRole`, `MeshStore`,
   `memoryStore`, `idbStore`, `fingerprint`, `meshNamespace`, `MeshChannel`, `PairHostOptions`, `PairJoinResult`.
+- **`web/trust`** (`@iberi22/edge-mesh/web/trust`): signed device grants (role, per-module `ver`/`editar`/`administrar`,
+  delegation budget, `notBefore`/`expiresAt`, `seqCutoff`, issuer chain) and cascading revocations cut by last-seen
+  `seq`; `TrustStore` validates chains to a configured root, enforces delegation (depth, no admin-mints-admin,
+  permissions ⊆ issuer) independently of arrival order and answers `can(device, module, level, { seq, time })`.
+  ES256 + canonical JSON compatible with Fize `publicMenuSignature.ts`.
+- **`web/oplog`** (`@iberi22/edge-mesh/web/oplog`): per-device signed, hash-chained op logs with HLC; ingest verifies
+  signature, chain, forks (equivocation evidence) and capability; quarantine with reasons, pending (unknown author,
+  gaps, future HLC), re-evaluation on trust changes, `have`/`want`/`ops` catch-up (≤ 64 KiB frames), channel adapter,
+  in-memory stores and storage/checkpoint interfaces.
+- **`web/merge`** (`@iberi22/edge-mesh/web/merge`): deterministic `lwwField`, `eventLog` and `ledger` projections.
+- Security regression suite `tests/web/trust-oplog-security.test.ts` (forged/escalated grants, unknown keys,
+  unauthorized ops, replay, forks, seq cut-off, cascade, order independence, tampering).
 
 ### Changed (breaking)
 - Web mesh wire format (signed frames, pairing hello v2, rotation wraps v2, instance-bound room ids): update every
