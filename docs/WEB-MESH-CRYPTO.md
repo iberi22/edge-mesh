@@ -149,6 +149,10 @@ drains its queue before closing.
   frames that arrive before the peer's `K_AUTH` are kept sealed and unverified (32 frames / 1 MiB) and verified once,
   when they are run after it. On an authenticated link the session and replay window are checked before the
   signature. Frames from a revoked sender are dropped before any signature check, in every room.
+- The same bounds hold across links (round 5, R5-S2): a handshake frame verified on any link is dropped unverified
+  everywhere else, one claimed identity costs at most 128 handshake checks a minute over all links, a room keeps at
+  most 32 links that have not authenticated (2 per announced peer), frames kept before a peer's `K_AUTH` share 4 MiB,
+  and in a retired room a sender is answered at most twice a minute and never challenged again.
 - Writes to the shared `meta` map cannot force repeated signature checks (round 4, R4-S2): trust passes are
   coalesced (at most one waits behind the running one), an `ecdh/` entry that failed verification is remembered by
   the hash of the whole entry and not checked again, and the caches of verified/failed signatures (trust records,

@@ -232,8 +232,7 @@ describe("audit round 5 regressions", () => {
 		for (const d of [a, b, m, s2]) d.mesh.destroy();
 	}, 120_000);
 
-	// fixed in the next commit (global caps across links)
-	it.fails("R5-S2: recorded handshake frames replayed over many links cost a bounded number of checks in total", async () => {
+	it("R5-S2: recorded handshake frames replayed over many links cost a bounded number of checks in total", async () => {
 		const g = createLoopbackHub();
 		const a = await makeDev("o", g);
 		const b = await admit(a, g, "b");

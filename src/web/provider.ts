@@ -233,6 +233,18 @@ const EARLY_MAX_FRAMES = 32;
  * HANDSHAKE_MAX challenges under up to 1 + RETIRED_TRY keys plus HANDSHAKE_MAX answers = 48). Beyond: the link closes.
  */
 const HS_VERIFY_MAX = 64;
+/**
+ * R5-S2: the same limits across links. Handshake frames already verified on ANY link are dropped unverified (a global
+ * window), one claimed identity may cost at most HS_VERIFY_PER_ID checks per minute over all links, a room holds at
+ * most MAX_UNAUTH_PER_ROOM links that have not authenticated (MAX_UNAUTH_PER_PEER per announced peer), frames kept
+ * before a peer's K_AUTH share EARLY_TOTAL bytes, and in a retired room a sender is answered at most
+ * LEGACY_ANSWERS_PER_MIN times per minute (and never challenged again: stragglers come back by themselves).
+ */
+const HS_VERIFY_PER_ID = 128;
+const MAX_UNAUTH_PER_ROOM = 32;
+const MAX_UNAUTH_PER_PEER = 2;
+const EARLY_TOTAL = 4 * 1024 * 1024;
+const LEGACY_ANSWERS_PER_MIN = 2;
 /** Replay window per sender session: seqs at most this far behind the highest one are still accepted once. */
 const REPLAY_WINDOW = 1024;
 const ORIGIN = Symbol("swal-mesh");
@@ -775,6 +787,23 @@ export function createMesh(opts: MeshOptions): Mesh {
 			rec.lostHeld = true;
 		}
 	}
+	/** R5-S2: frames that arrived before the peer's K_AUTH, kept sealed; all links share EARLY_TOTAL bytes. */
+	let earlyTotal = 0;
+	function keepEarly(rec: LinkRec, data: Uint8Array) {
+		if (!rec.early) rec.early = { frames: [], bytes: 0 };
+		const e = rec.early;
+		if (e.frames.length < EARLY_MAX_FRAMES && e.bytes + data.length <= PRE_AUTH_MAX && earlyTotal + data.length <= EARLY_TOTAL) {
+			e.frames.push(data);
+			e.bytes += data.length;
+			earlyTotal += data.length;
+		}
+	}
+	function dropEarly(rec: LinkRec) {
+		if (rec.early) earlyTotal -= rec.early.bytes;
+		rec.early = undefined;
+	}
+	/** R5-S2: handshake frames verified on any link (sender|session|seq) */
+	const hsGlobal = new Lru<string, true>(8192);
 	/** Re-run held frames once the trust state changed (a pending admission may have arrived). */
 	function replayHeld() {
 		for (const rec of links) {
@@ -856,17 +885,13 @@ export function createMesh(opts: MeshOptions): Mesh {
 			} else if (kind !== K_HELLO && kind !== K_AUTH) {
 				// the peer authenticated us first and already talks: keep a few frames (unverified, still sealed) until its
 				// K_AUTH reaches us; they are verified once, when they are run again after it
-				if (!rec.early) rec.early = { frames: [], bytes: 0 };
-				const e = rec.early;
-				if (e.frames.length < EARLY_MAX_FRAMES && e.bytes + data.length <= PRE_AUTH_MAX) {
-					e.frames.push(data);
-					e.bytes += data.length;
-				}
+				keepEarly(rec, data);
 				return;
 			} else {
-				if (rec.hsSeen?.has(hsKey)) return; // a replayed handshake frame: dropped unverified
+				// a replayed handshake frame (on this link or any other): dropped unverified
+				if (rec.hsSeen?.has(hsKey) || hsGlobal.has(hsKey)) return;
 				rec.hsChecks = (rec.hsChecks ?? 0) + 1;
-				if (rec.hsChecks > HS_VERIFY_MAX) {
+				if (rec.hsChecks > HS_VERIFY_MAX || !budget(budgets.hs, sender, 1, HS_VERIFY_PER_ID)) {
 					reject("too many handshake frames", sender);
 					return closeRec(rec);
 				}
@@ -880,6 +905,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 			if (!rec.authed) {
 				if (!rec.hsSeen) rec.hsSeen = new Set();
 				if (rec.hsSeen.size < 2 * HS_VERIFY_MAX) rec.hsSeen.add(hsKey);
+				hsGlobal.set(hsKey, true);
 			} else if (kind === K_HELLO || kind === K_AUTH) freshSeq(sender, sess, seq); // (other kinds: recorded below)
 			// S1: a link carries nothing but its handshake until the peer signed OUR fresh challenge on it
 			// the handshake may arrive under one of our recent retired keys (a key switch raced with it, or the peer is on
@@ -888,7 +914,9 @@ export function createMesh(opts: MeshOptions): Mesh {
 				if (body.length !== NONCE_BYTES || !via) return;
 				rec.common = via;
 				rec.hellosIn = (rec.hellosIn ?? 0) + 1;
-				if ((rec.answers ?? 0) < HANDSHAKE_MAX) await answerHello(rec, body, sender, via);
+				// R5-S2: in a retired room a sender is answered a couple of times per minute at most (whatever the links)
+				const mayAnswer = !rec.legacy || budget(budgets.legacyAnswer, `${rec.rid}|${sender}`, 1, LEGACY_ANSWERS_PER_MIN);
+				if ((rec.answers ?? 0) < HANDSHAKE_MAX && mayAnswer) await answerHello(rec, body, sender, via);
 				// SF4: a repeated challenge means our earlier messages may have been lost (e.g. held and expired while
 				// the peer was not yet admitted here): challenge again too
 				if (rec.hellosIn > 1 && !rec.authed) resendHello(rec);
@@ -910,18 +938,13 @@ export function createMesh(opts: MeshOptions): Mesh {
 				rec.lift?.();
 				setStatus();
 				const early = rec.early?.frames ?? [];
-				rec.early = undefined;
+				dropEarly(rec);
 				for (const f of early) rec.chain = rec.chain.then(() => onData(rec, f)).catch(err);
 				return maybeStart(rec);
 			}
 			if (!rec.authed) {
 				// the peer authenticated us first and already talks: keep a few frames until its K_AUTH reaches us
-				if (!rec.early) rec.early = { frames: [], bytes: 0 };
-				const e = rec.early;
-				if (e.frames.length < EARLY_MAX_FRAMES && e.bytes + data.length <= PRE_AUTH_MAX) {
-					e.frames.push(data);
-					e.bytes += data.length;
-				}
+				keepEarly(rec, data);
 				return;
 			}
 			if (sess !== rec.peerSess || !freshSeq(sender, sess, seq)) return; // replay / other link
@@ -1011,7 +1034,12 @@ export function createMesh(opts: MeshOptions): Mesh {
 	// are also pushed whole, under every key a peer may still hold.
 	type TrustKey = { material: Uint8Array | null; rid: string; epoch: number };
 	const linkKey = (l: LinkRec): TrustKey => l.legacy ?? { material: docMat, rid: dataRid, epoch };
-	const budgets = { serve: new Map<string, { t: number; n: number }>(), fail: new Map<string, { t: number; n: number }>() };
+	const budgets = {
+		serve: new Map<string, { t: number; n: number }>(),
+		fail: new Map<string, { t: number; n: number }>(),
+		hs: new Map<string, { t: number; n: number }>(),
+		legacyAnswer: new Map<string, { t: number; n: number }>(),
+	};
 	/** Per-peer budget over a sliding minute; false when `n` more would exceed `max`. */
 	function budget(m: Map<string, { t: number; n: number }>, peer: string, n: number, max: number): boolean {
 		const t = now();
@@ -1278,7 +1306,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 	}
 	/** SF4: same challenge again, at most HANDSHAKE_MAX times per link. */
 	function resendHello(rec: LinkRec) {
-		if (!rec.nonce || rec.authed || rec.closing || (rec.hellosOut ?? 0) >= HANDSHAKE_MAX) return;
+		// R5-S2: never in a retired room (a straggler challenges us again by itself)
+		if (!rec.nonce || rec.authed || rec.closing || rec.legacy || (rec.hellosOut ?? 0) >= HANDSHAKE_MAX) return;
 		rec.hellosOut = (rec.hellosOut ?? 0) + 1;
 		// a fresh copy: a new signature and sequence number, so the peer sees a new frame, not a replay (R4-S1)
 		const nonce = rec.nonce.slice();
@@ -1335,6 +1364,14 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const rec: LinkRec = { link, rid: isPair && !isData ? "pair" : rid, chain: Promise.resolve() };
 		if (lg) rec.legacy = lg;
 		if (rid === "") rec.rid = ""; // room-less (qr-sdp): frames are self-describing
+		// R5-S2: a bounded number of links still to authenticate per room, and per announced peer
+		if (rec.rid !== "pair") {
+			const pending = [...links].filter((l) => !l.authed && !l.closing && l.rid === rec.rid);
+			if (pending.length >= MAX_UNAUTH_PER_ROOM || pending.filter((l) => l.link.id === link.id).length >= MAX_UNAUTH_PER_PEER) {
+				reject("too many links waiting to authenticate", link.id);
+				return link.close();
+			}
+		}
 		links.add(rec);
 		// S5: until the link is authenticated it may reassemble at most 1 MiB, charged to a budget shared by all
 		// unauthenticated links; afterwards the configured limit applies
@@ -1356,6 +1393,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		link.onClose(() => {
 			reasm.clear();
 			dropHeld(rec);
+			dropEarly(rec);
 			links.delete(rec);
 			setStatus();
 		});

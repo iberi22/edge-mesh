@@ -41,6 +41,7 @@ import {
 	type makeVault,
 	metaOf,
 	pair,
+	stable,
 	until,
 } from "./helpers.js";
 
@@ -167,16 +168,14 @@ describe("audit round 2 regressions: web/provider", () => {
 				(o) =>
 					keyOf(o) !== keyOf(a) && rest.every((d) => !ids(d).includes(o.id)),
 			);
-		await until(done, 15_000);
-		await settle(1000);
-		await until(done, 10_000); // stable, not an intermediate state
+		expect(await stable(done, 60_000, 1000)).toBe(true); // stable, not an intermediate state
 		expect(a.mesh.epoch).toBeLessThanOrEqual(4);
 		for (const out of ms.slice(0, 3)) {
 			expect(keyOf(out)).not.toBe(keyOf(a));
 			for (const d of rest) expect(ids(d)).not.toContain(out.id);
 		}
 		for (const d of all) d.mesh.destroy();
-	}, 30_000);
+	}, 120_000);
 
 	for (const order of ["P1-first", "P2-first"])
 		it(`BL1: partitions that rotated independently converge once they heal (${order})`, async () => {

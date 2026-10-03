@@ -444,7 +444,9 @@ describe("audit regressions: web/provider", () => {
 		await settle(300);
 		expect(got).toEqual(["pay table 7"]);
 		expect(b.mesh.peers).not.toContain(a.id);
-		expect(rejected).toContain("bad link authentication"); // the replayed K_AUTH answers another link's challenge
+		// the replayed K_AUTH answers another link's challenge; since R5-S2 it is not even checked again (it was already
+		// verified on the original link): dropped as a replay, or refused ("bad link authentication") if it gets that far
+		expect(rejected.every((r) => r === "bad link authentication")).toBe(true);
 		b.mesh.destroy();
 	});
 
