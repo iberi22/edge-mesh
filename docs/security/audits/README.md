@@ -11,7 +11,7 @@ prueba de regresión que impide que vuelvan.
 | 1 | 2026-10-03 | `web/provider`, emparejamiento, admisión, `web/trust`, `web/oplog`, `web/merge` | 6 bloqueantes, 7 a corregir y notas, todos corregidos | [2026-10-03-ronda-1.md](2026-10-03-ronda-1.md) |
 | 2 | 2026-10-03 | Re-auditoría de `mesh/fix-audit` tras la ronda 1 | 3 bloqueantes, 5 a corregir y notas, todos corregidos | [2026-10-03-ronda-2.md](2026-10-03-ronda-2.md) |
 | 3 | 2026-10-03 | Re-auditoría de `mesh/fix-audit` @ `4932376` | 3 bloqueantes y 3 a corregir; rediseño a re-clave solo por el dueño; todos corregidos | [2026-10-03-ronda-3.md](2026-10-03-ronda-3.md) |
-| 4 | 2026-10-03 | Re-auditoría de `mesh/fix-audit` @ `18448f5`: migración post-cuántica y re-clave del dueño | Post-cuántica sin bloqueantes; 2 bloqueantes (R4-B1, R4-B2), 3 a corregir y notas | [2026-10-03-ronda-4.md](2026-10-03-ronda-4.md) |
+| 4 | 2026-10-03 | Re-auditoría de `mesh/fix-audit` @ `18448f5`: migración post-cuántica y re-clave del dueño | Post-cuántica sin bloqueantes; 2 bloqueantes (R4-B1, R4-B2), 3 a corregir y notas; corregidos todos salvo las notas N1 y N4 (documentadas) | [2026-10-03-ronda-4.md](2026-10-03-ronda-4.md) |
 
 ## Método
 
@@ -43,6 +43,7 @@ prueba de regresión que impide que vuelvan.
 | `tests/web/audit-fuzz-r3.test.ts` | Ronda 3: fuzz de vivacidad de 8 equipos (semillas 13 y 14 en la suite; `FUZZ_SEEDS=1,2,…` para más) |
 | `tests/web/audit-regressions-pqc.test.ts` | Migración post-cuántica: identidades ML-DSA-65 (Q1–Q4) |
 | `tests/web/audit-regressions-pqc-kex.test.ts` | Migración post-cuántica: intercambios híbridos, rotaciones firmadas y re-clave interrumpida (Q5–Q11) |
+| `tests/web/audit-regressions-r4.test.ts` | Ronda 4: R4-B1, R4-B2, R4-S1–S3, notas N2, N3, N6 |
 | `tests/web/trust-oplog-security.test.ts` | Batería de seguridad de `web/trust` / `web/oplog` anterior a las rondas |
 
 ## Cambios posteriores a la ronda 3 (auditados en la ronda 4)

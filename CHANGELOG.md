@@ -136,6 +136,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Notes: links whose handshake does not complete within `handshakeTimeoutMs` (default 120 s) are closed (9); the
   evidence path is gone (7); what the handshake binds and why a live relay can only delay or drop is documented (8).
 
+### Security audit fixes, round 4 (`docs/security/audits/2026-10-03-ronda-4.md`; `tests/web/audit-regressions-r4.test.ts`)
+- **R4-B1**: an admin flooding revocation requests (or a long-lived mesh) can no longer evict an executed revocation.
+  Executed revocations are permanent tombstones (local store `revexecuted`) and the device's pinned key-agreement
+  keys are dropped. Pending requests are bounded per issuer (64; the issuer's newest are set aside).
+- **R4-B2**: the cut list of an owner-signed rotation is authoritative, so a member that never saw the requests
+  behind it no longer gets stuck on the old key. Rotations carry, and receivers read, at most 16 records.
+- **R4-S1**: handshake frames are checked for replay and capped (64 signature checks per unauthenticated link, then
+  close) before verifying; early frames are verified once.
+- **R4-S2**: trust passes are coalesced; forged `ecdh/` entries are negative-cached; signature caches are LRU.
+- **R4-S3**: `rotate()` respects the receivers' 1024 limit: larger cuts are split, larger recipient sets refused.
+- Notes: canonical base64url only (one key, one fingerprint); the pairing guest ignores other links once the host's
+  is chosen; `web/trust` revocations with `lastSeq > 0` require `lastId` (breaking: pass `{seq, id}` heads to
+  `prepareRevocation`); timing-sensitive convergence tests wait for a stable state.
+
 ### Post-quantum signatures and key exchange (AGENTS.md §2)
 - **`web/trust` / `web/oplog` on ML-DSA-65** (`@noble/post-quantum`): grants, revocations and ops carry
   `alg: "ML-DSA-65"` (any other alg is rejected); keys are base64url raw public keys (`DeviceRef.pub`, `kem?`), the
