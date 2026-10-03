@@ -227,6 +227,8 @@ interface LinkRec {
 	peerSess?: string;
 	/** S5: raise this link's reassembly limits once it is authenticated */
 	lift?: () => void;
+	/** SF4: some held frame of this link was dropped (expired / caps): its handshake may need to be redone */
+	lostHeld?: boolean;
 	/** frames that arrived before we authenticated the peer (its state-vector pull may race our K_AUTH): replayed after */
 	early?: { frames: Uint8Array[]; bytes: number };
 	/** a key the peer demonstrably holds (its last handshake frame came under it): rotations are also sealed under it */
@@ -695,7 +697,10 @@ export function createMesh(opts: MeshOptions): Mesh {
 		rec.held = undefined;
 	}
 	function hold(rec: LinkRec, data: Uint8Array) {
-		if (heldTotal + data.length > HOLD_TOTAL_BYTES) return; // S5: global cap (the sender resyncs later)
+		if (heldTotal + data.length > HOLD_TOTAL_BYTES) {
+			rec.lostHeld = true; // S5: global cap (the sender resyncs later; SF4 re-challenges the link)
+			return;
+		}
 		if (!rec.held) rec.held = { frames: [], bytes: 0 };
 		const h = rec.held;
 		const t = heldAt.get(data) ?? now();
@@ -707,19 +712,29 @@ export function createMesh(opts: MeshOptions): Mesh {
 			const n = (h.frames.shift() as { d: Uint8Array }).d.length;
 			h.bytes -= n;
 			heldTotal -= n;
+			rec.lostHeld = true;
 		}
 	}
 	/** Re-run held frames once the trust state changed (a pending admission may have arrived). */
 	function replayHeld() {
-		// SF4: held handshake frames may have expired meanwhile: challenge every unauthenticated link again
-		if (signFrames) for (const rec of links) if (!rec.authed && rec.rid !== "pair") resendHello(rec);
 		for (const rec of links) {
 			const h = rec.held;
 			if (!h || rec.closing) continue;
 			dropHeld(rec);
 			for (const f of h.frames) {
-				if (now() - f.t > HOLD_MS) continue;
+				if (now() - f.t > HOLD_MS) {
+					rec.lostHeld = true;
+					continue;
+				}
 				rec.chain = rec.chain.then(() => onData(rec, f.d)).catch(err);
+			}
+		}
+		// SF4: a link that lost held frames (expired or over the caps) may have lost its handshake: challenge again
+		if (signFrames) {
+			for (const rec of links) {
+				if (!rec.lostHeld || rec.authed || rec.rid === "pair") continue;
+				rec.lostHeld = false;
+				resendHello(rec);
 			}
 		}
 	}
@@ -821,7 +836,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 			}
 			if (!rec.authed) {
 				// the peer authenticated us first and already talks: keep a few frames until its K_AUTH reaches us
-				const e = (rec.early ??= { frames: [], bytes: 0 });
+				if (!rec.early) rec.early = { frames: [], bytes: 0 };
+				const e = rec.early;
 				if (e.frames.length < EARLY_MAX_FRAMES && e.bytes + data.length <= PRE_AUTH_MAX) {
 					e.frames.push(data);
 					e.bytes += data.length;

@@ -22,7 +22,8 @@
   and every other frame from it is dropped. The link is then bound to that sender and to the sender session (`sess`)
   of its `K_AUTH`. A frame captured on one link and replayed on another (even the whole handshake) authenticates
   nothing (`rejected: "bad link authentication"`). Handshake frames from a peer not yet admitted here are held like
-  any other; since held frames expire, every trust change makes unauthenticated links send their challenge again, and
+  any other; since held frames expire (or are dropped by the caps), a link that lost held frames sends its challenge again on the
+  next trust change, and
   a repeated challenge is answered and returned (at most 8 of each per link, SF4), so such a link still comes up.
   A handshake frame may also arrive under one of this device's retired keys (a key switch raced with it, or the peer
   is on another branch of the same epoch): it is then bound to that key's room and epoch and answered under the same

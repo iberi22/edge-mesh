@@ -45,6 +45,8 @@ describe("H2: only authorized issuers revoke / rotate", () => {
 		}
 		await pair(adm1, m);
 		await until(() => adm1.mesh.devices().length === 4 && adm1.mesh.role(adm2.id) === "admin");
+		// the revoker wraps the new key only for devices whose ECDH key it already verified
+		await until(() => [a, adm1, adm2, m].every((x) => [a, adm1, adm2].every((y) => metaOf(x).has(`ecdh/${y.id}`))));
 		await expect(adm1.mesh.revoke(a.id)).rejects.toThrow(/not authorized/);
 		await expect(adm1.mesh.revoke(adm2.id)).rejects.toThrow(/not authorized/);
 		await adm1.mesh.revoke(m.id);
