@@ -1,10 +1,38 @@
 // Round-3 audit liveness fuzz: 8 devices (owner, 3 admins, 4 members) are split into 2-3 partitions, up to 3 revokers
 // revoke concurrently, then everybody restarts on one network in a random order. All honest devices must end on the
 // owner's key and member list, revoked ones off it. Default seeds 13,14 (the ones that failed in the audit); run more
-// with FUZZ_SEEDS=1,2,...
+// with FUZZ_SEEDS=1,2,... FUZZ_JITTER_MS=40 runs the round-4 jitter variant: every link delivers in order with a random
+// 0..JITTER ms latency per message (a reliable ordered channel on a jittery network), so links reorder among themselves.
 import { describe, expect, it } from "vitest";
-import type { MeshOptions } from "../../src/web/index.js";
-import { createLoopbackHub } from "../../src/web/index.js";
+import type { MeshOptions, PeerLink } from "../../src/web/index.js";
+import { createLoopbackHub as rawHub } from "../../src/web/index.js";
+
+const JITTER_MS = Number(process.env.FUZZ_JITTER_MS ?? 0);
+function jitterLink(l: PeerLink): PeerLink {
+	let last = 0;
+	const w: PeerLink = Object.create(l);
+	w.send = (d: Uint8Array) => {
+		const at = Math.max(last, Date.now() + Math.random() * JITTER_MS);
+		last = at;
+		const copy = d.slice();
+		setTimeout(() => l.send(copy), at - Date.now());
+	};
+	if (l.sendPriority) w.sendPriority = w.send;
+	return w;
+}
+function createLoopbackHub() {
+	const h = rawHub();
+	if (!JITTER_MS) return h;
+	const transport = h.transport.bind(h);
+	h.transport = (name?: string) => {
+		const t = transport(name);
+		const onLink = t.onLink.bind(t);
+		t.onLink = (cb) => onLink((l, rid) => cb(jitterLink(l), rid));
+		return t;
+	};
+	return h;
+}
+
 import { b64uEncode } from "../../src/web/util.js";
 import { type Dev, kexKnown, label, makeDev, pair, until } from "./helpers.js";
 
