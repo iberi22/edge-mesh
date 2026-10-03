@@ -9,19 +9,25 @@ import {
 	verifyChain,
 	verifyRevocation,
 } from "../../src/web/admission.js";
+import { fragment, Reassembler } from "../../src/web/fragment.js";
 import type {
 	LinkTransport,
 	MeshOptions,
 	PeerLink,
 } from "../../src/web/index.js";
-import { createLoopbackHub } from "../../src/web/index.js";
+import {
+	createLoopbackHub,
+	decodePairPayload,
+	derivePairRoomId,
+} from "../../src/web/index.js";
 import {
 	createPairOffer,
 	type GrantBody,
 	GuestPairing,
 	HostPairing,
 } from "../../src/web/pairing.js";
-import { b64uEncode } from "../../src/web/util.js";
+import { b64uDecode, b64uEncode, randomBytes } from "../../src/web/util.js";
+import { dataChannelLink } from "../../src/web/webrtc.js";
 import {
 	type Dev,
 	idOf,
@@ -685,4 +691,119 @@ describe("audit regressions: web/provider", () => {
 		await until(() => c2.doc.getMap("data").get("after") === 1);
 		for (const d of [...all.filter((d) => d !== c), c2]) d.mesh.destroy();
 	}, 20_000);
+
+	it("S5: before authentication a link reassembles at most 1 MiB, within a budget shared by all such links", async () => {
+		const big = randomBytes(64 * 1024);
+		const msg = new Uint8Array(2 * 1024 * 1024);
+		for (let o = 0; o < msg.length; o += big.length) msg.set(big, o);
+		const drops: string[] = [];
+		const r = new Reassembler({
+			maxMessageBytes: 1024 * 1024,
+			onDrop: (d) => drops.push(d),
+		});
+		for (const f of await fragment(msg, 64 * 1024)) await r.push(f);
+		expect(drops).toContain("message too large");
+		expect(r.pendingBytes).toBe(0);
+		// authenticated: the configured limit applies
+		r.setLimits({
+			maxMessageBytes: 4 * 1024 * 1024,
+			maxPendingBytes: 4 * 1024 * 1024,
+			shared: null,
+		});
+		let out: Uint8Array | null = null;
+		for (const f of await fragment(msg, 64 * 1024))
+			out = (await r.push(f)) ?? out;
+		expect(out?.length).toBe(msg.length);
+		// shared budget: a second link cannot start a partial the budget has no room for
+		const shared = { used: 0, max: 1536 * 1024 };
+		const half = msg.subarray(0, 1024 * 1024);
+		const [r1, r2] = [
+			new Reassembler({ shared }),
+			new Reassembler({ shared, onDrop: (d) => drops.push(`r2:${d}`) }),
+		];
+		const f1 = await fragment(half, 64 * 1024);
+		const f2 = await fragment(half, 64 * 1024);
+		await r1.push(f1[0] as Uint8Array);
+		await r2.push(f2[0] as Uint8Array);
+		expect(drops).toContain("r2:shared budget exhausted");
+		for (const f of f1.slice(1)) await r1.push(f);
+		expect(shared.used).toBe(0); // released once complete
+		r2.clear();
+	});
+
+	it("S5: a pairing message above 256 KiB is dropped before it is parsed", async () => {
+		const hub = createLoopbackHub();
+		let inject: ((l: PeerLink, rid: string) => void) | null = null;
+		const evil: LinkTransport = {
+			kind: "link",
+			name: "evil",
+			async join() {},
+			onLink(cb) {
+				inject = cb;
+				return () => {};
+			},
+			leave() {},
+			close() {},
+		};
+		const a = await makeDev("devA", hub, undefined, {
+			signaling: [hub.transport(), evil],
+		});
+		const rejected: string[] = [];
+		a.mesh.on("rejected", (e) => rejected.push(e.reason));
+		const offer = await a.mesh.pairHost();
+		const rid = await derivePairRoomId(
+			b64uDecode(decodePairPayload(offer.payload).pairSecret),
+		);
+		let recv: ((d: Uint8Array) => void) | null = null;
+		const fake: PeerLink = {
+			id: "x",
+			send() {},
+			onMessage: (cb) => {
+				recv = cb;
+			},
+			onClose() {},
+			close() {},
+		};
+		(inject as unknown as (l: PeerLink, rid: string) => void)(fake, rid);
+		const huge = new TextEncoder().encode(
+			JSON.stringify({ t: "hello", e: "x".repeat(300 * 1024) }),
+		);
+		const frame = new Uint8Array(huge.length + 1);
+		frame[0] = 2; // F_PAIR
+		frame.set(huge, 1);
+		for (const f of await fragment(frame, 64 * 1024))
+			(recv as unknown as (d: Uint8Array) => void)(f);
+		await until(() => rejected.includes("pairing message too large"));
+		offer.cancel();
+		a.mesh.destroy();
+	});
+
+	it("S5: a WebRTC link whose peer does not drain its queue is closed instead of buffering without bound", () => {
+		const listeners: Record<string, Array<() => void>> = {};
+		const dc = {
+			readyState: "open",
+			bufferedAmount: 0,
+			binaryType: "",
+			bufferedAmountLowThreshold: 0,
+			addEventListener: (t: string, f: () => void) => {
+				listeners[t] ??= [];
+				listeners[t].push(f);
+			},
+			send(d: Uint8Array) {
+				dc.bufferedAmount += d.length; // never drained
+			},
+			close() {
+				dc.readyState = "closed";
+				for (const f of listeners.close ?? []) f();
+			},
+		};
+		const link = dataChannelLink("slow", dc as unknown as RTCDataChannel);
+		let closed = false;
+		link.onClose(() => {
+			closed = true;
+		});
+		const chunk = new Uint8Array(1024 * 1024);
+		for (let i = 0; i < 40 && !closed; i++) link.send(chunk);
+		expect(closed).toBe(true);
+	});
 });

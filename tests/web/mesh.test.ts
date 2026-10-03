@@ -31,7 +31,7 @@ describe("mesh", () => {
 		expect(offer.payload.length).toBeLessThan(700);
 		expect(decodePairPayload(offer.payload).v).toBe(2);
 		expect(b.vault.meshKey).toEqual(a.vault.meshKey);
-		expect(b.doc.getMap("data").get("before")).toBe(1); // snapshot
+		await until(() => b.doc.getMap("data").get("before") === 1); // data arrives by sync, not inside the grant
 		expect(devLabels(a.mesh)).toEqual(["devA", "devB"]);
 		await until(() => a.mesh.status === "online" && b.mesh.status === "online");
 

@@ -8,6 +8,8 @@ const MAX_LINK_MESSAGE = 4 * 1024 * 1024;
 /** Backpressure: stop handing chunks to SCTP above HIGH, resume on bufferedamountlow (LOW). */
 const HIGH_WATER = 1024 * 1024;
 const LOW_WATER = 256 * 1024;
+/** S5: bytes waiting in OUR queue (above SCTP's buffer). A peer that drains slower than this is cut off. */
+export const MAX_SEND_QUEUE = 16 * 1024 * 1024;
 
 /**
  * Wrap an RTCDataChannel as a PeerLink, chunking messages (1 flag byte: 1 = more follows). Reassembly is bounded
@@ -24,10 +26,13 @@ export function dataChannelLink(id: string, dc: RTCDataChannel): PeerLink {
 	let closed = false;
 	let closing = false;
 	const queue: Uint8Array[] = [];
+	let queued = 0;
 	const flush = () => {
 		while (queue.length > 0 && !closed && dc.readyState === "open" && dc.bufferedAmount < HIGH_WATER) {
+			const c = queue.shift() as Uint8Array;
+			queued -= c.length;
 			try {
-				dc.send(queue.shift() as unknown as ArrayBuffer);
+				dc.send(c as unknown as ArrayBuffer);
 			} catch {
 				return close(true);
 			}
@@ -58,6 +63,7 @@ export function dataChannelLink(id: string, dc: RTCDataChannel): PeerLink {
 		closed = true;
 		parts = [];
 		queue.length = 0;
+		queued = 0;
 		for (const cb of closeCbs) cb();
 	};
 	/** Graceful by default: queued chunks are handed to SCTP first (bounded wait), then the channel closes. */
@@ -78,12 +84,15 @@ export function dataChannelLink(id: string, dc: RTCDataChannel): PeerLink {
 		id,
 		send(data) {
 			if (closed) return;
+			if (closing) return; // draining before a graceful close: nothing new
+			if (queued + data.length > MAX_SEND_QUEUE) return close(true); // S5: slow (or stuck) link
 			for (let i = 0; i < data.length || i === 0; i += CHUNK) {
 				const chunk = data.subarray(i, i + CHUNK);
 				const framed = new Uint8Array(chunk.length + 1);
 				framed[0] = i + CHUNK < data.length ? 1 : 0;
 				framed.set(chunk, 1);
 				queue.push(framed);
+				queued += framed.length;
 			}
 			flush();
 		},

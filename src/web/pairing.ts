@@ -29,8 +29,6 @@ export interface GrantBody {
 	meshKey: string;
 	epoch: number;
 	mid: string;
-	/** Y.encodeStateAsUpdate of the shared doc (base64url) */
-	snapshot: string;
 	hostDevice?: Device;
 	/** Trust anchor the guest pins (the mesh owner), sent over the SAS-authenticated session. */
 	root?: TrustRoot;

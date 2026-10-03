@@ -43,6 +43,12 @@ export async function fragment(
 	return out;
 }
 
+/** A byte budget shared by several reassemblers (e.g. every not-yet-authenticated link of a mesh). */
+export interface ByteBudget {
+	used: number;
+	readonly max: number;
+}
+
 export interface ReassemblerOptions {
 	/** Largest message accepted (declared length). Default 64 MiB. */
 	maxMessageBytes?: number;
@@ -52,6 +58,8 @@ export interface ReassemblerOptions {
 	timeoutMs?: number;
 	now?: () => number;
 	onDrop?: (reason: string) => void;
+	/** Also charge every partial message to this shared budget (dropped when it would overflow). */
+	shared?: ByteBudget;
 }
 
 interface Partial {
@@ -61,6 +69,8 @@ interface Partial {
 	parts: Map<number, Uint8Array>;
 	got: number;
 	started: number;
+	/** charged to the shared budget */
+	shared?: ByteBudget;
 }
 
 /** Reassembles fragments arriving on ONE link. Not shared between links (a peer cannot complete another's message). */
@@ -68,16 +78,33 @@ export class Reassembler {
 	private partials = new Map<string, Partial>();
 	private declared = 0;
 	private timer: ReturnType<typeof setTimeout> | null = null;
-	private readonly maxMessage: number;
-	private readonly maxPendingBytes: number;
+	private maxMessage: number;
+	private maxPendingBytes: number;
+	private shared?: ByteBudget;
 	private readonly timeoutMs: number;
 	private readonly now: () => number;
 
 	constructor(private o: ReassemblerOptions = {}) {
 		this.maxMessage = o.maxMessageBytes ?? DEFAULT_MAX_MESSAGE;
 		this.maxPendingBytes = o.maxPendingBytes ?? this.maxMessage;
+		this.shared = o.shared;
 		this.timeoutMs = o.timeoutMs ?? 30_000;
 		this.now = o.now ?? (() => Date.now());
+	}
+
+	/**
+	 * Change the limits (e.g. once the link is authenticated). `shared: null` stops charging NEW partials to the
+	 * shared budget; partials already charged release it when they complete or are dropped.
+	 */
+	setLimits(o: {
+		maxMessageBytes?: number;
+		maxPendingBytes?: number;
+		shared?: ByteBudget | null;
+	}): void {
+		if (o.maxMessageBytes !== undefined) this.maxMessage = o.maxMessageBytes;
+		if (o.maxPendingBytes !== undefined)
+			this.maxPendingBytes = o.maxPendingBytes;
+		if (o.shared !== undefined) this.shared = o.shared ?? undefined;
 	}
 
 	get pending(): number {
@@ -109,6 +136,14 @@ export class Reassembler {
 				this.declared + len > this.maxPendingBytes
 			)
 				this.evictOldest();
+			const shared = this.shared;
+			if (shared) {
+				while (this.partials.size > 0 && shared.used + len > shared.max)
+					this.evictOldest();
+				if (shared.used + len > shared.max)
+					return this.drop(null, "shared budget exhausted");
+				shared.used += len;
+			}
 			p = {
 				total,
 				len,
@@ -116,6 +151,7 @@ export class Reassembler {
 				parts: new Map(),
 				got: 0,
 				started: this.now(),
+				shared,
 			};
 			this.partials.set(key, p);
 			this.declared += len;
@@ -151,6 +187,8 @@ export class Reassembler {
 	}
 
 	clear(): void {
+		for (const p of this.partials.values())
+			if (p.shared) p.shared.used -= p.len;
 		this.partials.clear();
 		this.declared = 0;
 		if (this.timer) clearTimeout(this.timer);
@@ -167,6 +205,7 @@ export class Reassembler {
 		if (!p) return;
 		this.partials.delete(key);
 		this.declared -= p.len;
+		if (p.shared) p.shared.used -= p.len;
 		if (this.partials.size === 0 && this.timer) {
 			clearTimeout(this.timer);
 			this.timer = null;

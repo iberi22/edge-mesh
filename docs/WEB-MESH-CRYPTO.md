@@ -27,8 +27,8 @@
   seq)` once, within a window of 1024 behind the highest `seq` seen, and only with the link's bound session.
 - Unsigned legacy frames (`F_DATA(1)`) are rejected unless `signFrames: false` (must then be off on every device).
 - Signed frames from a sender whose admission has not reached this device yet are held (64 frames / 8 MiB / 30 s
-  per link) and replayed when the trust state changes, so a freshly paired device converges with peers that learn
-  about it through someone else.
+  per link, 16 MiB over all links; still encrypted, no key derived for unknown senders) and replayed when the trust
+  state changes, so a freshly paired device converges with peers that learn about it through someone else.
 - Data rooms: `rid = HMAC(meshKey, "swal-room/v1|appId|topic[|epoch]|i:<instance>")`. `instance` (option
   `instance`, default: fingerprint of the owner's identity key) keeps two instances of the same app apart even if
   they share a mesh key and topic. `mesh.namespace = "{appId}/{instance}"`.
@@ -87,6 +87,16 @@ duplicates ignored, inconsistent headers / overflow / hash mismatch dropped, par
 messages go through an ordered per-link queue. `dataChannelLink` additionally applies backpressure
 (`bufferedAmount` 1 MiB high / 256 KiB low), bounds its own chunk reassembly at 4 MiB (closes the link beyond) and
 drains its queue before closing.
+
+### Pre-authentication limits (S5)
+
+- Until a link has completed the handshake, it reassembles at most **1 MiB** per message and all such links share an
+  **8 MiB** budget for partial messages; afterwards `maxMessageBytes` applies.
+- Pairing messages above **256 KiB** are dropped before being parsed. The pairing grant no longer carries a snapshot
+  of the doc: it holds keys, trust chain and the current rotation record only, and the data follows by the regular
+  (fragmented, authenticated) sync.
+- `dataChannelLink` bounds its own send queue (16 MiB above SCTP's buffer): a peer that does not drain is closed
+  instead of making the sender buffer without limit.
 
 ## Channels
 

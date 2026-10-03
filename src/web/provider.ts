@@ -17,7 +17,7 @@ import {
 	verifyRevocation,
 } from "./admission.js";
 import { deriveDocMaterial, deriveSenderKey, hkdf, importAesKey, openUpdate, sealUpdate } from "./crypto.js";
-import { DEFAULT_MAX_FRAME, F_FRAG, Reassembler, fragment } from "./fragment.js";
+import { type ByteBudget, DEFAULT_MAX_FRAME, DEFAULT_MAX_MESSAGE, F_FRAG, Reassembler, fragment } from "./fragment.js";
 import {
 	type EcdhIdentity,
 	type RotRecord,
@@ -210,6 +210,8 @@ interface LinkRec {
 	/** S1: the peer answered our challenge: `deviceId` is authenticated for this link, with this sender session */
 	authed?: boolean;
 	peerSess?: string;
+	/** S5: raise this link's reassembly limits once it is authenticated */
+	lift?: () => void;
 	/** we answered the peer's challenge */
 	authSent?: boolean;
 	started?: boolean;
@@ -217,6 +219,13 @@ interface LinkRec {
 
 const HOLD_MAX_FRAMES = 64;
 const HOLD_MAX_BYTES = 8 * 1024 * 1024;
+/** S5: held frames of ALL links together */
+const HOLD_TOTAL_BYTES = 16 * 1024 * 1024;
+/** S5: largest message reassembled on a link before it is authenticated, and for all such links together */
+const PRE_AUTH_MAX = 1024 * 1024;
+const PRE_AUTH_TOTAL = 8 * 1024 * 1024;
+/** S5: largest pairing message (JSON); the grant no longer carries the doc, which arrives by normal sync */
+const PAIR_MAX = 256 * 1024;
 const HOLD_MS = 30_000;
 
 const u32 = (n: number) => {
@@ -650,21 +659,32 @@ export function createMesh(opts: MeshOptions): Mesh {
 
 	const reject = (reason: string, from?: string) => emit("rejected", { reason, from });
 	const heldAt = new WeakMap<Uint8Array, number>(); // first time a frame was held (kept across replays)
+	let heldTotal = 0; // S5: bytes held over all links
+	function dropHeld(rec: LinkRec) {
+		if (rec.held) heldTotal -= rec.held.bytes;
+		rec.held = undefined;
+	}
 	function hold(rec: LinkRec, data: Uint8Array) {
+		if (heldTotal + data.length > HOLD_TOTAL_BYTES) return; // S5: global cap (the sender resyncs later)
 		if (!rec.held) rec.held = { frames: [], bytes: 0 };
 		const h = rec.held;
 		const t = heldAt.get(data) ?? now();
 		heldAt.set(data, t);
 		h.frames.push({ d: data, t });
 		h.bytes += data.length;
-		while (h.frames.length > HOLD_MAX_FRAMES || h.bytes > HOLD_MAX_BYTES) h.bytes -= h.frames.shift()!.d.length;
+		heldTotal += data.length;
+		while (h.frames.length > HOLD_MAX_FRAMES || h.bytes > HOLD_MAX_BYTES) {
+			const n = (h.frames.shift() as { d: Uint8Array }).d.length;
+			h.bytes -= n;
+			heldTotal -= n;
+		}
 	}
 	/** Re-run held frames once the trust state changed (a pending admission may have arrived). */
 	function replayHeld() {
 		for (const rec of links) {
 			const h = rec.held;
 			if (!h || rec.closing) continue;
-			rec.held = undefined;
+			dropHeld(rec);
 			for (const f of h.frames) {
 				if (now() - f.t > HOLD_MS) continue;
 				rec.chain = rec.chain.then(() => onData(rec, f.d)).catch(err);
@@ -745,6 +765,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 				rec.deviceId = sender;
 				rec.authed = true;
 				rec.peerSess = sess;
+				rec.lift?.();
 				setStatus();
 				return maybeStart(rec);
 			}
@@ -756,6 +777,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		}
 		if (!rec.deviceId) {
 			rec.deviceId = sender; // legacy unsigned wire only: the link is bound to its first sender
+			rec.lift?.();
 			setStatus();
 		}
 		if (lg) {
@@ -965,11 +987,21 @@ export function createMesh(opts: MeshOptions): Mesh {
 	}
 
 	async function onPairFrame(rec: LinkRec, data: Uint8Array) {
-		const msg = JSON.parse(fromUtf8(data.subarray(1)));
+		if (data.length > PAIR_MAX) return reject("pairing message too large"); // S5
+		let msg: unknown;
+		try {
+			msg = JSON.parse(fromUtf8(data.subarray(1)));
+		} catch {
+			return;
+		}
+		if (!msg || typeof msg !== "object") return;
 		const send = sendPair(rec.link);
-		if (hostSession && pairRids.has(rec.rid)) await hostSession.s.handle(msg, send);
-		else if (guestSession && pairRids.has(rec.rid)) await guestSession.s.handle(msg, send);
+		const m = msg as Parameters<HostPairing["handle"]>[0];
+		if (hostSession && pairRids.has(rec.rid)) await hostSession.s.handle(m, send);
+		else if (guestSession && pairRids.has(rec.rid)) await guestSession.s.handle(m, send);
 	}
+
+	const preAuthBudget: ByteBudget = { used: 0, max: PRE_AUTH_TOTAL };
 
 	/** S1: challenge the peer of a fresh data link; data flows once both sides answered each other's challenge. */
 	function startHandshake(rec: LinkRec) {
@@ -998,7 +1030,11 @@ export function createMesh(opts: MeshOptions): Mesh {
 		if (lg) rec.legacy = lg;
 		if (rid === "") rec.rid = ""; // room-less (qr-sdp): frames are self-describing
 		links.add(rec);
-		const reasm = new Reassembler({ maxMessageBytes: opts.maxMessageBytes });
+		// S5: until the link is authenticated it may reassemble at most 1 MiB, charged to a budget shared by all
+		// unauthenticated links; afterwards the configured limit applies
+		const reasm = new Reassembler({ maxMessageBytes: PRE_AUTH_MAX, maxPendingBytes: PRE_AUTH_MAX, shared: preAuthBudget });
+		rec.lift = () =>
+			reasm.setLimits({ maxMessageBytes: opts.maxMessageBytes ?? DEFAULT_MAX_MESSAGE, maxPendingBytes: opts.maxMessageBytes ?? DEFAULT_MAX_MESSAGE, shared: null });
 		const dispatch = (d: Uint8Array) =>
 			d[0] === F_PAIR ? onPairFrame({ ...rec, rid: rid === "" ? ([...pairRids][0] ?? "") : rid }, d) : d[0] === F_DATA || d[0] === F_SDATA ? onData(rec, d) : undefined;
 		link.onMessage((d) => {
@@ -1013,7 +1049,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		});
 		link.onClose(() => {
 			reasm.clear();
-			rec.held = undefined;
+			dropHeld(rec);
 			links.delete(rec);
 			setStatus();
 		});
@@ -1301,7 +1337,6 @@ export function createMesh(opts: MeshOptions): Mesh {
 					meshKey: b64uEncode(key),
 					epoch,
 					mid: r.mid,
-					snapshot: b64uEncode(Y.encodeStateAsUpdate(doc)),
 					hostDevice: selfDevice(),
 					root: r,
 					admissions: [adm, ...chainOf(vault.deviceId)],
@@ -1434,7 +1469,6 @@ export function createMesh(opts: MeshOptions): Mesh {
 			curRot = isRotRecord(gr) && gr.epoch === g.epoch && gr.id === (await rotationId(gr)) ? gr : null;
 			cands.clear();
 			await store.set("rot", curRot);
-			Y.applyUpdate(doc, b64uDecode(g.snapshot), ORIGIN);
 			doc.transact(() => {
 				meta.set(ADM_PREFIX + vault.deviceId, mine);
 				meta.set(DEV + vault.deviceId, {

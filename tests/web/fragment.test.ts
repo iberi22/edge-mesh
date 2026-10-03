@@ -40,13 +40,15 @@ describe("H5: fragmentation of large mesh messages", () => {
 		const big = bigText(3 * 1024 * 1024);
 		a.doc.getMap("data").set("big", big);
 		await pair(a, b);
-		expect(b.doc.getMap("data").get("big")).toBe(big);
+		// the pairing grant stays small (S5); the multi-MB doc follows by the regular (fragmented) sync
+		await until(() => b.doc.getMap("data").get("big") === big, 15_000);
 		await until(() => a.mesh.status === "online" && b.mesh.status === "online", 15_000); // MBs of crypto: slow CI
 		const big2 = bigText(2 * 1024 * 1024);
 		a.doc.getMap("data").set("big2", big2);
 		await until(() => b.doc.getMap("data").get("big2") === big2, 15_000);
 		expect(seen.max).toBeLessThanOrEqual(64 * 1024);
-		expect(Y.encodeStateAsUpdate(a.doc).length).toBe(Y.encodeStateAsUpdate(b.doc).length);
+		// small meta updates may still be in flight right after the big value lands
+		await until(() => Y.encodeStateAsUpdate(a.doc).length === Y.encodeStateAsUpdate(b.doc).length, 5000);
 		a.mesh.destroy();
 		b.mesh.destroy();
 	}, 45_000);

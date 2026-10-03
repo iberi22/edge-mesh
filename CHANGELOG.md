@@ -61,6 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and in bytes (`maxPendingBytes`, 16 MiB); ops of authors without a known grant get their own small FIFO budget
   (`maxPendingUnknown` = maxPending/10, `maxPendingUnknownBytes` = 1 MiB, oldest dropped first) and never displace
   pending ops of known authors.
+- **S5 pre-auth memory DoS**: 1 MiB reassembly per unauthenticated link plus an 8 MiB budget shared by all of them,
+  16 MiB cap on held frames over all links, pairing messages capped at 256 KiB (the grant no longer embeds the doc
+  snapshot; data arrives by normal sync), and a 16 MiB bounded WebRTC send queue that closes slow links.
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,
@@ -84,6 +87,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed (breaking)
 - `wrapMeshKey(priv, toPub, rotId, from, to, key)` / `unwrapMeshKey(priv, fromPub, rotId, from, to, wrap)` (v3);
   meta layout of stored wraps is `rotrec:<rotId>` + `rot:<rotId>:<deviceId>` and `old:<rid> = {e, k}`.
+- Pairing grant: no `snapshot` (the guest receives the doc through the normal sync right after pairing).
+  `Reassembler`: `setLimits()` and a `shared` byte budget.
 - `web/oplog`: new pending reason `anchor`; `OpLog.headIds()`. `web/trust`: `Revocation.lastId` / `upToIds`,
   `TrustStore.anchorsOf(fp)`.
 - `web/trust`: `Revocation.upTo` is keyed by grant id (was device fp); `prepareRevocation` fills it that way.
