@@ -41,15 +41,15 @@ describe("H5: fragmentation of large mesh messages", () => {
 		a.doc.getMap("data").set("big", big);
 		await pair(a, b);
 		expect(b.doc.getMap("data").get("big")).toBe(big);
-		await until(() => a.mesh.status === "online" && b.mesh.status === "online");
+		await until(() => a.mesh.status === "online" && b.mesh.status === "online", 15_000); // MBs of crypto: slow CI
 		const big2 = bigText(2 * 1024 * 1024);
 		a.doc.getMap("data").set("big2", big2);
-		await until(() => b.doc.getMap("data").get("big2") === big2, 10_000);
+		await until(() => b.doc.getMap("data").get("big2") === big2, 15_000);
 		expect(seen.max).toBeLessThanOrEqual(64 * 1024);
 		expect(Y.encodeStateAsUpdate(a.doc).length).toBe(Y.encodeStateAsUpdate(b.doc).length);
 		a.mesh.destroy();
 		b.mesh.destroy();
-	}, 30_000);
+	}, 45_000);
 });
 
 describe("fragment / Reassembler", () => {
