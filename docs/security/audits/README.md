@@ -12,6 +12,7 @@ prueba de regresión que impide que vuelvan.
 | 2 | 2026-10-03 | Re-auditoría de `mesh/fix-audit` tras la ronda 1 | 3 bloqueantes, 5 a corregir y notas, todos corregidos | [2026-10-03-ronda-2.md](2026-10-03-ronda-2.md) |
 | 3 | 2026-10-03 | Re-auditoría de `mesh/fix-audit` @ `4932376` | 3 bloqueantes y 3 a corregir; rediseño a re-clave solo por el dueño; todos corregidos | [2026-10-03-ronda-3.md](2026-10-03-ronda-3.md) |
 | 4 | 2026-10-03 | Re-auditoría de `mesh/fix-audit` @ `18448f5`: migración post-cuántica y re-clave del dueño | Post-cuántica sin bloqueantes; 2 bloqueantes (R4-B1, R4-B2), 3 a corregir y notas; corregidos todos salvo las notas N1 y N4 (documentadas) | [2026-10-03-ronda-4.md](2026-10-03-ronda-4.md) |
+| 5 | 2026-10-03 | Re-auditoría de `mesh/fix-audit` @ `4c8c5f1`: correcciones de la ronda 4 | 3 bloqueantes (R5-B1–B3), 4 a corregir y notas; decisión: estado de seguridad como conjunto de documentos firmados fuera del `Y.Doc` | [2026-10-03-ronda-5.md](2026-10-03-ronda-5.md) |
 
 ## Método
 
