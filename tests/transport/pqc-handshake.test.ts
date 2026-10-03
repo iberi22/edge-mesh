@@ -281,7 +281,8 @@ describe("PQC Handshake and Dual-Ready SYNC Encryption", () => {
 
 		let errorTriggered = false;
 		nodeB.on("error", (ev) => {
-			if (ev.detail.mensaje.includes("Error descifrando SYNC")) {
+			// with signed envelopes on (default) the tampered envelope is already rejected by the signature gate
+			if (ev.detail.mensaje.includes("Error descifrando SYNC") || ev.detail.mensaje.includes("Firma invalida")) {
 				errorTriggered = true;
 			}
 		});
