@@ -24,9 +24,11 @@ import { deriveDocMaterial, deriveSenderKey, hkdf, importAesKey, openUpdate, sea
 import { type ByteBudget, DEFAULT_MAX_FRAME, DEFAULT_MAX_MESSAGE, F_FRAG, Reassembler, fragment } from "./fragment.js";
 import {
 	type EcdhIdentity,
+	type KemIdentity,
 	type RotRecord,
 	ecdhSignedBytes,
 	generateEcdhIdentity,
+	isEcdhPublicKey,
 	isRotRecord,
 	rotationId,
 	rotationPreId,
@@ -45,7 +47,14 @@ import {
 	derivePairKey,
 	hostProofBytes,
 } from "./pairing.js";
-import { ML_DSA_PUBLIC_KEY_BYTES, identityVerify } from "./pq.js";
+import {
+	identityVerify,
+	kemEncapsulate,
+	kemKeygen,
+	ML_DSA_PUBLIC_KEY_BYTES,
+	ML_KEM_PUBLIC_KEY_BYTES,
+	ML_KEM_SECRET_KEY_BYTES,
+} from "./pq.js";
 import { derivePairRoomId, deriveRoomId, fingerprint, meshNamespace } from "./rooms.js";
 import { type MeshStore, idbStore, memoryStore } from "./store.js";
 import type { Device, PeerLink, RtcOptions, SigTransport, VaultClient } from "./types.js";
@@ -208,7 +217,10 @@ const REVRECORDS_KEY = "revrecords";
 /** local store: cuts not backed by a built-in-valid record (custom `canRotate` hook) */
 const LOCALCUTS_KEY = "localcuts";
 const MAX_REV_RECORDS = 512;
-const ECDH_PREFIX = "ecdh/"; // ecdh/<deviceId> = { pub, sig } (sig by the device identity key)
+/** A hybrid wrap is base64url(ML-KEM-768 ciphertext 1088 B || AES-GCM(32 B) 60 B) = 1531 characters. */
+const MAX_WRAP_CHARS = 1600;
+const KEX_KEY = "kex"; // device-local store: verified key-agreement keys (the pre-PQC "ecdh" entry is ignored)
+const ECDH_PREFIX = "ecdh/"; // ecdh/<deviceId> = { pub, kem, sig }: P-256 + ML-KEM-768 keys, sig by the ML-DSA identity
 const ROTREC_PREFIX = "rotrec:"; // rotrec:<rotId> = RotRecord (public part of a rotation, same for every recipient)
 const ROT_PREFIX = "rot:"; // rot:<rotId>:<deviceId> = that rotation's new key, wrapped pairwise for deviceId
 /** SF5: retired keys this device itself held, kept in its LOCAL store (never read from the shared doc) */
@@ -338,7 +350,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 		(opts.persist === "idb" && typeof indexedDB !== "undefined" ? idbStore(`swal-mesh-local/${appId}/${topicName}`) : memoryStore());
 	let root: TrustRoot | null = null;
 	let admCache: Record<string, Admission> = {}; // verified admissions: survive tampering with the shared doc
-	let ecdhOk: Record<string, string> = {}; // `${deviceId}|${identityPub}` -> verified ECDH pub
+	// `${deviceId}|${identityPub}` -> verified key-agreement keys (ECDH P-256 + ML-KEM-768, base64url)
+	let ecdhOk: Record<string, { pub: string; kem: string }> = {};
 	let trusted = new Map<string, Device>(); // admitted devices other than this one
 	let admittedAt = new Map<string, number>(); // epoch of each trusted device's VERIFIED admission
 	let selfAdm: Admission | null = null;
@@ -354,6 +367,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		return run;
 	}
 	let ecdhId: EcdhIdentity | null = null;
+	let kemId: KemIdentity | null = null;
 	const rooms = new Map<string, () => void>(); // rid -> leave
 	const linkSubs: Array<() => void> = [];
 	let hostSession: { s: HostPairing; rid: string } | null = null;
@@ -597,7 +611,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		}
 		const cr = (await store.get("rot")) as Rot | undefined;
 		if (isRotRecord(cr) && typeof cr.id === "string" && cr.id === (await rotationId(cr))) curRot = cr;
-		ecdhOk = ((await store.get("ecdh")) as Record<string, string> | undefined) ?? {};
+		ecdhOk = ((await store.get(KEX_KEY)) as typeof ecdhOk | undefined) ?? {};
 		if (opts.persist === "idb" && typeof indexedDB !== "undefined") {
 			const { IndexeddbPersistence } = await import("y-indexeddb");
 			const p = new IndexeddbPersistence(`swal-mesh/${appId}/${topicName}`, doc);
@@ -627,32 +641,58 @@ export function createMesh(opts: MeshOptions): Mesh {
 	async function ecdhIdentity(): Promise<EcdhIdentity> {
 		return (ecdhId ??= (await vault.getEcdhIdentity?.()) ?? (await generateEcdhIdentity()));
 	}
+	async function kemIdentity(): Promise<KemIdentity> {
+		if (!kemId) {
+			const k = (await vault.getKemIdentity?.()) ?? kemKeygen();
+			if (k.publicKey.length !== ML_KEM_PUBLIC_KEY_BYTES || k.secretKey.length !== ML_KEM_SECRET_KEY_BYTES)
+				throw new Error("vault.getKemIdentity must return an ML-KEM-768 key pair");
+			kemId = k;
+		}
+		return kemId;
+	}
 	async function publishEcdh() {
 		const id = await ecdhIdentity();
 		const pub = b64uEncode(id.publicKey);
-		const cur = meta.get(ECDH_PREFIX + vault.deviceId) as { pub: string } | undefined;
-		if (cur?.pub === pub) return;
-		const sig = b64uEncode(await vault.sign(ecdhSignedBytes(vault.deviceId, pub)));
-		meta.set(ECDH_PREFIX + vault.deviceId, { pub, sig });
+		const kem = b64uEncode((await kemIdentity()).publicKey);
+		const cur = meta.get(ECDH_PREFIX + vault.deviceId) as { pub: string; kem?: string } | undefined;
+		if (cur?.pub === pub && cur.kem === kem) return;
+		const sig = b64uEncode(await vault.sign(ecdhSignedBytes(vault.deviceId, pub, kem)));
+		meta.set(ECDH_PREFIX + vault.deviceId, { pub, kem, sig });
 	}
 	/**
 	 * ECDH public key of an ADMITTED device, verified against the identity key from its admission (never against
 	 * the self-declared dev/<id> entry). A key verified once is remembered, so tampering with meta cannot swap it.
 	 */
-	async function peerEcdhPub(deviceId: string): Promise<Uint8Array | null> {
+	async function peerEcdhPub(deviceId: string): Promise<{ pub: Uint8Array; kem: Uint8Array } | null> {
 		const idPub = trusted.get(deviceId)?.pub;
 		if (!idPub) return null;
 		const slot = `${deviceId}|${idPub}`;
-		const e = meta.get(ECDH_PREFIX + deviceId) as { pub: string; sig: string } | undefined;
-		if (e && typeof e.pub === "string" && typeof e.sig === "string" && e.pub !== ecdhOk[slot]) {
+		const e = meta.get(ECDH_PREFIX + deviceId) as { pub: string; kem: string; sig: string } | undefined;
+		const cur = ecdhOk[slot];
+		if (
+			e &&
+			typeof e.pub === "string" &&
+			typeof e.kem === "string" &&
+			typeof e.sig === "string" &&
+			(e.pub !== cur?.pub || e.kem !== cur?.kem)
+		) {
 			try {
-				if (identityVerify(b64uDecode(idPub), ecdhSignedBytes(deviceId, e.pub), b64uDecode(e.sig))) {
-					ecdhOk = { ...ecdhOk, [slot]: e.pub };
-					await store.set("ecdh", ecdhOk);
+				const kem = b64uDecode(e.kem);
+				if (
+					kem.length === ML_KEM_PUBLIC_KEY_BYTES &&
+					(await isEcdhPublicKey(b64uDecode(e.pub))) &&
+					identityVerify(b64uDecode(idPub), ecdhSignedBytes(deviceId, e.pub, e.kem), b64uDecode(e.sig))
+				) {
+					// FIPS 203 input check (modulus) once, here, like the P-256 point check above: a member must not be able
+					// to break the owner's re-keying by vouching for a malformed key (wrapping would throw on it)
+					kemEncapsulate(kem);
+					ecdhOk = { ...ecdhOk, [slot]: { pub: e.pub, kem: e.kem } };
+					await store.set(KEX_KEY, ecdhOk);
 				}
 			} catch {}
 		}
-		return ecdhOk[slot] ? b64uDecode(ecdhOk[slot]) : null;
+		const k = ecdhOk[slot];
+		return k ? { pub: b64uDecode(k.pub), kem: b64uDecode(k.kem) } : null;
 	}
 
 	// ---- keys ----
@@ -1073,14 +1113,15 @@ export function createMesh(opts: MeshOptions): Mesh {
 	function parseRotate(body: Uint8Array): RotateMsg | null {
 		try {
 			const m = JSON.parse(fromUtf8(body)) as RotateMsg;
-			if (!m || !isRotRecord(m.rot) || typeof m.to !== "string" || typeof m.wrap !== "string") return null;
+			if (!m || !isRotRecord(m.rot) || typeof m.to !== "string" || typeof m.wrap !== "string" || m.wrap.length > MAX_WRAP_CHARS)
+				return null;
 			const w = m.wraps;
 			const okWraps =
 				w === undefined ||
 				(typeof w === "object" &&
 					w !== null &&
 					!Array.isArray(w) &&
-					Object.entries(w).every(([k, v]) => m.rot.to.includes(k) && typeof v === "string" && v.length <= 256));
+					Object.entries(w).every(([k, v]) => m.rot.to.includes(k) && typeof v === "string" && v.length <= MAX_WRAP_CHARS));
 			return okWraps ? m : null;
 		} catch {
 			return null;
@@ -1132,7 +1173,15 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const info = { from: rot.from, revoked: rot.revoked, epoch: rot.epoch };
 		let newKey: Uint8Array;
 		try {
-			newKey = await unwrapMeshKey((await ecdhIdentity()).privateKey, fromPub, await rotationPreId(rot), rot.from, me, m.wrap);
+			newKey = await unwrapMeshKey(
+				(await ecdhIdentity()).privateKey,
+				(await kemIdentity()).secretKey,
+				fromPub.pub,
+				await rotationPreId(rot),
+				rot.from,
+				me,
+				m.wrap,
+			);
 		} catch {
 			emit("rejected", { reason: "rotation wrap does not authenticate", ...info });
 			return;
@@ -1543,7 +1592,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		for (const t of targets) revs.push(...(revRecs.get(t) ?? []));
 		for (const l of [...links]) if (l.deviceId && isRevoked(l.deviceId)) closeRec(l);
 		const priv = (await ecdhIdentity()).privateKey;
-		const pubs = new Map<string, Uint8Array>();
+		const pubs = new Map<string, { pub: Uint8Array; kem: Uint8Array }>();
 		for (const d of trusted.values()) {
 			if (targets.includes(d.deviceId) || isRevoked(d.deviceId)) continue;
 			const pub = await peerEcdhPub(d.deviceId);
@@ -1563,7 +1612,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 		// wraps are bound to the pre-id; the final id also commits to the whole wrap set (finding 5)
 		const pid = await rotationPreId(rec);
 		const wraps = new Map<string, string>();
-		for (const [to, pub] of pubs) wraps.set(to, await wrapMeshKey(priv, pub, pid, me, to, newKey));
+		for (const [to, k] of pubs) wraps.set(to, await wrapMeshKey(priv, k.pub, k.kem, pid, me, to, newKey));
+		// (every key in `pubs` passed the ML-KEM input check in peerEcdhPub, so no recipient can make this throw)
 		rec.wh = await wrapsHash(Object.fromEntries(wraps));
 		const id = await rotationId(rec);
 		// 1) hand each connected recipient ITS OWN wrap (under every recent key), 2) switch, 3) publish under the NEW key
@@ -1833,7 +1883,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 				cands.clear();
 				curRot = null;
 				await store.set(RETIRED_KEY, []);
-				await store.set("ecdh", ecdhOk);
+				await store.set(KEX_KEY, ecdhOk);
 				await persistRevoked();
 			}
 			root = g.root;

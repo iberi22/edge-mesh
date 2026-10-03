@@ -16,28 +16,39 @@ describe("SAS on pairing", () => {
 		b.mesh.destroy();
 	});
 
-	it("is derived from the whole transcript: both ephemeral keys, both nonces and the host identity", async () => {
+	it("is derived from the whole transcript: both ephemeral keys, the KEM key and ciphertext, both nonces and the host identity", async () => {
 		const vault = await makeVault("host");
 		const offer = await createPairOffer(vault, { mid: "m", root: vault.deviceId, appId: "app", topic: "app/data/x", now: Date.now() });
 		const gPub = b64uEncode(randomBytes(65));
 		const nonce = b64uEncode(randomBytes(16));
-		const shared = randomBytes(32);
-		const t = await pairTranscript(offer.payload, gPub, nonce);
+		const gKem = b64uEncode(randomBytes(1184));
+		const ct = b64uEncode(randomBytes(1088));
+		const shared = randomBytes(64); // ML-KEM secret || ECDH secret
+		const tr = (p = offer.payload, e = gPub, n = nonce, k = gKem, c = ct) => pairTranscript(p, e, n, k, c);
+		const t = await tr();
 		expect(t.length).toBe(32);
 		const base = await sasCode(shared, t);
 		expect(base).toMatch(/^\d{6}$/);
-		expect(await sasCode(shared, await pairTranscript(offer.payload, gPub, nonce))).toBe(base); // deterministic
+		expect(await sasCode(shared, await tr())).toBe(base); // deterministic
 		const variants = [
-			await pairTranscript(offer.payload, b64uEncode(randomBytes(65)), nonce), // guest ephemeral key
-			await pairTranscript(offer.payload, gPub, b64uEncode(randomBytes(16))), // guest nonce
-			await pairTranscript({ ...offer.payload, hostPub: b64uEncode(randomBytes(65)) }, gPub, nonce), // host ephemeral key
-			await pairTranscript({ ...offer.payload, pairSecret: b64uEncode(randomBytes(16)) }, gPub, nonce), // host nonce
-			await pairTranscript({ ...offer.payload, hostId: b64uEncode(randomBytes(32)) }, gPub, nonce), // host identity
-			await pairTranscript({ ...offer.payload, root: "other-root" }, gPub, nonce), // trust root named by the QR
+			await tr(offer.payload, b64uEncode(randomBytes(65))), // guest ephemeral ECDH key
+			await tr(offer.payload, gPub, b64uEncode(randomBytes(16))), // guest nonce
+			await tr(offer.payload, gPub, nonce, b64uEncode(randomBytes(1184))), // guest ephemeral ML-KEM key
+			await tr(offer.payload, gPub, nonce, gKem, b64uEncode(randomBytes(1088))), // host's ML-KEM ciphertext
+			await tr({ ...offer.payload, hostPub: b64uEncode(randomBytes(65)) }), // host ephemeral key
+			await tr({ ...offer.payload, pairSecret: b64uEncode(randomBytes(16)) }), // host nonce
+			await tr({ ...offer.payload, hostId: b64uEncode(randomBytes(32)) }), // host identity
+			await tr({ ...offer.payload, root: "other-root" }), // trust root named by the QR
 		];
 		for (const v of variants) expect(Array.from(v)).not.toEqual(Array.from(t));
 		const codes = await Promise.all(variants.map((v) => sasCode(shared, v)));
 		expect(codes.filter((c) => c === base).length).toBeLessThanOrEqual(1); // 1e-6 chance each
+		// either half of the hybrid secret changes the code
+		const half = shared.slice();
+		half[0] ^= 1;
+		const half2 = shared.slice();
+		half2[63] ^= 1;
+		expect([await sasCode(half, t), await sasCode(half2, t)].filter((c) => c === base).length).toBeLessThanOrEqual(1);
 	});
 
 	it("a mismatch rejected on the host aborts the pairing on both sides; nothing is admitted", async () => {

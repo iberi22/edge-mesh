@@ -80,10 +80,11 @@ describe("H2: only authorized issuers revoke / rotate", () => {
 		expect(rejected).not.toContain("rotation not authorized");
 		// ...and the wrap itself is bound to the record: under the tampered record's id it does not open
 		const bEcdh = await b.vault.getEcdhIdentity!();
+		const bKem = (await b.vault.getKemIdentity!()).secretKey;
 		const aPub = b64uDecode(metaOf(a).get(`ecdh/${a.id}`).pub);
 		const tamperedId = await rotationPreId({ ...w.rec, revoked: [d.id] });
-		await expect(unwrapMeshKey(bEcdh.privateKey, aPub, tamperedId, a.id, b.id, w.wrap)).rejects.toThrow();
-		expect((await unwrapMeshKey(bEcdh.privateKey, aPub, await rotationPreId(w.rec), a.id, b.id, w.wrap)).length).toBe(32);
+		await expect(unwrapMeshKey(bEcdh.privateKey, bKem, aPub, tamperedId, a.id, b.id, w.wrap)).rejects.toThrow();
+		expect((await unwrapMeshKey(bEcdh.privateKey, bKem, aPub, await rotationPreId(w.rec), a.id, b.id, w.wrap)).length).toBe(32);
 		for (const x of [a, b2, c, d]) x.mesh.destroy();
 	});
 });

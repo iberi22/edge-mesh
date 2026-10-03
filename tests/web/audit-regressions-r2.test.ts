@@ -520,6 +520,8 @@ describe("audit round 2 regressions: web/provider", () => {
 			await x1.mesh.revoke(m2.id).catch(() => {}); // from its (possibly jumped) epoch
 			await settle(1000);
 			expect(a.mesh.epoch).toBeLessThan(16);
+			// the owner's re-key (cutting m2) may land at the end of the settle window: wait for it to reach C
+			await until(() => c.mesh.epoch === a.mesh.epoch, 5000).catch(() => {});
 			expect(c.mesh.epoch).toBe(a.mesh.epoch);
 			// new links still authenticate (restart), and the owner can still revoke the admin
 			c.mesh.destroy();

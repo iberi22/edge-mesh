@@ -10,13 +10,15 @@ async function forgeSlot(insider: Dev, claimed?: string) {
 	const fake = await makeVault(claimed ? `forged-${claimed}` : "fake");
 	const id = claimed ?? fake.deviceId; // self-registration under its own (valid) id, or a claim on someone else's
 	const ecdh = await fake.getEcdhIdentity!();
+	const kemId = await fake.getKemIdentity!();
 	const pub = b64uEncode(ecdh.publicKey);
-	const sig = b64uEncode(await fake.sign(ecdhSignedBytes(id, pub)));
+	const kem = b64uEncode(kemId.publicKey);
+	const sig = b64uEncode(await fake.sign(ecdhSignedBytes(id, pub, kem)));
 	insider.doc.transact(() => {
 		metaOf(insider).set(`dev/${id}`, { deviceId: id, pub: b64uEncode(fake.devicePublicKey), name: id, addedAt: Date.now() });
-		metaOf(insider).set(`ecdh/${id}`, { pub, sig });
+		metaOf(insider).set(`ecdh/${id}`, { pub, kem, sig });
 	});
-	return { fake, ecdh };
+	return { fake, ecdh, kemId };
 }
 
 describe("H1: only admitted devices are trusted (rotation wraps, ECDH keys, device list)", () => {
@@ -52,12 +54,12 @@ describe("H1: only admitted devices are trusted (rotation wraps, ECDH keys, devi
 		const hub = createLoopbackHub();
 		const { a, b, c } = await trio(hub);
 		const realBEcdh = metaOf(a).get(`ecdh/${b.id}`).pub;
-		const { ecdh } = await forgeSlot(c, b.id);
+		const { ecdh, kemId } = await forgeSlot(c, b.id);
 		await until(() => metaOf(a).get(`ecdh/${b.id}`).pub !== realBEcdh);
 		await a.mesh.revoke(c.id);
 		const aPub = b64uDecode(metaOf(a).get(`ecdh/${a.id}`).pub);
 		for (const w of storedWraps(a, 1).filter((x) => x.to === b.id)) {
-			await expect(unwrapMeshKey(ecdh.privateKey, aPub, await rotationPreId(w.rec), a.id, b.id, w.wrap)).rejects.toThrow();
+			await expect(unwrapMeshKey(ecdh.privateKey, kemId.secretKey, aPub, await rotationPreId(w.rec), a.id, b.id, w.wrap)).rejects.toThrow();
 		}
 		// B keeps its real key pinned: it adopts the new epoch (wrap made for its REAL ECDH key)
 		await until(() => b.mesh.epoch === 1);

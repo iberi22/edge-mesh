@@ -17,7 +17,7 @@ import {
 	hostProofBytes,
 	type PairPayload,
 } from "../../src/web/pairing.js";
-import { identityVerify } from "../../src/web/pq.js";
+import { identityVerify, kemKeygen } from "../../src/web/pq.js";
 import { generateEcdhIdentity } from "../../src/web/rotation.js";
 import { b64uEncode, randomBytes } from "../../src/web/util.js";
 
@@ -47,6 +47,7 @@ export async function makeVault(
 	ID_OF.set(lbl, id);
 	LABEL_OF.set(id, lbl);
 	const ecdh = await generateEcdhIdentity(); // persistent for the life of this vault (like a real one)
+	const kem = kemKeygen(); // ML-KEM-768 half of the hybrid rotation wraps, persistent as well
 	const kv = new Map<string, unknown>(); // local, non-replicated state (trust pins, revocations): survives "reloads"
 	const v = {
 		deviceId: id,
@@ -63,6 +64,7 @@ export async function makeVault(
 			return ml_dsa65.sign(data, kp.secretKey);
 		},
 		getEcdhIdentity: async () => ecdh,
+		getKemIdentity: async () => kem,
 		getEpoch: () => v.epoch,
 		setEpoch: (n: number) => void (v.epoch = n),
 		kv,

@@ -13,6 +13,7 @@ export const ML_DSA_PUBLIC_KEY_BYTES = 1952;
 export const ML_DSA_SECRET_KEY_BYTES = 4032;
 export const ML_DSA_SIGNATURE_BYTES = 3309;
 export const ML_KEM_PUBLIC_KEY_BYTES = 1184;
+export const ML_KEM_SECRET_KEY_BYTES = 2400;
 export const ML_KEM_CIPHERTEXT_BYTES = 1088;
 
 /**

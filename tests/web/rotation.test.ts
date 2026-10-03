@@ -123,6 +123,7 @@ async function revokedCannotLearn(a: Dev, c: Dev, inbox: Uint8Array[], oldKey: U
 	}
 	// ...and none of the stored wraps unwraps for it
 	const cEcdh = await c.vault.getEcdhIdentity!();
+	const cKem = await c.vault.getKemIdentity!();
 	const aPub = b64uDecode(metaOf(a).get(`ecdh/${a.id}`).pub);
 	const wraps = storedWraps(a, 1);
 	expect(wraps.length).toBeGreaterThan(0);
@@ -130,8 +131,8 @@ async function revokedCannotLearn(a: Dev, c: Dev, inbox: Uint8Array[], oldKey: U
 	for (const w of wraps) {
 		expect(w.rec.to).not.toContain(c.id);
 		const pid = await rotationPreId(w.rec);
-		await expect(unwrapMeshKey(cEcdh.privateKey, aPub, pid, w.rec.from, c.id, w.wrap)).rejects.toThrow();
-		await expect(unwrapMeshKey(cEcdh.privateKey, aPub, pid, w.rec.from, w.to, w.wrap)).rejects.toThrow();
+		await expect(unwrapMeshKey(cEcdh.privateKey, cKem.secretKey, aPub, pid, w.rec.from, c.id, w.wrap)).rejects.toThrow();
+		await expect(unwrapMeshKey(cEcdh.privateKey, cKem.secretKey, aPub, pid, w.rec.from, w.to, w.wrap)).rejects.toThrow();
 	}
 }
 

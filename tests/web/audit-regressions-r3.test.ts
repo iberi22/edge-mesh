@@ -108,6 +108,7 @@ describe("audit round 3 regressions: owner-only re-keying", () => {
 			wraps[t] = await wrapMeshKey(
 				priv,
 				b64uDecode(metaOf(a).get(`ecdh/${t}`).pub),
+				b64uDecode(metaOf(a).get(`ecdh/${t}`).kem),
 				id,
 				x1.id,
 				t,

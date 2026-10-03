@@ -24,6 +24,13 @@ export interface VaultClient {
 	 */
 	getEcdhIdentity?(): Promise<{ privateKey: CryptoKey; publicKey: Uint8Array }>;
 	/**
+	 * Optional: persistent static ML-KEM-768 key pair of this device (raw bytes: encapsulation key 1184 B,
+	 * decapsulation key 2400 B), the post-quantum half of the hybrid rotation wraps (AGENTS.md §2). Keep the
+	 * decapsulation key encrypted at rest. Without it the mesh keeps an in-memory key for the session only (same
+	 * caveat as `getEcdhIdentity`).
+	 */
+	getKemIdentity?(): Promise<{ publicKey: Uint8Array; secretKey: Uint8Array }>;
+	/**
 	 * Optional: persist the rotation epoch (otherwise it lives in the mesh's device-local store). The epoch is never
 	 * taken from the shared doc.
 	 */
