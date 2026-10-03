@@ -2,8 +2,34 @@
 // to the trust root pinned locally on this device. Replaces "whoever writes dev/<id> into meta is a member".
 // Deliberately small: capability grants (per-module permissions, expiry, delegation depth) are a separate
 // layer that can take over through MeshOptions.authorizeDevice / canRotate.
+import { fingerprint } from "./rooms.js";
 import type { VaultClient } from "./types.js";
 import { b64uDecode, b64uEncode, utf8 } from "./util.js";
+
+/** A deviceId is the fingerprint of the device identity key: base64url(SHA-256(pub))[0..22]. */
+export const DEVICE_ID_RE = /^[A-Za-z0-9_-]{22}$/;
+export const isDeviceId = (x: unknown): x is string =>
+	typeof x === "string" && DEVICE_ID_RE.test(x);
+
+const fpCache = new Map<string, string>();
+/** True iff `deviceId` is the fingerprint of the base64url identity key `pub` (the binding every check relies on). */
+export async function idMatchesPub(
+	deviceId: string,
+	pub: string,
+): Promise<boolean> {
+	if (!isDeviceId(deviceId) || typeof pub !== "string") return false;
+	let fp = fpCache.get(pub);
+	if (fp === undefined) {
+		try {
+			fp = await fingerprint(b64uDecode(pub));
+		} catch {
+			return false;
+		}
+		if (fpCache.size >= 4096) fpCache.clear();
+		fpCache.set(pub, fp);
+	}
+	return fp === deviceId;
+}
 
 export type Role = "owner" | "admin" | "member";
 
@@ -119,8 +145,11 @@ export async function verifyChain(
 	memo: Map<string, Promise<Admission | null>> = new Map(),
 	depth = 0,
 ): Promise<Admission | null> {
-	if (deviceId === ctx.root.deviceId) return rootAdmission(ctx.root);
-	if (depth > MAX_DEPTH) return null;
+	if (deviceId === ctx.root.deviceId)
+		return (await idMatchesPub(ctx.root.deviceId, ctx.root.pub))
+			? rootAdmission(ctx.root)
+			: null;
+	if (depth > MAX_DEPTH || !isDeviceId(deviceId)) return null;
 	const hit = memo.get(deviceId);
 	if (hit) return hit;
 	const p = (async () => {
@@ -135,6 +164,7 @@ export async function verifyChain(
 			)
 				continue;
 			if (revoked !== undefined && revoked >= a.at) continue;
+			if (!(await idMatchesPub(a.deviceId, a.pub))) continue; // identity = key fingerprint (B1)
 			const issuer = await verifyChain(ctx, a.by, memo, depth + 1);
 			if (!issuer || !canIssue(issuer.role, a.role)) continue;
 			try {

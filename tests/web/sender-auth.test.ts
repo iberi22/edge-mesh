@@ -47,10 +47,10 @@ describe("sender authentication inside the mesh (signed frames, on by default)",
 		const c = await makeDev("devC", hub, undefined, { signaling: [tapped(hub.transport(), cLinks)] });
 		await pair(a, b);
 		await pair(a, c);
-		await until(() => a.mesh.peers.includes("devC") && c.mesh.peers.includes("devA"));
-		const toA = cLinks.filter((l) => l.id === "devA").at(-1)!;
+		await until(() => a.mesh.peers.includes(c.id) && c.mesh.peers.includes(a.id));
+		const toA = cLinks.filter((l) => l.id === a.id).at(-1)!;
 		const instance = await fingerprint(a.vault.devicePublicKey);
-		toA.send(await forgeUnsigned(c.vault.meshKey!, instance, 0, "devB", 1, updateSetting("forged", "as-B")));
+		toA.send(await forgeUnsigned(c.vault.meshKey!, instance, 0, b.id, 1, updateSetting("forged", "as-B")));
 		await settle();
 		expect(a.doc.getMap("data").get("forged")).toBeUndefined();
 		// sanity: C's own, regular writes still flow
@@ -64,7 +64,7 @@ describe("sender authentication inside the mesh (signed frames, on by default)",
 		const a = await makeDev("devA", hub);
 		const b = await makeDev("devB", hub);
 		await pair(a, b);
-		await until(() => a.mesh.peers.includes("devB"));
+		await until(() => a.mesh.peers.includes(b.id));
 		// an outsider got hold of the mesh key (e.g. from a stolen backup) and registers itself in a copy of the doc
 		const fake = await makeVault("intruder");
 		fake.meshKey = a.vault.meshKey;
@@ -76,7 +76,7 @@ describe("sender authentication inside the mesh (signed frames, on by default)",
 		doc.getMap("data").set("intruded", 1);
 		await settle(300);
 		expect(a.doc.getMap("data").get("intruded")).toBeUndefined();
-		expect(metaOf(a).get("dev/intruder")).toBeUndefined();
+		expect(metaOf(a).get(`dev/${fake.deviceId}`)).toBeUndefined();
 		im.destroy();
 		a.mesh.destroy();
 		b.mesh.destroy();
@@ -90,7 +90,7 @@ describe("sender authentication inside the mesh (signed frames, on by default)",
 		const a = await makeDev("devA", hub, undefined, { signaling: [t] });
 		const b = await makeDev("devB", hub);
 		await pair(a, b);
-		await until(() => a.mesh.peers.includes("devB"));
+		await until(() => a.mesh.peers.includes(b.id));
 		for (const l of links) {
 			const send = l.send.bind(l);
 			l.send = (d) => (firstBytes.add(d[0]), send(d));
@@ -106,16 +106,16 @@ describe("sender authentication inside the mesh (signed frames, on by default)",
 	it("frames that race ahead of a new member's admission are held, then applied: both sides converge", async () => {
 		const hub = createLoopbackHub();
 		const a = await makeDev("devA", hub);
-		const b = await makeDev("devB", hub, undefined, { signaling: [tapped(hub.transport(), [], "devA", 400)] });
+		const b = await makeDev("devB", hub, undefined, { signaling: [tapped(hub.transport(), [], a.id, 400)] });
 		await pair(a, b);
-		await until(() => b.mesh.peers.includes("devA") && a.mesh.peers.includes("devB"));
+		await until(() => b.mesh.peers.includes(a.id) && a.mesh.peers.includes(b.id));
 		b.doc.getMap("data").set("b-only", 1);
 		await until(() => a.doc.getMap("data").get("b-only") === 1, 3000);
 		const e = await makeDev("devE", hub);
 		e.doc.getMap("data").set("e-only", 1);
 		await pair(a, e); // B learns E's admission from A only ~400 ms later; E reaches B first
 		await until(() => e.doc.getMap("data").get("b-only") === 1 && b.doc.getMap("data").get("e-only") === 1, 4000);
-		await until(() => b.mesh.peers.includes("devE"));
+		await until(() => b.mesh.peers.includes(e.id));
 		for (const x of [a, b, e]) x.mesh.destroy();
 	});
 

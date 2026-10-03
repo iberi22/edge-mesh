@@ -7,6 +7,8 @@ import {
 	type TrustRoot,
 	canIssue,
 	canRevokeRole,
+	idMatchesPub,
+	isDeviceId,
 	signAdmission,
 	signRevocation,
 	verifyChain,
@@ -52,8 +54,8 @@ export interface MeshOptions {
 	store?: MeshStore;
 	/**
 	 * Replaces the built-in admission check (signed admission chain up to the pinned root). Called for every
-	 * candidate device with the identity key the mesh would trust for it; it MUST check that this key belongs to
-	 * `deviceId` (e.g. against a signed grant), because the shared doc is writable by every member.
+	 * candidate device with the identity key the mesh would trust for it (the mesh already checked that `deviceId`
+	 * is the fingerprint of that key); it decides whether that key is a member (e.g. against a signed grant).
 	 * Only devices it accepts receive rotation wraps, have their ECDH key used and appear in `devices()`.
 	 */
 	authorizeDevice?: (deviceId: string, devicePub: Uint8Array) => boolean | Promise<boolean>;
@@ -326,7 +328,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 			if (adm?.sig) nextCache[id] = adm;
 			const dev = meta.get(DEV + id) as Device | undefined;
 			const pub = adm?.pub ?? (opts.authorizeDevice && typeof dev?.pub === "string" ? dev.pub : undefined);
-			if (!pub) continue;
+			if (!pub || !(await idMatchesPub(id, pub))) continue;
 			if (opts.authorizeDevice ? !(await opts.authorizeDevice(id, b64uDecode(pub))) : !adm) continue;
 			if (adm) nextAt.set(id, adm.at);
 			next.set(id, {
@@ -355,6 +357,10 @@ export function createMesh(opts: MeshOptions): Mesh {
 	// ---- persistence ----
 	let persistence: { destroy(): Promise<void> | void } | null = null;
 	const ready = (async () => {
+		// B1: a deviceId IS the fingerprint of the identity key; every peer enforces it, so must we
+		if (!(await idMatchesPub(vault.deviceId, b64uEncode(vault.devicePublicKey)))) {
+			throw new Error("vault.deviceId must be fingerprint(vault.devicePublicKey) (see web/rooms fingerprint)");
+		}
 		const r = (await store.get("root")) as TrustRoot | undefined;
 		if (r && typeof r.deviceId === "string" && typeof r.pub === "string" && typeof r.mid === "string") root = r;
 		const rv = (await store.get("revoked")) as Record<string, number> | undefined;
@@ -536,8 +542,9 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const signed = data[0] === F_SDATA;
 		if (!signed && signFrames) return reject("unsigned frame");
 		const idLen = data[1];
+		if (data.length < 2 + idLen) return;
 		const sender = fromUtf8(data.subarray(2, 2 + idLen));
-		if (isRevoked(sender)) return;
+		if (!isDeviceId(sender) || isRevoked(sender)) return;
 		if (rec.deviceId && rec.deviceId !== sender) return reject("frame sender does not match the link", sender);
 		const rid = lg ? lg.rid : dataRid;
 		let plain: Uint8Array;
@@ -923,8 +930,14 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const pairKey = await derivePairKey(offer.pairSecret);
 		const host = new HostPairing(offer, {
 			now,
+			verify: (pub, data, sig) => vault.verify(pub, data, sig),
 			onSas: (p: SasPrompt) => emit("sas", { role: "host", ...p }),
 			buildGrant: async (guest): Promise<GrantBody> => {
+				// B1: the ack already proved possession of guest.pub and deviceId = fingerprint(pub). Never admit a
+				// device under the identity of this host, of the root, or of a member admitted with another key.
+				if (guest.deviceId === vault.deviceId || guest.deviceId === r.deviceId) throw new Error("guest claims the host/root identity");
+				const known = trusted.get(guest.deviceId)?.pub ?? admCache[guest.deviceId]?.pub;
+				if (known !== undefined && known !== guest.pub) throw new Error("deviceId already admitted with another key");
 				const adm = await signAdmission(vault, {
 					mid: r.mid,
 					deviceId: guest.deviceId,

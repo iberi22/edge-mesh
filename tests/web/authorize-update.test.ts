@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createLoopbackHub } from "../../src/web/index.js";
-import { makeDev, pair, until } from "./helpers.js";
+import { idOf, makeDev, pair, until } from "./helpers.js";
 
 describe("authorizeUpdate hook (data authorization plugs in here)", () => {
 	it("is called with the AUTHENTICATED sender; a refused update is not applied and is reported", async () => {
@@ -9,7 +9,7 @@ describe("authorizeUpdate hook (data authorization plugs in here)", () => {
 		const a = await makeDev("devA", hub, undefined, {
 			authorizeUpdate: (sender: string, update: Uint8Array) => {
 				calls.push(sender);
-				return sender !== "devC" && update.length > 0;
+				return sender !== idOf("devC") && update.length > 0;
 			},
 		});
 		const b = await makeDev("devB", hub);
@@ -21,10 +21,10 @@ describe("authorizeUpdate hook (data authorization plugs in here)", () => {
 		a.mesh.on("rejected", (e) => rejected.push(e));
 		b.doc.getMap("data").set("fromB", 1);
 		c.doc.getMap("data").set("fromC", 1);
-		await until(() => a.doc.getMap("data").get("fromB") === 1 && rejected.some((r) => r.from === "devC"));
+		await until(() => a.doc.getMap("data").get("fromB") === 1 && rejected.some((r) => r.from === c.id));
 		expect(a.doc.getMap("data").get("fromC")).toBeUndefined();
-		expect(rejected.find((r) => r.from === "devC").reason).toBe("update not authorized");
-		expect(new Set(calls)).toEqual(new Set(["devB", "devC"]));
+		expect(rejected.find((r) => r.from === c.id).reason).toBe("update not authorized");
+		expect(new Set(calls)).toEqual(new Set([b.id, c.id]));
 		for (const x of [a, b, c]) x.mesh.destroy();
 	});
 });

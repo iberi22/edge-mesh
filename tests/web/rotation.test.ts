@@ -76,7 +76,7 @@ async function mk(id: string, hub: LoopbackHub, o: Opts = {}): Promise<Dev> {
 		});
 	const mesh = createMesh({ appId: APP, topic: TOPIC, doc, vault, signaling: [t], deviceName: id });
 	await mesh.ready;
-	return { doc, mesh, vault };
+	return { doc, mesh, vault, id: vault.deviceId };
 }
 
 const metaOf = (d: Dev) => d.doc.getMap<any>("meta");
@@ -88,7 +88,7 @@ async function trio(hub: LoopbackHub, opts: { c?: Opts; a?: Opts; b?: Opts } = {
 	await pair(a, c);
 	await until(() => a.mesh.peers.length === 2 && b.mesh.peers.length >= 1 && c.mesh.peers.length >= 1);
 	// every device's ECDH key reached every other device's meta (needed to wrap)
-	await until(() => [a, b, c].every((d) => ["devA", "devB", "devC"].every((id) => metaOf(d).has(`ecdh/${id}`))));
+	await until(() => [a, b, c].every((d) => [a, b, c].every((x) => metaOf(d).has(`ecdh/${x.id}`))));
 	return { a, b, c };
 }
 
@@ -123,14 +123,14 @@ async function revokedCannotLearn(a: Dev, c: Dev, inbox: Uint8Array[], oldKey: U
 	}
 	// ...and none of the stored wraps unwraps for it
 	const cEcdh = await c.vault.getEcdhIdentity!();
-	const aPub = b64uDecode(metaOf(a).get("ecdh/devA").pub);
+	const aPub = b64uDecode(metaOf(a).get(`ecdh/${a.id}`).pub);
 	const wraps = [...metaOf(a).keys()].filter((k) => k.startsWith("rot:1:"));
 	expect(wraps.length).toBeGreaterThan(0);
-	expect(wraps).not.toContain("rot:1:devC");
+	expect(wraps).not.toContain(`rot:1:${c.id}`);
 	for (const k of wraps) {
 		const w = metaOf(a).get(k);
-		await expect(unwrapMeshKey(cEcdh.privateKey, aPub, 1, w.from, "devC", b64uDecode(w.wrap), "devC")).rejects.toThrow();
-		await expect(unwrapMeshKey(cEcdh.privateKey, aPub, 1, w.from, k.split(":")[2], b64uDecode(w.wrap), "devC")).rejects.toThrow();
+		await expect(unwrapMeshKey(cEcdh.privateKey, aPub, 1, w.from, c.id, b64uDecode(w.wrap), c.id)).rejects.toThrow();
+		await expect(unwrapMeshKey(cEcdh.privateKey, aPub, 1, w.from, k.split(":")[2], b64uDecode(w.wrap), c.id)).rejects.toThrow();
 	}
 }
 
@@ -140,7 +140,7 @@ describe("revoke / rotation", () => {
 		const inbox: Uint8Array[] = [];
 		const { a, b, c } = await trio(hub, { c: { inbox } });
 		const oldKey = a.vault.meshKey!;
-		await a.mesh.revoke("devC");
+		await a.mesh.revoke(c.id);
 		await until(() => b.mesh.epoch === 1);
 		expect(b.vault.meshKey).toEqual(a.vault.meshKey);
 		a.doc.getMap("data").set("after", "x");
@@ -155,11 +155,11 @@ describe("revoke / rotation", () => {
 		const hub = createLoopbackHub();
 		const inbox: Uint8Array[] = [];
 		const { a, b, c } = await trio(hub, { a: { slowClose: 300 }, c: { inbox } });
-		expect(a.mesh.peers).toContain("devC");
+		expect(a.mesh.peers).toContain(c.id);
 		const oldKey = a.vault.meshKey!;
-		const p = a.mesh.revoke("devC");
-		await until(() => !a.mesh.peers.includes("devC"), 200); // dropped from the set while the transport link is still open...
-		expect(c.mesh.peers).toContain("devA"); // ...C has not even seen the (300 ms delayed) close yet
+		const p = a.mesh.revoke(c.id);
+		await until(() => !a.mesh.peers.includes(c.id), 200); // dropped from the set while the transport link is still open...
+		expect(c.mesh.peers).toContain(a.id); // ...C has not even seen the (300 ms delayed) close yet
 		await p;
 		await until(() => b.mesh.epoch === 1);
 		await new Promise((r) => setTimeout(r, 400)); // outlive the slow close
@@ -173,14 +173,14 @@ describe("revoke / rotation", () => {
 		const { a, b, c } = await trio(hub, { c: { inbox } });
 		const oldKey = a.vault.meshKey!;
 		b.mesh.destroy(); // B goes offline (keeps its doc + vault: "persisted")
-		await a.mesh.revoke("devC");
+		await a.mesh.revoke(c.id);
 		expect(a.mesh.epoch).toBe(1);
-		expect(metaOf(a).has("rot:1:devB")).toBe(true);
+		expect(metaOf(a).has(`rot:1:${b.id}`)).toBe(true);
 		expect(b.vault.meshKey).toEqual(oldKey);
 		const b2 = await mk("devB", hub, { doc: b.doc, vault: b.vault });
 		await until(() => b2.mesh.epoch === 1, 5000);
 		expect(b2.vault.meshKey).toEqual(a.vault.meshKey);
-		await until(() => b2.mesh.peers.includes("devA"));
+		await until(() => b2.mesh.peers.includes(a.id));
 		a.doc.getMap("data").set("late", "y");
 		await until(() => b2.doc.getMap("data").get("late") === "y");
 		await new Promise((r) => setTimeout(r, 80));
@@ -194,11 +194,11 @@ describe("revoke / rotation", () => {
 	it("remaining peers that adopt the rotation drop their link to the revoked device", async () => {
 		const hub = createLoopbackHub();
 		const { a, b, c } = await trio(hub);
-		await until(() => b.mesh.peers.includes("devC"));
-		await a.mesh.revoke("devC");
+		await until(() => b.mesh.peers.includes(c.id));
+		await a.mesh.revoke(c.id);
 		await until(() => b.mesh.epoch === 1);
-		expect(b.mesh.peers).not.toContain("devC");
-		expect(b.mesh.peers).toContain("devA");
+		expect(b.mesh.peers).not.toContain(c.id);
+		expect(b.mesh.peers).toContain(a.id);
 		for (const x of [a, b, c]) x.mesh.destroy();
 	});
 });

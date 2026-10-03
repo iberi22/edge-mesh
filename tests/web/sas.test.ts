@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createLoopbackHub } from "../../src/web/index.js";
 import { createPairOffer, pairTranscript, sasCode } from "../../src/web/pairing.js";
 import { b64uEncode, randomBytes } from "../../src/web/util.js";
-import { makeDev, makeVault, pair } from "./helpers.js";
+import { devLabels, makeDev, makeVault, pair } from "./helpers.js";
 
 describe("SAS on pairing", () => {
 	it("is a 6-digit code, identical on both devices", async () => {
@@ -49,7 +49,7 @@ describe("SAS on pairing", () => {
 		const offer = await a.mesh.pairHost();
 		await expect(b.mesh.pairJoin(offer.payload, { confirmSas: () => true })).rejects.toThrow(/SAS/);
 		expect(failures.join()).toMatch(/host rejected SAS/);
-		expect(a.mesh.devices().map((d) => d.deviceId)).toEqual(["devA"]);
+		expect(devLabels(a.mesh)).toEqual(["devA"]);
 		expect(b.vault.meshKey).toBeNull();
 		a.mesh.destroy();
 		b.mesh.destroy();

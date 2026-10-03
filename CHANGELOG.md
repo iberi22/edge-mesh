@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Core `EdgeMesh`: `requireSignedEnvelopes` is on by default, and signatures are verified before decryption (signed
   + PQC-encrypted SYNC previously never verified).
 
+### Security audit fixes (2026-10-03, `web/`; regression tests in `tests/web/audit-regressions*.test.ts`)
+- **B1 identity takeover via pairing**: `deviceId` is now the fingerprint of the device identity key everywhere
+  (vault self-check, `verifyChain`, `authorizeDevice` path, frame sender ids). The guest signs the pairing transcript
+  with its identity key inside the ack; the host verifies it and refuses guests that claim the host/root identity or
+  an id admitted under another key.
+
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,
   `maxFrameBytes`, `maxMessageBytes`. `VaultClient.store` (optional).
@@ -44,6 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unauthorized ops, replay, forks, seq cut-off, cascade, order independence, tampering).
 
 ### Changed (breaking)
+- `VaultClient.deviceId` must equal `fingerprint(devicePublicKey)` (`createMesh` rejects other vaults); pairing ack
+  carries a signature (`swal-pair-ack/v1`), so hosts and guests must be updated together.
 - Web mesh wire format (signed frames, pairing hello v2, rotation wraps v2, instance-bound room ids): update every
   device together. Meshes paired with the previous version must be re-paired.
 - Only owner/admin devices can host a pairing or revoke. `pairJoin` resolves to `{ host, extra }`.

@@ -1,12 +1,30 @@
 import * as Y from "yjs";
-import { createMesh, createLoopbackHub, type Mesh, type MeshOptions, type VaultClient } from "../../src/web/index.js";
+import { createMesh, createLoopbackHub, fingerprint, type Mesh, type MeshOptions, type VaultClient } from "../../src/web/index.js";
 import type { LoopbackHub } from "../../src/web/index.js";
 import { generateEcdhIdentity } from "../../src/web/rotation.js";
 import { randomBytes } from "../../src/web/util.js";
 
-export async function makeVault(id: string): Promise<VaultClient & { meshKey: Uint8Array | null; epoch: number }> {
+// A deviceId is the fingerprint of the identity key (B1). Tests name devices with labels ("devA"...) and map
+// between both: `idOf(label)` = id of the LAST vault created with that label (tests in a file run sequentially),
+// `label(id)` / `labels(ids)` for readable assertions.
+const ID_OF = new Map<string, string>();
+const LABEL_OF = new Map<string, string>();
+export const idOf = (l: string): string => {
+	const id = ID_OF.get(l);
+	if (!id) throw new Error(`no vault labelled ${l}`);
+	return id;
+};
+export const label = (id: string): string => LABEL_OF.get(id) ?? id;
+export const labels = (ids: Iterable<string>): string[] => [...ids].map(label).sort();
+export const devLabels = (m: Mesh): string[] => labels(m.devices().map((d) => d.deviceId));
+export const peerLabels = (m: Mesh): string[] => labels(m.peers);
+
+export async function makeVault(lbl: string): Promise<VaultClient & { meshKey: Uint8Array | null; epoch: number }> {
 	const kp = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair;
 	const pub = new Uint8Array(await crypto.subtle.exportKey("raw", kp.publicKey));
+	const id = await fingerprint(pub);
+	ID_OF.set(lbl, id);
+	LABEL_OF.set(id, lbl);
 	const ecdh = await generateEcdhIdentity(); // persistent for the life of this vault (like a real one)
 	const kv = new Map<string, unknown>(); // local, non-replicated state (trust pins, revocations): survives "reloads"
 	const v = {
@@ -43,6 +61,8 @@ export interface Dev {
 	doc: Y.Doc;
 	mesh: Mesh;
 	vault: Awaited<ReturnType<typeof makeVault>>;
+	/** deviceId (= fingerprint of the vault's identity key) */
+	id: string;
 }
 
 export async function makeDev(
@@ -55,7 +75,7 @@ export async function makeDev(
 	const vault = extra.vault ?? (await makeVault(id));
 	const mesh = createMesh({ appId: "fize", topic: "fize/data/r1", doc, vault, signaling: [hub.transport()], deviceName: id, now, ...extra });
 	await mesh.ready;
-	return { doc, mesh, vault };
+	return { doc, mesh, vault, id: vault.deviceId };
 }
 
 export const until = async (cond: () => boolean, ms = 3000) => {
@@ -94,7 +114,7 @@ export async function trio(hub: LoopbackHub, extra: { a?: Partial<MeshOptions>; 
 	await pair(a, b);
 	await pair(a, c);
 	await until(() => a.mesh.peers.length === 2 && b.mesh.peers.length >= 1 && c.mesh.peers.length >= 1);
-	await until(() => [a, b, c].every((d) => ["devA", "devB", "devC"].every((id) => metaOf(d).has(`ecdh/${id}`))));
+	await until(() => [a, b, c].every((d) => [a, b, c].every((x) => metaOf(d).has(`ecdh/${x.id}`))));
 	return { a, b, c };
 }
 

@@ -1,4 +1,4 @@
-import type { Admission, TrustRoot } from "./admission.js";
+import { type Admission, idMatchesPub, type TrustRoot } from "./admission.js";
 import { hkdf, importAesKey, openUpdate, sealUpdate } from "./crypto.js";
 import { hmac } from "./rooms.js";
 import type { Device, VaultClient } from "./types.js";
@@ -136,6 +136,35 @@ async function session(shared: Uint8Array, transcript: Uint8Array) {
 	return { key, sas: await sasCode(shared, transcript) };
 }
 
+/**
+ * What the guest signs with its IDENTITY key inside the ack: proof of possession of the key it asks to be admitted
+ * with, bound to this pairing session (transcript) so it cannot be replayed into another one.
+ */
+export const ackSignedBytes = (transcript: Uint8Array, deviceId: string, pub: string, name: string) =>
+	utf8(JSON.stringify(["swal-pair-ack/v1", b64uEncode(transcript), deviceId, pub, name]));
+
+export interface PairAck {
+	deviceId: string;
+	pub: string;
+	name: string;
+	sig: string;
+}
+
+/** Host-side check of a guest ack: deviceId = fingerprint(pub) and a valid signature by that key over the transcript. */
+export async function verifyPairAck(
+	verify: VaultClient["verify"],
+	transcript: Uint8Array,
+	a: Partial<PairAck>,
+): Promise<string | null> {
+	if (typeof a.deviceId !== "string" || typeof a.pub !== "string" || typeof a.sig !== "string") return "malformed ack";
+	if (!(await idMatchesPub(a.deviceId, a.pub))) return "deviceId is not the fingerprint of the guest key";
+	const name = typeof a.name === "string" ? a.name : "";
+	try {
+		if (await verify(b64uDecode(a.pub), ackSignedBytes(transcript, a.deviceId, a.pub, name), b64uDecode(a.sig))) return null;
+	} catch {}
+	return "guest did not prove possession of its identity key";
+}
+
 const helloProof = async (secret: Uint8Array, e: string, n: string) => hmac(await pairMacKey(secret), utf8(`hello/v2|${e}|${n}`));
 
 type Msg =
@@ -162,6 +191,7 @@ export class HostPairing {
 	private burned = false;
 	private done = false;
 	private sess: { key: CryptoKey; sas: string } | null = null;
+	private transcript: Uint8Array | null = null;
 	private hostOk = false;
 	private guestDevice: Omit<Device, "addedAt"> | null = null;
 	private send: PairSend | null = null;
@@ -170,6 +200,8 @@ export class HostPairing {
 		private offer: PairOfferState,
 		private hooks: {
 			now(): number;
+			/** identity-signature check (the host vault's verify) for the guest's proof of possession */
+			verify: VaultClient["verify"];
 			onSas(p: SasPrompt): void;
 			buildGrant(guest: Omit<Device, "addedAt">): Promise<GrantBody>;
 			onPaired(d: Device): void;
@@ -195,8 +227,10 @@ export class HostPairing {
 			if (this.send !== send) return; // only the link that burned the secret may continue
 			if (msg.t === "ack") return await this.onAck(msg);
 			if (msg.t === "abort") return this.fail("guest rejected SAS");
-		} catch {
-			if (this.send === send) this.fail("protocol error");
+		} catch (e) {
+			if (this.send !== send) return;
+			send({ t: "err", e: "refused" });
+			this.fail(e instanceof Error ? e.message : "protocol error");
 		}
 	}
 
@@ -223,7 +257,8 @@ export class HostPairing {
 		this.send = send;
 		const guestPub = await crypto.subtle.importKey("raw", bs(b64uDecode(msg.e)), ECDH, false, []);
 		const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: guestPub }, this.offer.hostKeys.privateKey, 256));
-		this.sess = await session(shared, await pairTranscript(this.offer.payload, msg.e, msg.n));
+		this.transcript = await pairTranscript(this.offer.payload, msg.e, msg.n);
+		this.sess = await session(shared, this.transcript);
 		send({ t: "ready" });
 		this.hooks.onSas({
 			code: this.sess.sas,
@@ -239,12 +274,11 @@ export class HostPairing {
 	}
 
 	private async onAck(msg: Extract<Msg, { t: "ack" }>) {
-		if (!this.sess) return;
-		const body = parse<{ deviceId: string; pub: string; name: string }>(
-			await openUpdate(this.sess.key, b64uDecode(msg.ct), "swal-pair/ack"),
-		);
-		if (typeof body.deviceId !== "string" || typeof body.pub !== "string") throw new Error("bad ack");
-		this.guestDevice = { deviceId: body.deviceId, pub: body.pub, name: String(body.name ?? "") };
+		if (!this.sess || !this.transcript || this.guestDevice) return;
+		const body = parse<Partial<PairAck>>(await openUpdate(this.sess.key, b64uDecode(msg.ct), "swal-pair/ack"));
+		const bad = await verifyPairAck(this.hooks.verify, this.transcript, body ?? {});
+		if (bad || typeof body.deviceId !== "string" || typeof body.pub !== "string") throw new Error(bad ?? "malformed ack");
+		this.guestDevice = { deviceId: body.deviceId, pub: body.pub, name: typeof body.name === "string" ? body.name : "" };
 		await this.tryGrant();
 	}
 
@@ -268,6 +302,7 @@ export class HostPairing {
 /** Guest side. */
 export class GuestPairing {
 	private sess: { key: CryptoKey; sas: string } | null = null;
+	private transcript: Uint8Array = new Uint8Array(0);
 	private ePub = "";
 	private nonce = "";
 	private proof = "";
@@ -304,7 +339,8 @@ export class GuestPairing {
 		const secret = b64uDecode(payload.pairSecret);
 		const hostPub = await crypto.subtle.importKey("raw", bs(b64uDecode(payload.hostPub)), ECDH, false, []);
 		const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: hostPub }, eph.privateKey, 256));
-		g.sess = await session(shared, await pairTranscript(payload, g.ePub, g.nonce));
+		g.transcript = await pairTranscript(payload, g.ePub, g.nonce);
+		g.sess = await session(shared, g.transcript);
 		g.proof = b64uEncode(await helloProof(secret, g.ePub, g.nonce));
 		return g;
 	}
@@ -334,13 +370,12 @@ export class GuestPairing {
 					send({ t: "abort" });
 					return this.fail(new Error("SAS rejected by user"));
 				}
-				const ct = b64uEncode(
-					await sealUpdate(
-						this.sess.key,
-						json({ deviceId: this.vault.deviceId, pub: b64uEncode(this.vault.devicePublicKey), name: this.hooks.name }),
-						"swal-pair/ack",
-					),
-				);
+				const deviceId = this.vault.deviceId;
+				const pub = b64uEncode(this.vault.devicePublicKey);
+				const name = this.hooks.name;
+				const sig = b64uEncode(await this.vault.sign(ackSignedBytes(this.transcript, deviceId, pub, name)));
+				const ack: PairAck = { deviceId, pub, name, sig };
+				const ct = b64uEncode(await sealUpdate(this.sess.key, json(ack), "swal-pair/ack"));
 				send({ t: "ack", ct });
 			} else if (msg.t === "grant" && this.active === send) {
 				const g = parse<GrantBody>(await openUpdate(this.sess.key, b64uDecode(msg.ct), "swal-pair/grant"));

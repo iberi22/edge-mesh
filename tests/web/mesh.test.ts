@@ -1,7 +1,7 @@
 import * as Y from "yjs";
 import { describe, expect, it } from "vitest";
 import { createLoopbackHub, decodePairPayload, exchange } from "../../src/web/index.js";
-import { makeDev, makeVault, pair, until } from "./helpers.js";
+import { devLabels, makeDev, makeVault, pair, until } from "./helpers.js";
 import { createMesh } from "../../src/web/index.js";
 
 describe("mesh", () => {
@@ -32,7 +32,7 @@ describe("mesh", () => {
 		expect(decodePairPayload(offer.payload).v).toBe(2);
 		expect(b.vault.meshKey).toEqual(a.vault.meshKey);
 		expect(b.doc.getMap("data").get("before")).toBe(1); // snapshot
-		expect(a.mesh.devices().map((d) => d.deviceId).sort()).toEqual(["devA", "devB"]);
+		expect(devLabels(a.mesh)).toEqual(["devA", "devB"]);
 		await until(() => a.mesh.status === "online" && b.mesh.status === "online");
 
 		// spy: every frame on the wire is ciphertext
@@ -125,13 +125,13 @@ describe("mesh", () => {
 		await pair(a, c);
 		await until(() => a.mesh.peers.length === 2 && b.mesh.peers.length >= 1);
 		const oldKey = a.vault.meshKey!;
-		await a.mesh.revoke("devC");
+		await a.mesh.revoke(c.id);
 		expect(a.mesh.epoch).toBe(1);
 		expect(a.vault.meshKey).not.toEqual(oldKey);
 		await until(() => b.mesh.epoch === 1);
 		expect(b.vault.meshKey).toEqual(a.vault.meshKey);
-		expect(a.mesh.devices().map((d) => d.deviceId)).not.toContain("devC");
-		await until(() => !b.mesh.devices().some((d) => d.deviceId === "devC"), 5000);
+		expect(devLabels(a.mesh)).not.toContain("devC");
+		await until(() => !b.mesh.devices().some((d) => d.deviceId === c.id), 5000);
 		a.doc.getMap("data").set("after", "x");
 		await until(() => b.doc.getMap("data").get("after") === "x");
 		await new Promise((r) => setTimeout(r, 50));

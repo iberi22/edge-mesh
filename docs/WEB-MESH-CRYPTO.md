@@ -28,6 +28,12 @@
 
 The shared `meta` map is writable by every member, so nothing in it is trusted by itself.
 
+- **Identity = key fingerprint.** `deviceId = fingerprint(identity public key)` = `base64url(SHA-256(pub))[0..22]`
+  (`fingerprint()` in `rooms.ts`; ids match `^[A-Za-z0-9_-]{22}$`). `createMesh` refuses a vault whose `deviceId` is
+  not the fingerprint of `devicePublicKey`; `verifyChain` ignores any admission (or pinned root) whose `deviceId` is
+  not the fingerprint of its `pub`; frames whose sender id is not of that form are dropped. A device id can therefore
+  never be re-bound to another key, whoever signs the record.
+
 - The first device that hosts a pairing becomes the **owner**: its identity `{mid, deviceId, pub}` is pinned as
   the trust root in a **device-local store** (`MeshOptions.store`, else `VaultClient.store`, else IndexedDB with
   `persist: "idb"`, else memory). The root is never read from the shared doc.
@@ -38,6 +44,10 @@ The shared `meta` map is writable by every member, so nothing in it is trusted b
   overwriting them in `meta` cannot un-admit a device or swap its key.
 - `devices()` lists only this device plus admitted ones (`role`, `admittedBy`). Self-registered `dev/<id>`
   entries are ignored.
+- Pairing ack (proof of possession): the guest's ack carries `{deviceId, pub, name, sig}` with `sig` = identity-key
+  signature over `["swal-pair-ack/v1", transcript, deviceId, pub, name]` (the SAS transcript hash binds it to this
+  session). The host admits nobody unless `deviceId = fingerprint(pub)` and the signature verifies, and it refuses a
+  guest claiming its own or the root's identity, or an id already admitted under another key.
 - Pairing grant: besides the mesh key it carries the root and the guest's admission chain; the guest checks that
   the chain is valid and that its issuer's key is the host key that signed the QR payload. `pairHost({ role,
   extra })` lets the app attach data for the guest (e.g. a signed capability grant); `pairJoin` returns
@@ -72,8 +82,8 @@ authenticated members; `onMessage(cb(data, from))` gets the authenticated sender
 
 ## Hooks for a permissions layer
 
-- `authorizeDevice(deviceId, devicePub)`: replaces the built-in admission check. It must verify the binding of
-  `devicePub` to `deviceId` itself. Gates `devices()`, rotation wraps, ECDH keys, frame acceptance, and the host
+- `authorizeDevice(deviceId, devicePub)`: replaces the built-in admission check. The mesh already enforces
+  `deviceId = fingerprint(devicePub)`; the hook decides whether that key is a member. Gates `devices()`, rotation wraps, ECDH keys, frame acceptance, and the host
   refuses to admit a device it rejects.
 - `canRotate(issuer, target)`: replaces the built-in role ladder for revocations (local and received).
 - `authorizeUpdate(sender, update)`: called before applying each incoming Yjs update with the authenticated peer

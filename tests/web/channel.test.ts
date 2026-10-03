@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { deriveDocMaterial, deriveSenderKey, sealUpdate } from "../../src/web/crypto.js";
 import { type LinkTransport, type PeerLink, createLoopbackHub, deriveRoomId, fingerprint } from "../../src/web/index.js";
 import { concat, randomBytes, utf8 } from "../../src/web/util.js";
-import { makeDev, makeVault, pair, trio, until } from "./helpers.js";
+import { label, makeDev, makeVault, pair, trio, until } from "./helpers.js";
 
 const settle = (ms = 150) => new Promise((r) => setTimeout(r, ms));
 
@@ -16,7 +16,7 @@ describe("own channel per app / instance", () => {
 			vault.meshKey = shared;
 			const t = hub.transport();
 			const orig = t.onLink.bind(t);
-			t.onLink = (cb) => orig((link, rid) => (edges.push([id, link.id]), cb(link, rid)));
+			t.onLink = (cb) => orig((link, rid) => (edges.push([id, label(link.id)]), cb(link, rid)));
 			return makeDev(id, hub, undefined, { vault, signaling: [t] });
 		};
 		const r1 = await mk("r1-owner");
@@ -25,7 +25,7 @@ describe("own channel per app / instance", () => {
 		const g2 = await mk("r2-guest");
 		await pair(r1, g1);
 		await pair(r2, g2);
-		await until(() => r1.mesh.peers.includes("r1-guest") && r2.mesh.peers.includes("r2-guest"));
+		await until(() => r1.mesh.peers.includes(g1.id) && r2.mesh.peers.includes(g2.id));
 		await settle();
 		expect(r1.mesh.namespace).not.toBe(r2.mesh.namespace);
 		const crossing = edges.filter(([l, r]) => l.slice(0, 2) !== r.slice(0, 2));
@@ -58,11 +58,11 @@ describe("own channel per app / instance", () => {
 		c.mesh.channel("presence").onMessage((d) => otherKindC.push(d.length));
 		await ab.send(new Uint8Array([1, 2, 3]));
 		await until(() => gotB.length === 1 && gotC.length === 1);
-		expect(gotB[0]).toEqual(["devA", 3]);
-		await ab.send(new Uint8Array(5), { to: "devB" });
+		expect(gotB[0]).toEqual([a.id, 3]);
+		await ab.send(new Uint8Array(5), { to: b.id });
 		const big = new Uint8Array(1024 * 1024).map((_, i) => i & 0xff);
 		let bigOk = false;
-		b.mesh.channel("blob").onMessage((d, from) => (bigOk = from === "devA" && d.length === big.length && d[12345] === big[12345]));
+		b.mesh.channel("blob").onMessage((d, from) => (bigOk = from === a.id && d.length === big.length && d[12345] === big[12345]));
 		await a.mesh.channel("blob").send(big);
 		await until(() => gotB.length === 2 && bigOk);
 		await settle();
@@ -81,7 +81,7 @@ describe("own channel per app / instance", () => {
 		const a = await makeDev("devA", hub);
 		const b = await makeDev("devB", hub, undefined, { signaling: [t] });
 		await pair(a, b);
-		await until(() => a.mesh.peers.includes("devB") && b.mesh.peers.includes("devA"));
+		await until(() => a.mesh.peers.includes(b.id) && b.mesh.peers.includes(a.id));
 		const got: Uint8Array[] = [];
 		a.mesh.channel("oplog").onMessage((d) => got.push(d));
 		const rejected: string[] = [];
@@ -91,12 +91,12 @@ describe("own channel per app / instance", () => {
 		const rid = await deriveRoomId(b.vault.meshKey!, "fize", "fize/data/r1", 0, instance);
 		const ns = utf8(`shelf/${instance}/oplog`);
 		const body = concat(new Uint8Array([0, ns.length]), ns, new Uint8Array([9, 9]));
-		const sig = await b.vault.sign(concat(utf8(`swal-frame/v1|${rid}|devB|`), new Uint8Array([4]), body));
-		const key = await deriveSenderKey(await deriveDocMaterial(b.vault.meshKey!, "fize/data/r1"), "fize/data/r1", "devB");
+		const sig = await b.vault.sign(concat(utf8(`swal-frame/v1|${rid}|${b.id}|`), new Uint8Array([4]), body));
+		const key = await deriveSenderKey(await deriveDocMaterial(b.vault.meshKey!, "fize/data/r1"), "fize/data/r1", b.id);
 		const inner = concat(new Uint8Array([4, sig.length >> 8, sig.length & 0xff]), sig, body);
-		const id = utf8("devB");
-		const frame = concat(new Uint8Array([3, id.length]), id, await sealUpdate(key, inner, `${rid}|devB`));
-		bLinks.filter((l) => l.id === "devA").at(-1)!.send(frame);
+		const id = utf8(b.id);
+		const frame = concat(new Uint8Array([3, id.length]), id, await sealUpdate(key, inner, `${rid}|${b.id}`));
+		bLinks.filter((l) => l.id === a.id).at(-1)!.send(frame);
 		await until(() => rejected.includes("foreign channel"));
 		expect(got).toHaveLength(0);
 		a.mesh.destroy();
