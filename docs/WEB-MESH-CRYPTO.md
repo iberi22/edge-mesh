@@ -323,6 +323,9 @@ membership view.
 - Hybrid rule: both secrets are required (`hybridSecret` throws if either is missing); the result stays secret if
   either ML-KEM-768 or P-256 holds.
 - `canonicalJson` is byte-identical (Fize shares it); `signCanonical` / `verifyCanonical` use the ML-DSA backend.
+- One key, one encoding (round 4, R4-N3): public keys and signatures are accepted only in canonical base64url (no
+  padding, no stray bits in the last character), so a key has exactly one `web/trust` fingerprint, equal to its
+  `deviceId`.
 
 Sizes (bytes): ML-DSA-65 public key 1952, secret key 4032, signature 3309; ML-KEM-768 encapsulation key 1184,
 decapsulation key 2400, ciphertext 1088. On the wire (measured, loopback): a signed 10-byte channel message or a

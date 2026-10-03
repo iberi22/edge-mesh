@@ -4,7 +4,7 @@
 // base64url(SHA-256(canonicalJson({ alg: "ML-DSA-65", pub }))) so a future algorithm can never collide with this one.
 // `canonicalJson` itself is unchanged (Fize shares it).
 import { ml_dsa65 } from "@noble/post-quantum/ml-dsa.js";
-import { b64uDecode, b64uEncode } from "../util.js";
+import { b64uDecode, b64uEncode, isCanonicalB64u } from "../util.js";
 import { canonicalBytes, sha256B64u } from "./canonical.js";
 
 export const SIG_ALG = "ML-DSA-65" as const;
@@ -14,7 +14,8 @@ export const SECRET_KEY_BYTES = 4032;
 export const SIGNATURE_BYTES = 3309;
 
 const decodeLen = (s: unknown, n: number): Uint8Array | null => {
-	if (typeof s !== "string" || s.length > 2 * n) return null;
+	// R4-N3: only the canonical encoding, so one key has one fingerprint (keyFingerprint hashes the string)
+	if (typeof s !== "string" || s.length > 2 * n || !isCanonicalB64u(s)) return null;
 	try {
 		const b = b64uDecode(s);
 		return b.length === n ? b : null;

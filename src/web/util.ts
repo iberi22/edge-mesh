@@ -21,6 +21,16 @@ export function b64uDecode(str: string): Uint8Array {
 	return out;
 }
 
+/** R4-N3: the one encoding of some bytes (no padding, no stray bits in the last character, no '+'/'/'). */
+export function isCanonicalB64u(s: string): boolean {
+	if (!/^[A-Za-z0-9_-]*$/.test(s)) return false;
+	try {
+		return b64uEncode(b64uDecode(s)) === s;
+	} catch {
+		return false;
+	}
+}
+
 export function concat(...parts: Uint8Array[]): Uint8Array {
 	const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
 	let o = 0;

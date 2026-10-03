@@ -4,7 +4,7 @@
 // layer that can take over through MeshOptions.authorizeDevice / canRotate.
 import { deviceIdOf } from "./pq.js";
 import type { VaultClient } from "./types.js";
-import { b64uDecode, b64uEncode, utf8 } from "./util.js";
+import { b64uDecode, b64uEncode, isCanonicalB64u, utf8 } from "./util.js";
 
 /** A deviceId is the fingerprint of the device's ML-DSA-65 identity key (`deviceIdOf`): 43 base64url characters. */
 export const DEVICE_ID_RE = /^[A-Za-z0-9_-]{43}$/;
@@ -17,7 +17,8 @@ export async function idMatchesPub(
 	deviceId: string,
 	pub: string,
 ): Promise<boolean> {
-	if (!isDeviceId(deviceId) || typeof pub !== "string") return false;
+	// R4-N3: a key is accepted only in its canonical encoding (the string is what admissions and web/trust carry)
+	if (!isDeviceId(deviceId) || typeof pub !== "string" || !isCanonicalB64u(pub)) return false;
 	let fp = fpCache.get(pub);
 	if (fp === undefined) {
 		try {

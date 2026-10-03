@@ -3,7 +3,11 @@
 
 import { ml_dsa65 } from "@noble/post-quantum/ml-dsa.js";
 import { describe, expect, it, vi } from "vitest";
-import { signAdmission, signRevocation } from "../../src/web/admission.js";
+import {
+	idMatchesPub,
+	signAdmission,
+	signRevocation,
+} from "../../src/web/admission.js";
 import { deriveDocMaterial } from "../../src/web/crypto.js";
 import {
 	createLoopbackHub,
@@ -34,10 +38,12 @@ const contains = (hay: Uint8Array, needle: Uint8Array) => {
 	return false;
 };
 
-import { b64uEncode, randomBytes } from "../../src/web/util.js";
+import { isPublicKey } from "../../src/web/trust/keys.js";
+import { b64uDecode, b64uEncode, randomBytes } from "../../src/web/util.js";
 import {
 	type Dev,
 	makeDev,
+	makeVault,
 	metaOf,
 	pair,
 	storedWraps,
@@ -340,4 +346,18 @@ describe("audit round 4 regressions", () => {
 		expect(kex() - before).toBeLessThanOrEqual(forged * all.length);
 		for (const d of all) d.mesh.destroy();
 	}, 60_000);
+
+	it("R4-N3: one key has one encoding: a non-canonical base64url form of a key is refused (one key, one fingerprint)", async () => {
+		const v = await makeVault("n3");
+		const pub = b64uEncode(v.devicePublicKey);
+		const ABC =
+			"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+		const last = pub[pub.length - 1] as string;
+		const alt = pub.slice(0, -1) + ABC[ABC.indexOf(last) ^ 1];
+		expect(b64uDecode(alt)).toEqual(v.devicePublicKey); // same bytes, other string
+		expect(isPublicKey(pub)).toBe(true);
+		expect(isPublicKey(alt)).toBe(false);
+		expect(await idMatchesPub(v.deviceId, pub)).toBe(true);
+		expect(await idMatchesPub(v.deviceId, alt)).toBe(false);
+	});
 });
