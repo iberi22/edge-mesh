@@ -397,6 +397,9 @@ export class GuestPairing {
 
 	async handle(msg: Msg, send: PairSend): Promise<void> {
 		if (this.settled) return;
+		// R4-N2: once the host's link is chosen (its `ready` started the session), the other links of the pairing room
+		// can no longer end the pairing
+		if (this.active && send !== this.active) return;
 		try {
 			if (msg.t === "err") return this.fail(new Error(`host refused pairing: ${msg.e}`));
 			if (msg.t === "abort") return this.fail(new Error("host rejected the SAS"));

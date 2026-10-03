@@ -46,6 +46,7 @@ import {
 	makeVault,
 	metaOf,
 	pair,
+	pairDirect,
 	storedWraps,
 	until,
 } from "./helpers.js";
@@ -359,5 +360,19 @@ describe("audit round 4 regressions", () => {
 		expect(isPublicKey(alt)).toBe(false);
 		expect(await idMatchesPub(v.deviceId, pub)).toBe(true);
 		expect(await idMatchesPub(v.deviceId, alt)).toBe(false);
+	});
+
+	it("R4-N2: once the host's link is chosen, err/abort from any other link of the pairing room are ignored", async () => {
+		const host = await makeVault("n2host");
+		const guest = await makeVault("n2guest");
+		const evil = () => {};
+		const r = await pairDirect(host, guest, {
+			afterGuest: (m, g) => {
+				if (m.t !== "ready") return;
+				void g.handle({ t: "err", e: "spoofed" }, evil);
+				void g.handle({ t: "abort" }, evil);
+			},
+		});
+		expect(r.guest).toBe("granted");
 	});
 });

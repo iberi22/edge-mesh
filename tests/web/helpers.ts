@@ -207,6 +207,8 @@ export async function pairDirect(
 	hooks: {
 		prove?: (t: Uint8Array) => Promise<{ pub: string; sig: string }>;
 		payload?: (p: PairPayload) => PairPayload;
+		/** runs after each message handed to the guest (e.g. to inject traffic from another link) */
+		afterGuest?: (m: Parameters<HostPairing["handle"]>[0], guest: GuestPairing) => void;
 	} = {},
 ) {
 	const offer = await createPairOffer(hostVault, {
@@ -246,7 +248,10 @@ export async function pairDirect(
 	});
 	type Msg = Parameters<HostPairing["handle"]>[0];
 	const toGuest = (m: Msg) =>
-		queueMicrotask(() => void guest.handle(m, toHost));
+		queueMicrotask(() => {
+			void guest.handle(m, toHost);
+			hooks.afterGuest?.(m, guest);
+		});
 	const toHost = (m: Msg) => queueMicrotask(() => void host.handle(m, toGuest));
 	guest.attach(toHost);
 	const res = await guest.result.then(
