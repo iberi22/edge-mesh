@@ -25,7 +25,7 @@ import {
 	decodePairPayload,
 	derivePairKey,
 } from "./pairing.js";
-import { derivePairRoomId, deriveRoomId } from "./rooms.js";
+import { derivePairRoomId, deriveRoomId, fingerprint, meshNamespace } from "./rooms.js";
 import { type MeshStore, idbStore, memoryStore } from "./store.js";
 import type { Device, PeerLink, RtcOptions, SigTransport, VaultClient } from "./types.js";
 import { b64uDecode, b64uEncode, concat, fromUtf8, randomBytes, utf8 } from "./util.js";
@@ -75,6 +75,11 @@ export interface MeshOptions {
 	 * `false` restores the legacy unsigned wire; it must then be off on every device of the mesh.
 	 */
 	signFrames?: boolean;
+	/**
+	 * Namespace of this mesh instance within the app (e.g. a restaurant id); it is bound into the room ids and
+	 * every channel frame. Must be identical on all devices. Default: fingerprint of the owner's identity key.
+	 */
+	instance?: string;
 	/** Largest message handed to a link; bigger ones are fragmented (H5). Default 64 KiB. */
 	maxFrameBytes?: number;
 	/** Largest reassembled message accepted from a peer. Default 64 MiB. */
@@ -86,6 +91,17 @@ export interface PairHostOptions {
 	role?: Exclude<Role, "owner">;
 	/** Application data for this guest (e.g. a signed capability grant), sent inside the encrypted grant. */
 	extra?: (guest: Device) => unknown | Promise<unknown>;
+}
+
+/** A private, encrypted, signed message channel of one kind inside the mesh (e.g. "oplog"). */
+export interface MeshChannel {
+	/** `{appId}/{instance}/{kind}`: frames from any other app or instance are rejected. */
+	readonly namespace: string;
+	/** Send to every connected, authenticated member (or only `to`). Large payloads are fragmented. */
+	send(data: Uint8Array, opts?: { to?: string }): Promise<void>;
+	/** `from` is the authenticated sender (signFrames on). */
+	onMessage(cb: (data: Uint8Array, from: string) => void): () => void;
+	close(): void;
 }
 
 export interface PairJoinResult {
@@ -109,6 +125,10 @@ export interface Mesh {
 	readonly ready: Promise<void>;
 	/** Pinned trust root (mesh owner), or null before the first pairing. */
 	readonly root: TrustRoot | null;
+	/** `{appId}/{instance}` of this mesh ("" instance before the first pairing unless MeshOptions.instance). */
+	readonly namespace: string;
+	/** Own message channel of a kind (letters, digits, '-', '_', '.'), separate from the shared Y.Doc. */
+	channel(kind: string): MeshChannel;
 	pairHost(opts?: PairHostOptions): Promise<PairOffer>;
 	pairJoin(payload: string, opts?: { confirmSas?: (code: string) => Promise<boolean> | boolean }): Promise<PairJoinResult>;
 	/** This device plus every ADMITTED device (self-registered entries in the shared doc are ignored). */
@@ -128,6 +148,7 @@ const K_SV = 0;
 const K_UPDATE = 1;
 const K_AWARENESS = 2;
 const K_ROTATE = 3;
+const K_CHANNEL = 4; // body = nsLen(u16) | namespace | payload
 const ORIGIN = Symbol("swal-mesh");
 const DEV = "dev/"; // dev/<deviceId> = Device (informative only: trust comes from adm/)
 const ADM_PREFIX = "adm/"; // adm/<deviceId> = Admission signed by an owner/admin, verified against the local root pin
@@ -192,6 +213,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 	let docMat: Uint8Array | null = null;
 	let sigKey: CryptoKey | null = null;
 	let dataRid = "";
+	let instanceId = opts.instance ?? "";
 	let epoch = 0;
 	let status: MeshStatus = "off";
 	const links = new Set<LinkRec>();
@@ -399,7 +421,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 		epoch = Math.max(Number((await vault.getEpoch?.()) ?? 0), Number((await store.get("epoch")) ?? 0), Number(meta.get("epoch") ?? 0), epoch);
 		docMat = await deriveDocMaterial(meshKey, topicName);
 		sigKey = await importAesKey(await hkdf(meshKey, `swal-signal/v1|${topicName}`));
-		dataRid = await deriveRoomId(meshKey, appId, topicName, epoch);
+		instanceId = opts.instance ?? (root ? await fingerprint(b64uDecode(root.pub)) : "");
+		dataRid = await deriveRoomId(meshKey, appId, topicName, epoch, instanceId || undefined);
 	}
 
 	// ---- link I/O: per-link ordered queue; messages above maxFrame are fragmented (H5) ----
@@ -556,7 +579,55 @@ export function createMesh(opts: MeshOptions): Mesh {
 			applyAwarenessUpdate(awareness, body, ORIGIN);
 		} else if (kind === K_ROTATE) {
 			await handleRotate(body);
+		} else if (kind === K_CHANNEL) {
+			const n = body.length >= 2 ? (body[0] << 8) | body[1] : -1;
+			if (n < 0 || body.length < 2 + n) return reject("malformed channel frame", sender);
+			const ns = fromUtf8(body.subarray(2, 2 + n));
+			const k = ns.slice(ns.lastIndexOf("/") + 1);
+			if (ns !== chanNs(k)) return reject("foreign channel", sender);
+			const payload = body.subarray(2 + n);
+			for (const cb of [...(chanSubs.get(k) ?? [])]) {
+				try {
+					cb(payload, sender);
+				} catch (e) {
+					err(e);
+				}
+			}
 		}
+	}
+
+	// ---- channels: app/instance-namespaced message streams over the same encrypted + signed frames ----
+	const chanSubs = new Map<string, Set<(d: Uint8Array, from: string) => void>>();
+	const chanNs = (kind: string) => `${meshNamespace(appId, instanceId)}/${kind}`;
+	function channel(kind: string): MeshChannel {
+		if (!/^[A-Za-z0-9._-]{1,64}$/.test(kind)) throw new Error(`invalid channel kind "${kind}"`);
+		const mine = new Set<(d: Uint8Array, from: string) => void>();
+		return {
+			get namespace() {
+				return chanNs(kind);
+			},
+			async send(data, o = {}) {
+				if (!running) throw new Error("mesh is not connected");
+				const ns = utf8(chanNs(kind));
+				const body = concat(new Uint8Array([ns.length >> 8, ns.length & 0xff]), ns, data);
+				const targets = established().filter((l) => l.deviceId && (o.to === undefined || l.deviceId === o.to));
+				await Promise.all(targets.map((l) => sendFrame(l, K_CHANNEL, body)));
+			},
+			onMessage(cb) {
+				let set = chanSubs.get(kind);
+				if (!set) chanSubs.set(kind, (set = new Set()));
+				set.add(cb);
+				mine.add(cb);
+				return () => {
+					set.delete(cb);
+					mine.delete(cb);
+				};
+			},
+			close() {
+				for (const cb of mine) chanSubs.get(kind)?.delete(cb);
+				mine.clear();
+			},
+		};
 	}
 
 	async function handleRotate(body: Uint8Array) {
@@ -728,7 +799,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 			const e = Number(k.slice(OLD_PREFIX.length));
 			if (!Number.isInteger(e) || e >= epoch) continue;
 			const raw = b64uDecode(meta.get(k) as string);
-			const rid = await deriveRoomId(raw, appId, topicName, e);
+			const rid = await deriveRoomId(raw, appId, topicName, e, instanceId || undefined);
 			if (legacy.has(rid) && rooms.has(rid)) continue;
 			legacy.set(rid, { epoch: e, rid, material: await deriveDocMaterial(raw, topicName) });
 			await joinRoom(rid, await importAesKey(await hkdf(raw, `swal-signal/v1|${topicName}`)));
@@ -999,6 +1070,10 @@ export function createMesh(opts: MeshOptions): Mesh {
 		get root() {
 			return root;
 		},
+		get namespace() {
+			return meshNamespace(appId, instanceId);
+		},
+		channel,
 		role(deviceId = vault.deviceId) {
 			return deviceId === vault.deviceId ? selfRole() : (trusted.get(deviceId)?.role ?? null);
 		},

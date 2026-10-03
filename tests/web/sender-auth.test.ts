@@ -1,7 +1,7 @@
 import * as Y from "yjs";
 import { describe, expect, it } from "vitest";
 import { deriveDocMaterial, deriveSenderKey, sealUpdate } from "../../src/web/crypto.js";
-import { type LinkTransport, type PeerLink, createLoopbackHub, createMesh, deriveRoomId } from "../../src/web/index.js";
+import { type LinkTransport, type PeerLink, createLoopbackHub, createMesh, deriveRoomId, fingerprint } from "../../src/web/index.js";
 import { concat, utf8 } from "../../src/web/util.js";
 import { makeDev, makeVault, metaOf, pair, until } from "./helpers.js";
 
@@ -25,8 +25,8 @@ function tapped(t: LinkTransport, links: PeerLink[], delayFrom?: string, delayMs
 }
 
 /** A legacy (unsigned) data frame claiming `sender`, sealed with that sender's derivable subkey. */
-async function forgeUnsigned(meshKey: Uint8Array, epoch: number, sender: string, kind: number, body: Uint8Array) {
-	const rid = await deriveRoomId(meshKey, APP, TOPIC, epoch);
+async function forgeUnsigned(meshKey: Uint8Array, instance: string, epoch: number, sender: string, kind: number, body: Uint8Array) {
+	const rid = await deriveRoomId(meshKey, APP, TOPIC, epoch, instance);
 	const key = await deriveSenderKey(await deriveDocMaterial(meshKey, TOPIC), TOPIC, sender);
 	const id = utf8(sender);
 	return concat(new Uint8Array([1, id.length]), id, await sealUpdate(key, concat(new Uint8Array([kind]), body), `${rid}|${sender}`));
@@ -49,7 +49,8 @@ describe("sender authentication inside the mesh (signed frames, on by default)",
 		await pair(a, c);
 		await until(() => a.mesh.peers.includes("devC") && c.mesh.peers.includes("devA"));
 		const toA = cLinks.filter((l) => l.id === "devA").at(-1)!;
-		toA.send(await forgeUnsigned(c.vault.meshKey!, 0, "devB", 1, updateSetting("forged", "as-B")));
+		const instance = await fingerprint(a.vault.devicePublicKey);
+		toA.send(await forgeUnsigned(c.vault.meshKey!, instance, 0, "devB", 1, updateSetting("forged", "as-B")));
 		await settle();
 		expect(a.doc.getMap("data").get("forged")).toBeUndefined();
 		// sanity: C's own, regular writes still flow

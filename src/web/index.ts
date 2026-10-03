@@ -1,10 +1,10 @@
 export { createMesh } from "./provider.js";
-export type { Mesh, MeshEvent, MeshOptions, MeshStatus, PairHostOptions, PairJoinResult, PairOffer } from "./provider.js";
+export type { Mesh, MeshChannel, MeshEvent, MeshOptions, MeshStatus, PairHostOptions, PairJoinResult, PairOffer } from "./provider.js";
 export { canIssue, canRevokeRole, verifyChain } from "./admission.js";
 export type { Admission, Role, TrustRoot } from "./admission.js";
 export { idbStore, memoryStore } from "./store.js";
 export type { MeshStore } from "./store.js";
-export { deriveRoomId, derivePairRoomId, topic, legacyNamespace } from "./rooms.js";
+export { deriveRoomId, derivePairRoomId, fingerprint, meshNamespace, topic, legacyNamespace } from "./rooms.js";
 export type { TopicScope } from "./rooms.js";
 export { deriveDocKey, sealUpdate, openUpdate } from "./crypto.js";
 export { exchange, exchangeTopic, isHealthRecord, HEALTH_SCHEMA_PREFIX } from "./exchange.js";
