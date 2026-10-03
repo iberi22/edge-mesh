@@ -1017,7 +1017,17 @@ export function createMesh(opts: MeshOptions): Mesh {
 	function maybeStart(rec: LinkRec) {
 		if (!rec.authed || !rec.authSent || rec.started || rec.closing) return;
 		rec.started = true;
-		if (rec.legacy) return; // retired room: we only answer the straggler's state vector with its wraps
+		if (rec.legacy) {
+			// retired room (BL1): the peer may be a straggler, or a partition that rotated on its own. Offer it the stored
+			// rotations it can unwrap; it converges (and re-keys if needed) and offers us its own the same way. Bounded:
+			// once per authenticated link, at most 8 rotations.
+			const peer = rec.deviceId as string;
+			const lg = rec.legacy;
+			void (async () => {
+				for (const m of storedRotationsFor(peer, lg.epoch)) await sendRotate(rec, m);
+			})().catch(err);
+			return;
+		}
 		sendFrame(rec, K_SV, Y.encodeStateVector(doc)).catch(err);
 		if (awareness.getLocalState()) sendFrame(rec, K_AWARENESS, encodeAwarenessUpdate(awareness, [doc.clientID])).catch(err);
 	}

@@ -73,6 +73,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is ignored instead of throwing; device ids are restricted to `[A-Za-z0-9_-]{22}` (no `|`, B1) and the grant's root
   `mid` must match the QR (B3).
 
+### Security audit round 2 (2026-10-03; regression tests in `tests/web/audit-regressions-r2.test.ts` and
+`audit-regressions-oplog.test.ts`)
+- **BL1 partitions stayed split after healing**: on an authenticated retired-room link both sides now offer each
+  other their stored rotations, so separately rotated partitions converge and re-key.
+
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,
   `maxFrameBytes`, `maxMessageBytes`. `VaultClient.store` (optional).

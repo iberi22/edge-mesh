@@ -149,9 +149,10 @@ The new mesh key is never sent under the old shared key (the revoked device know
    branch, can open it. Receivers try those retired keys too, but only for `K_ROTATE` frames.
 4. Record and wraps are stored in meta under the NEW key: `rotrec:<rotId>` and `rot:<rotId>:<deviceId>`, plus
    `old:<rid> = {e, k}` (retired key). The revoked device has no wrap and cannot read the new meta.
-5. Peers offline during the revoke: remaining devices keep the retired rooms joined in "legacy" mode. A lagging
-   peer announces itself there and receives the wraps of every stored rotation it is a recipient of (best first);
-   it adopts the best one directly (epochs may be skipped: wraps do not depend on the previous key).
+5. Peers offline during the revoke: remaining devices keep the retired rooms joined in "legacy" mode. As soon as a
+   link in a retired room authenticates, each side offers the other the stored rotations it is a recipient of (best
+   first, at most 8), so a lagging peer catches up and two partitions that rotated on their own while apart (and only
+   meet in the room of their last common key) converge, then re-key without every revoked device.
 6. Peers adopting a rotation drop links to every revoked device and ignore its frames; `peers` never lists them.
 7. Each fresh revocation is signed (`rev/<deviceId>:<epoch>`, see below) and travels inside the rotation (`revs`) and
    in meta. Every device verifies these records on their own, keeps a local map `deviceId -> [revocation epochs]` in
