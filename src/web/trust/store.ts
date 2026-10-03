@@ -6,8 +6,10 @@
 //   of an accepted parent grant, and whose delegation rules hold w.r.t. that parent. So every accepted grant has a
 //   fully verified chain to the root.
 // - Documents whose parent is unknown wait in `pending` (bounded) and are re-processed when the parent arrives.
-// - Revocations are accepted on signature; whether they are *effective* (issuer is root or an ancestor of the
-//   target) is decided at query time, so the target may arrive later.
+// - Revocations are accepted on signature; whether they are *effective* (issuer is the root or a STRICT ancestor of
+//   the target: never the target grant itself) is decided at query time, so the target may arrive later. A
+//   revocation whose issuer grant is its own target is rejected outright: a device cannot retract its own accepted
+//   history (leaving is simply stopping; it never rewrites what peers already accepted).
 // - Revocations always cascade: descendants of a revoked grant are cut at `upTo[subject]` (missing = 0).
 // - Times are compared with the op's HLC wall time (`At.time`), seqs with the subject's own log seq (`At.seq`).
 
@@ -200,6 +202,13 @@ export class TrustStore {
 				return this.reject(doc.id, "issuer is not the subject of parent grant");
 			issuerJwk = parent.subject.jwk;
 		}
+		// B5: a grant cannot revoke itself (that would retroactively erase its subject's accepted history)
+		if (
+			doc.t === "revoke" &&
+			doc.parent !== undefined &&
+			doc.parent === doc.target
+		)
+			return this.reject(doc.id, "self-revocation");
 		// not remembered by id: a forged copy of a legit body must not block the real document
 		if (!(await verifyDocSignature(doc, issuerJwk)))
 			return { status: "rejected", id: doc.id, reason: "bad signature" };
@@ -298,8 +307,9 @@ export class TrustStore {
 			const target = this.grants.get(r.target);
 			if (!target) continue; // inert until the target arrives
 			if (r.issuer !== this.rootFp) {
-				const c = chain.get(target.id) ?? [];
-				if (!c.some((a) => a.id === r.parent)) continue; // not the issuer chain of the target: ignored
+				// B5: only a STRICT ancestor of the target (chain[1..]) may revoke it, never the target itself
+				const ancestors = (chain.get(target.id) ?? []).slice(1);
+				if (!ancestors.some((a) => a.id === r.parent)) continue; // not the issuer chain of the target: ignored
 			}
 			const list = revsByTarget.get(r.target);
 			list ? list.push(r) : revsByTarget.set(r.target, [r]);
@@ -426,7 +436,9 @@ export class TrustStore {
 		if (fp === this.rootFp) return true;
 		const parent = parentId ? this.grants.get(parentId) : undefined;
 		if (!parent || parent.subject.fp !== fp) return false;
-		return (this.d().chain.get(targetId) ?? []).some((a) => a.id === parent.id);
+		return (this.d().chain.get(targetId) ?? [])
+			.slice(1)
+			.some((a) => a.id === parent.id);
 	}
 
 	/**

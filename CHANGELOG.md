@@ -34,6 +34,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **B3 re-pairing leaked the old mesh**: sender keys are cached per key material and reset on every key change;
   `pairJoin` into another mesh (`mid`) is refused unless the local doc is fresh, the old network is stopped before
   any key/doc change, and the old mesh's trust state is dropped. The grant's `mid` must match the pairing code.
+- **B5 self-revocation erased history** (`web/trust`): a revocation is effective only if its issuer grant is a strict
+  ancestor of the target (or the root); a revocation whose parent is its own target is rejected (`self-revocation`).
+  A device that leaves simply stops; it cannot retract ops peers already accepted.
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,

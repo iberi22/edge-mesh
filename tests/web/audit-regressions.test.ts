@@ -155,27 +155,24 @@ describe("audit regressions: web/provider", () => {
 		for (const x of [a, b, c2]) x.mesh.destroy();
 	});
 
-	it(
-		"P3 (B3): re-pairing an online device into ANOTHER mesh is refused and leaks nothing",
-		async () => {
-			const hub = createLoopbackHub();
-			const a = await makeDev("devA", hub);
-			const b = await makeDev("devB", hub);
-			await pair(a, b);
-			await until(() => b.mesh.peers.includes(a.id));
-			a.doc.getMap("secret").set("x-recipe", "mesh X private data");
-			await until(() => b.doc.getMap("secret").get("x-recipe") !== undefined);
-			const e = await makeDev("devE", hub);
-			const f = await makeDev("devF", hub);
-			await pair(e, f);
-			await until(() => f.mesh.peers.includes(e.id));
-			await expect(pair(e, b)).rejects.toThrow(/another mesh/);
-			await settle(500);
-			expect(f.doc.getMap("secret").get("x-recipe")).toBeUndefined();
-			expect(e.doc.getMap("secret").get("x-recipe")).toBeUndefined();
-			for (const x of [a, b, e, f]) x.mesh.destroy();
-		},
-	);
+	it("P3 (B3): re-pairing an online device into ANOTHER mesh is refused and leaks nothing", async () => {
+		const hub = createLoopbackHub();
+		const a = await makeDev("devA", hub);
+		const b = await makeDev("devB", hub);
+		await pair(a, b);
+		await until(() => b.mesh.peers.includes(a.id));
+		a.doc.getMap("secret").set("x-recipe", "mesh X private data");
+		await until(() => b.doc.getMap("secret").get("x-recipe") !== undefined);
+		const e = await makeDev("devE", hub);
+		const f = await makeDev("devF", hub);
+		await pair(e, f);
+		await until(() => f.mesh.peers.includes(e.id));
+		await expect(pair(e, b)).rejects.toThrow(/another mesh/);
+		await settle(500);
+		expect(f.doc.getMap("secret").get("x-recipe")).toBeUndefined();
+		expect(e.doc.getMap("secret").get("x-recipe")).toBeUndefined();
+		for (const x of [a, b, e, f]) x.mesh.destroy();
+	});
 
 	it("P3 (B3): a device moves to another mesh only with a fresh doc, and then syncs only with the new mesh", async () => {
 		const hub = createLoopbackHub();
@@ -198,7 +195,10 @@ describe("audit regressions: web/provider", () => {
 		await until(() => b2.doc.getMap("y").get("hello") === "from f");
 		b2.doc.getMap("y").set("back", "from b2");
 		await until(() => f.doc.getMap("y").get("back") === "from b2");
-		const a2 = await makeDev("devA", hub, undefined, { doc: a.doc, vault: a.vault }); // X comes back
+		const a2 = await makeDev("devA", hub, undefined, {
+			doc: a.doc,
+			vault: a.vault,
+		}); // X comes back
 		await settle(300);
 		expect(f.doc.getMap("secret").get("x-recipe")).toBeUndefined();
 		expect(b2.doc.getMap("secret").get("x-recipe")).toBeUndefined();

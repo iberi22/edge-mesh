@@ -36,37 +36,46 @@ async function forge(signer: Signer, body: OpBody): Promise<Op> {
 const open = it.fails;
 
 describe("audit regressions: web/trust + web/oplog", () => {
-	open(
-		"A1 (B5): a member cannot self-revoke to erase its own accepted history",
-		async () => {
-			const w = await world();
-			const author = await ready(w, w.waiter);
-			const mine = [];
-			for (let i = 0; i < 3; i++)
-				mine.push(await author.log.append(op(`o${i}`)));
-			const n = await ready(w);
-			await n.log.ingestMany(mine.map((s) => s.op));
-			expect([1, 2, 3].map((s) => n.log.isAccepted(w.waiter.fp, s))).toEqual([
-				true,
-				true,
-				true,
-			]);
-			// the waiter signs a revocation of ITS OWN grant, parent = its own grant
-			const selfRev = await w.revoke(
-				w.waiter,
-				{ target: w.g.waiter.id, lastSeq: 0 },
-				w.g.waiter,
-			);
-			expect((await n.trust.add(selfRev)).status).toBe("rejected");
-			await n.log.reevaluate();
-			expect([1, 2, 3].map((s) => n.log.isAccepted(w.waiter.fp, s))).toEqual([
-				true,
-				true,
-				true,
-			]);
-			expect(n.trust.cutOf(w.g.waiter.id)).toBe(Number.POSITIVE_INFINITY);
-		},
-	);
+	it("A1 (B5): a member cannot self-revoke to erase its own accepted history", async () => {
+		const w = await world();
+		const author = await ready(w, w.waiter);
+		const mine = [];
+		for (let i = 0; i < 3; i++) mine.push(await author.log.append(op(`o${i}`)));
+		const n = await ready(w);
+		await n.log.ingestMany(mine.map((s) => s.op));
+		expect([1, 2, 3].map((s) => n.log.isAccepted(w.waiter.fp, s))).toEqual([
+			true,
+			true,
+			true,
+		]);
+		// the waiter signs a revocation of ITS OWN grant, parent = its own grant
+		const selfRev = await w.revoke(
+			w.waiter,
+			{ target: w.g.waiter.id, lastSeq: 0 },
+			w.g.waiter,
+		);
+		expect((await n.trust.add(selfRev)).status).toBe("rejected");
+		await n.log.reevaluate();
+		expect([1, 2, 3].map((s) => n.log.isAccepted(w.waiter.fp, s))).toEqual([
+			true,
+			true,
+			true,
+		]);
+		expect(n.trust.cutOf(w.g.waiter.id)).toBe(Number.POSITIVE_INFINITY);
+		expect(n.trust.canRevoke(w.waiter.fp, w.g.waiter.id, w.g.waiter.id)).toBe(
+			false,
+		);
+		// a descendant cannot revoke its ancestor either (cook was admitted by admin)
+		const up = await w.revoke(
+			w.cook,
+			{ target: w.g.admin.id, lastSeq: 0 },
+			w.g.cook,
+		);
+		await n.trust.add(up);
+		expect(n.trust.cutOf(w.g.admin.id)).toBe(Number.POSITIVE_INFINITY);
+		// while the issuer of a grant still can
+		expect(n.trust.canRevoke(w.admin.fp, w.g.cook.id, w.g.admin.id)).toBe(true);
+	});
 
 	open(
 		"A2 (S2): a REVOKED admin cannot re-grant a cascaded subject to retroactively authorize its old ops",
