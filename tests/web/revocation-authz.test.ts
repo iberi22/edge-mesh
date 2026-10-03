@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createLoopbackHub } from "../../src/web/index.js";
+import { rotationId, unwrapMeshKey } from "../../src/web/rotation.js";
+import { b64uDecode } from "../../src/web/util.js";
 import { devLabels, makeDev, metaOf, pair, storedWraps, trio, until } from "./helpers.js";
 
 const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
@@ -69,10 +71,17 @@ describe("H2: only authorized issuers revoke / rotate", () => {
 		const rejected: string[] = [];
 		b2.mesh.on("revoked", (e) => revokedSeen.push(e.deviceId));
 		b2.mesh.on("rejected", (e) => rejected.push(e.reason));
-		await until(() => rejected.includes("rotation wrap does not authenticate"), 3000); // the tampered wrap did arrive
-		await settle(100);
+		// the tampered record no longer verifies, so no device serves it (SF3)...
+		await settle(1500);
 		expect(revokedSeen).not.toContain(d.id);
 		expect(devLabels(b2.mesh)).toContain("devD");
+		expect(rejected).not.toContain("rotation not authorized");
+		// ...and the wrap itself is bound to the record: under the tampered record's id it does not open
+		const bEcdh = await b.vault.getEcdhIdentity!();
+		const aPub = b64uDecode(metaOf(a).get(`ecdh/${a.id}`).pub);
+		const tamperedId = await rotationId({ ...w.rec, revoked: [d.id] });
+		await expect(unwrapMeshKey(bEcdh.privateKey, aPub, tamperedId, a.id, b.id, w.wrap)).rejects.toThrow();
+		expect((await unwrapMeshKey(bEcdh.privateKey, aPub, w.id, a.id, b.id, w.wrap)).length).toBe(32);
 		for (const x of [a, b2, c, d]) x.mesh.destroy();
 	});
 });

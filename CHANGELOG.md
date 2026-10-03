@@ -89,6 +89,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on retired-room links; on live links at most 4 per sender, and only its own revocations at its revocation epoch of
   targets its rotation cuts off (8 per frame); failed records are negatively cached (R1b). Verified revocations are
   republished to the shared doc so membership views converge (V2).
+- **SF3 fake `rotrec:` entries blocked stragglers**: a retired room only serves rotations that verify on the serving
+  device (id = hash of the record, epoch window, authorized issuer not void, targets validly revoked).
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,

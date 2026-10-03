@@ -787,7 +787,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		}
 		if (lg) {
 			// retired room: the only thing we do is hand THIS peer its own pairwise wraps of later rotations
-			if (kind === K_SV) for (const m of storedRotationsFor(sender, lg.epoch)) await sendRotate(rec, m);
+			if (kind === K_SV) for (const m of await storedRotationsFor(sender, lg.epoch)) await sendRotate(rec, m);
 			else if (kind === K_ROTATE) await serialRot(() => handleRotate(body));
 			return;
 		}
@@ -1003,19 +1003,33 @@ export function createMesh(opts: MeshOptions): Mesh {
 	}
 
 	/** Wraps of stored rotations a straggler (still on the retired room of epoch `from`) is a recipient of, best first. */
-	function storedRotationsFor(deviceId: string, from: number): RotateMsg[] {
+	async function storedRotationsFor(deviceId: string, from: number): Promise<RotateMsg[]> {
 		const out: Array<RotateMsg & { id: string }> = [];
 		for (const k of meta.keys()) {
 			if (!k.startsWith(ROTREC_PREFIX)) continue;
 			const id = k.slice(ROTREC_PREFIX.length);
 			const rot = meta.get(k);
 			const wrap = meta.get(`${ROT_PREFIX}${id}:${deviceId}`);
-			// SF1: a straggler can only adopt up to MAX_EPOCH_SKIP ahead: serve it in steps
-			if (isRotRecord(rot) && rot.epoch >= from && rot.epoch <= from + MAX_EPOCH_SKIP && typeof wrap === "string")
-				out.push({ rot, to: deviceId, wrap, id });
+			// SF1: a straggler can only adopt up to MAX_EPOCH_SKIP ahead: serve it in steps; never past our own epoch
+			if (!isRotRecord(rot) || rot.epoch < from || rot.epoch > from + MAX_EPOCH_SKIP || rot.epoch > epoch) continue;
+			if (typeof wrap !== "string" || !rot.to.includes(deviceId)) continue;
+			// SF3: the shared doc is writable by every member: serve only rotations that verify here
+			if (id !== (await rotationId(rot)) || !(await servableRotation(rot))) continue;
+			out.push({ rot, to: deviceId, wrap, id });
 		}
 		out.sort((x, y) => (betterRot({ epoch: x.rot.epoch, id: x.id }, { epoch: y.rot.epoch, id: y.id }) ? -1 : 1));
 		return out.slice(0, 8).map(({ id: _id, ...msg }) => msg);
+	}
+	/** SF3: issued by the root or a verified admin that was not void then, cutting off validly revoked devices. */
+	async function servableRotation(r: RotRecord): Promise<boolean> {
+		if (rotIssuerRevoked(r)) return false;
+		if (opts.canRotate) {
+			for (const t of r.revoked) if (!(await opts.canRotate(r.from, t))) return false;
+			return true;
+		}
+		const role = r.from === root?.deviceId ? "owner" : r.from === vault.deviceId ? selfRole() : admCache[r.from]?.role;
+		if (role !== "owner" && role !== "admin") return false;
+		return r.revoked.every((t) => t !== root?.deviceId && (revokedIds.get(t) ?? []).some((e) => e <= r.epoch));
 	}
 
 	async function onPairFrame(rec: LinkRec, data: Uint8Array) {
@@ -1055,7 +1069,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 			const peer = rec.deviceId as string;
 			const lg = rec.legacy;
 			void (async () => {
-				for (const m of storedRotationsFor(peer, lg.epoch)) await sendRotate(rec, m);
+				for (const m of await storedRotationsFor(peer, lg.epoch)) await sendRotate(rec, m);
 			})().catch(err);
 			return;
 		}

@@ -390,52 +390,48 @@ describe("audit round 2 regressions: web/provider", () => {
 	}, 30_000);
 
 	for (const withFakes of [true, false])
-		(withFakes ? open : it)(
-			`SF3: fake rotrec: entries in the shared doc do not block a straggler${withFakes ? "" : " (control)"}`,
-			async () => {
-				const hub = createLoopbackHub();
-				const a = await makeDev("devA", hub);
-				const b = await makeDev("devB", hub);
-				const c = await makeDev("devC", hub);
-				const d = await makeDev("devD", hub);
-				for (const x of [b, c, d]) await pair(a, x);
-				const all = [a, b, c, d];
-				await until(
-					() =>
-						all.every((x) => all.every((y) => metaOf(x).has(`ecdh/${y.id}`))) &&
-						all.every((x) => x.mesh.devices().length === 4),
-					5000,
-				);
-				d.mesh.destroy(); // D offline (keeps doc + vault)
-				await a.mesh.revoke(c.id);
-				await until(() => b.mesh.epoch === 1 && keyOf(b) === keyOf(a));
-				if (withFakes) {
-					const mb = metaOf(b); // member B writes fake rotation records "for D" that sort before the real one
-					b.doc.transact(() => {
-						for (let i = 0; i < 8; i++) {
-							mb.set(`rotrec:!fake${i}`, {
-								v: 1,
-								epoch: 1, // within the skip window: only verification can tell it apart
-								from: b.id,
-								revoked: [c.id],
-								to: [d.id],
-								n: `n${i}`,
-								revs: [],
-							});
-							mb.set(`rot:!fake${i}:${d.id}`, "AAAA");
-						}
-					});
-					await until(() => metaOf(a).has("rotrec:!fake7"));
-				}
-				const d2 = await makeDev("devD", hub, undefined, {
-					doc: d.doc,
-					vault: d.vault,
+		it(`SF3: fake rotrec: entries in the shared doc do not block a straggler${withFakes ? "" : " (control)"}`, async () => {
+			const hub = createLoopbackHub();
+			const a = await makeDev("devA", hub);
+			const b = await makeDev("devB", hub);
+			const c = await makeDev("devC", hub);
+			const d = await makeDev("devD", hub);
+			for (const x of [b, c, d]) await pair(a, x);
+			const all = [a, b, c, d];
+			await until(
+				() =>
+					all.every((x) => all.every((y) => metaOf(x).has(`ecdh/${y.id}`))) &&
+					all.every((x) => x.mesh.devices().length === 4),
+				5000,
+			);
+			d.mesh.destroy(); // D offline (keeps doc + vault)
+			await a.mesh.revoke(c.id);
+			await until(() => b.mesh.epoch === 1 && keyOf(b) === keyOf(a));
+			if (withFakes) {
+				const mb = metaOf(b); // member B writes fake rotation records "for D" that sort before the real one
+				b.doc.transact(() => {
+					for (let i = 0; i < 8; i++) {
+						mb.set(`rotrec:!fake${i}`, {
+							v: 1,
+							epoch: 1, // within the skip window: only verification can tell it apart
+							from: b.id,
+							revoked: [c.id],
+							to: [d.id],
+							n: `n${i}`,
+							revs: [],
+						});
+						mb.set(`rot:!fake${i}:${d.id}`, "AAAA");
+					}
 				});
-				await until(() => keyOf(d2) === keyOf(a), 5000);
-				for (const x of [a, b, c, d2]) x.mesh.destroy();
-			},
-			20_000,
-		);
+				await until(() => metaOf(a).has("rotrec:!fake7"));
+			}
+			const d2 = await makeDev("devD", hub, undefined, {
+				doc: d.doc,
+				vault: d.vault,
+			});
+			await until(() => keyOf(d2) === keyOf(a), 5000);
+			for (const x of [a, b, c, d2]) x.mesh.destroy();
+		}, 20_000);
 
 	open(
 		"SF5: old:<x> entries written by a member do not make devices join rooms",

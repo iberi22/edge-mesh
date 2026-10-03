@@ -153,7 +153,10 @@ The new mesh key is never sent under the old shared key (the revoked device know
 5. Peers offline during the revoke: remaining devices keep the retired rooms joined in "legacy" mode. As soon as a
    link in a retired room authenticates, each side offers the other the stored rotations it is a recipient of (best
    first, at most 8), so a lagging peer catches up and two partitions that rotated on their own while apart (and only
-   meet in the room of their last common key) converge, then re-key without every revoked device.
+   meet in the room of their last common key) converge, then re-key without every revoked device. Only rotations that
+   verify on the serving device are offered (SF3): the record's id is its hash, its epoch is within the peer's skip
+   window and not past ours, its issuer is the root or a verified admin that was not void, and every device it cuts
+   off is validly revoked. Fake `rotrec:` entries written into the shared doc by a member are never served.
 6. Peers adopting a rotation drop links to every revoked device and ignore its frames; `peers` never lists them.
 7. Each fresh revocation is signed (`rev/<deviceId>:<epoch>`, see below) and travels inside the rotation (`revs`) and
    in meta. Every device verifies these records on their own, keeps a local map `deviceId -> [revocation epochs]` in
