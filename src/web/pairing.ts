@@ -1,5 +1,6 @@
 import { type Admission, idMatchesPub, type TrustRoot } from "./admission.js";
 import { hkdf, importAesKey, openUpdate, sealUpdate } from "./crypto.js";
+import { identityVerify } from "./pq.js";
 import { hmac } from "./rooms.js";
 import type { Device, VaultClient } from "./types.js";
 import { b64uDecode, b64uEncode, bs, equalBytes, fromUtf8, randomBytes, utf8 } from "./util.js";
@@ -8,22 +9,20 @@ export const PAIR_TTL_MS = 5 * 60_000;
 const ECDH = { name: "ECDH", namedCurve: "P-256" } as const;
 
 /**
- * QR payload v3. Wire form = base64url(JSON array
- * [3, mid, appId, topic, hostPub, dpk, sig, pairSecret, exp, root]); ~430 raw bytes.
- * `hostPub`: host ephemeral ECDH P-256 key (raw, 65B). `dpk`: host device identity key
- * (not in MESH.md; needed so `sig` is verifiable). `root`: deviceId (= key fingerprint) of the mesh owner, so the
- * guest can check the trust chain it receives ends at the root the QR names (S6). `sig`: vault.sign over every other
- * field.
+ * QR payload v4. Wire form = base64url(JSON array [4, mid, appId, topic, hostPub, hostId, pairSecret, exp, root]);
+ * ~300 raw bytes (an ML-DSA-65 key and signature, ~7 KB in base64url, would not fit a scannable QR).
+ * `hostPub`: host ephemeral ECDH P-256 key (raw, 65B). `hostId`: deviceId (= fingerprint of the ML-DSA-65 identity
+ * key) of the host; the host proves that identity inside the SAS-authenticated session (`GrantBody.hostProof`, a
+ * signature over the transcript). `root`: deviceId of the mesh owner (S6). The QR itself is the out-of-band channel.
  */
 export interface PairPayload {
-	v: 3;
+	v: 4;
 	mid: string;
 	root: string;
 	appId: string;
 	topic: string;
 	hostPub: string;
-	dpk: string;
-	sig: string;
+	hostId: string;
 	pairSecret: string;
 	exp: number;
 }
@@ -33,6 +32,8 @@ export interface GrantBody {
 	epoch: number;
 	mid: string;
 	hostDevice?: Device;
+	/** The host's ML-DSA-65 identity key and its signature over the pairing transcript (`hostProofBytes`). */
+	hostProof?: { pub: string; sig: string };
 	/** Trust anchor the guest pins (the mesh owner), sent over the SAS-authenticated session. */
 	root?: TrustRoot;
 	/** The guest's own admission followed by its issuer's chain up to (excluding) the root. */
@@ -43,12 +44,8 @@ export interface GrantBody {
 	extra?: unknown;
 }
 
-/** Canonical (JSON array) encoding of the signed QR fields: no separator ambiguity between them. */
-const signedBytes = (p: Omit<PairPayload, "sig">) =>
-	utf8(JSON.stringify(["swal-pair/v3", p.mid, p.root, p.appId, p.topic, p.hostPub, p.dpk, p.pairSecret, p.exp]));
-
 export function encodePairPayload(p: PairPayload): string {
-	return b64uEncode(utf8(JSON.stringify([p.v, p.mid, p.appId, p.topic, p.hostPub, p.dpk, p.sig, p.pairSecret, p.exp, p.root])));
+	return b64uEncode(utf8(JSON.stringify([p.v, p.mid, p.appId, p.topic, p.hostPub, p.hostId, p.pairSecret, p.exp, p.root])));
 }
 
 export function decodePairPayload(s: string): PairPayload {
@@ -58,13 +55,13 @@ export function decodePairPayload(s: string): PairPayload {
 	} catch {
 		throw new Error("invalid pairing payload");
 	}
-	if (!Array.isArray(a) || a.length !== 10 || a[0] !== 3) throw new Error("unsupported pairing payload");
-	const [v, mid, appId, topic, hostPub, dpk, sig, pairSecret, exp, root] = a;
-	if (![mid, appId, topic, hostPub, dpk, sig, pairSecret, root].every((x) => typeof x === "string") || typeof exp !== "number") {
+	if (!Array.isArray(a) || a.length !== 9 || a[0] !== 4) throw new Error("unsupported pairing payload");
+	const [v, mid, appId, topic, hostPub, hostId, pairSecret, exp, root] = a;
+	if (![mid, appId, topic, hostPub, hostId, pairSecret, root].every((x) => typeof x === "string") || typeof exp !== "number") {
 		throw new Error("malformed pairing payload");
 	}
 	if (b64uDecode(pairSecret).length !== 16) throw new Error("malformed pairing secret");
-	return { v, mid, root, appId, topic, hostPub, dpk, sig, pairSecret, exp };
+	return { v, mid, root, appId, topic, hostPub, hostId, pairSecret, exp };
 }
 
 export async function derivePairKey(pairSecret: Uint8Array): Promise<CryptoKey> {
@@ -88,39 +85,48 @@ export async function createPairOffer(
 ): Promise<PairOfferState> {
 	const hostKeys = (await crypto.subtle.generateKey(ECDH, false, ["deriveBits"])) as CryptoKeyPair;
 	const pairSecret = randomBytes(16);
-	const base = {
-		v: 3 as const,
+	const payload: PairPayload = {
+		v: 4,
 		mid: o.mid,
 		root: o.root,
 		appId: o.appId,
 		topic: o.topic,
 		hostPub: b64uEncode(new Uint8Array(await crypto.subtle.exportKey("raw", hostKeys.publicKey))),
-		dpk: b64uEncode(vault.devicePublicKey),
+		hostId: vault.deviceId,
 		pairSecret: b64uEncode(pairSecret),
 		exp: o.now + (o.ttlMs ?? PAIR_TTL_MS),
 	};
-	const sig = b64uEncode(await vault.sign(signedBytes(base)));
-	const payload: PairPayload = { ...base, sig };
 	return { payload, encoded: encodePairPayload(payload), pairSecret, hostKeys };
 }
 
-export async function verifyPairPayload(vault: VaultClient, p: PairPayload): Promise<boolean> {
-	const { sig, ...rest } = p;
-	return vault.verify(b64uDecode(p.dpk), signedBytes(rest), b64uDecode(sig));
+/** What the host signs with its identity key: the transcript, its id and key (inside the encrypted grant). */
+export const hostProofBytes = (transcript: Uint8Array, hostId: string, pub: string) =>
+	utf8(JSON.stringify(["swal-pair-host/v1", b64uEncode(transcript), hostId, pub]));
+
+/** Guest-side check of the host's identity proof: hostId (from the QR) = fingerprint(pub) and a valid ML-DSA-65 signature. */
+export async function verifyHostProof(p: PairPayload, transcript: Uint8Array, proof: unknown): Promise<boolean> {
+	const h = proof as { pub?: unknown; sig?: unknown } | null;
+	if (!h || typeof h.pub !== "string" || typeof h.sig !== "string") return false;
+	if (!(await idMatchesPub(p.hostId, h.pub))) return false;
+	try {
+		return identityVerify(b64uDecode(h.pub), hostProofBytes(transcript, p.hostId, h.pub), b64uDecode(h.sig));
+	} catch {
+		return false;
+	}
 }
 
 /**
  * Pairing transcript hash: binds the SAS and the session key to BOTH ephemeral ECDH keys, BOTH nonces
- * (host: pairSecret from the QR; guest: fresh `n` in its hello), the host identity key and the mesh/app/topic.
+ * (host: pairSecret from the QR; guest: fresh `n` in its hello), the host identity (its id) and the mesh/app/topic.
  */
 export async function pairTranscript(p: PairPayload, guestPub: string, guestNonce: string): Promise<Uint8Array> {
 	const t = JSON.stringify([
-		"swal-pair-transcript/v3",
+		"swal-pair-transcript/v4",
 		p.appId,
 		p.topic,
 		p.mid,
 		p.root,
-		p.dpk,
+		p.hostId,
 		p.hostPub,
 		guestPub,
 		p.pairSecret,
@@ -158,7 +164,7 @@ export interface PairAck {
 
 /** Host-side check of a guest ack: deviceId = fingerprint(pub) and a valid signature by that key over the transcript. */
 export async function verifyPairAck(
-	verify: VaultClient["verify"],
+	verify: (pub: Uint8Array, data: Uint8Array, sig: Uint8Array) => boolean | Promise<boolean>,
 	transcript: Uint8Array,
 	a: Partial<PairAck>,
 ): Promise<string | null> {
@@ -207,7 +213,9 @@ export class HostPairing {
 		private hooks: {
 			now(): number;
 			/** identity-signature check (the host vault's verify) for the guest's proof of possession */
-			verify: VaultClient["verify"];
+			verify(pub: Uint8Array, data: Uint8Array, sig: Uint8Array): boolean | Promise<boolean>;
+			/** the host's identity proof over the transcript (see `hostProofBytes`) */
+			prove(transcript: Uint8Array): Promise<{ pub: string; sig: string }>;
 			onSas(p: SasPrompt): void;
 			buildGrant(guest: Omit<Device, "addedAt">): Promise<GrantBody>;
 			onPaired(d: Device): void;
@@ -294,6 +302,7 @@ export class HostPairing {
 		let grant: GrantBody;
 		try {
 			grant = await this.hooks.buildGrant(this.guestDevice);
+			grant.hostProof = await this.hooks.prove(this.transcript as Uint8Array);
 		} catch (e) {
 			this.send({ t: "err", e: "refused" });
 			this.hooks.onFail(`grant refused: ${e instanceof Error ? e.message : String(e)}`);
@@ -337,7 +346,6 @@ export class GuestPairing {
 		hooks: { name: string; onSas(code: string): Promise<boolean>; now: number },
 	): Promise<GuestPairing> {
 		if (hooks.now > payload.exp) throw new Error("pairing code expired");
-		if (!(await verifyPairPayload(vault, payload))) throw new Error("pairing payload signature invalid");
 		const g = new GuestPairing(payload, vault, hooks);
 		const eph = (await crypto.subtle.generateKey(ECDH, false, ["deriveBits"])) as CryptoKeyPair;
 		g.ePub = b64uEncode(new Uint8Array(await crypto.subtle.exportKey("raw", eph.publicKey)));
@@ -385,6 +393,9 @@ export class GuestPairing {
 				send({ t: "ack", ct });
 			} else if (msg.t === "grant" && this.active === send) {
 				const g = parse<GrantBody>(await openUpdate(this.sess.key, b64uDecode(msg.ct), "swal-pair/grant"));
+				// the host proves, inside the SAS-authenticated session, that it holds the identity the QR names
+				if (!(await verifyHostProof(this.payload, this.transcript, g.hostProof)))
+					throw new Error("pairing grant: the host did not prove the identity named by the pairing code");
 				this.settled = true;
 				this.resolve(g);
 			}

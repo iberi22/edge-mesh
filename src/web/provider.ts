@@ -43,7 +43,9 @@ import {
 	createPairOffer,
 	decodePairPayload,
 	derivePairKey,
+	hostProofBytes,
 } from "./pairing.js";
+import { ML_DSA_PUBLIC_KEY_BYTES, identityVerify } from "./pq.js";
 import { derivePairRoomId, deriveRoomId, fingerprint, meshNamespace } from "./rooms.js";
 import { type MeshStore, idbStore, memoryStore } from "./store.js";
 import type { Device, PeerLink, RtcOptions, SigTransport, VaultClient } from "./types.js";
@@ -405,23 +407,19 @@ export function createMesh(opts: MeshOptions): Mesh {
 	};
 	// signature checks of trust records (admissions, revocations) are memoized: they are re-evaluated often
 	const sigMemo = new Map<string, Promise<boolean>>();
-	const memoVault: VaultClient = {
-		...vault,
-		deviceId: vault.deviceId,
-		devicePublicKey: vault.devicePublicKey,
-		verify: (pub, data, sig) => {
-			const k = `${b64uEncode(pub)}|${b64uEncode(sig)}|${fromUtf8(data)}`;
-			let p = sigMemo.get(k);
-			if (!p) {
-				if (sigMemo.size >= 8192) sigMemo.clear();
-				p = vault.verify(pub, data, sig).catch(() => false);
-				sigMemo.set(k, p);
-			}
-			return p;
-		},
+	// ML-DSA-65 verification (AGENTS.md §2) is ~2 ms: memoize it for the chain checks, which repeat
+	const memoVerify = (pub: Uint8Array, data: Uint8Array, sig: Uint8Array): Promise<boolean> => {
+		const k = `${b64uEncode(pub)}|${b64uEncode(sig)}|${b64uEncode(data)}`;
+		let p = sigMemo.get(k);
+		if (!p) {
+			if (sigMemo.size >= 8192) sigMemo.clear();
+			p = Promise.resolve(identityVerify(pub, data, sig));
+			sigMemo.set(k, p);
+		}
+		return p;
 	};
 	const chainCtx = (r: TrustRoot): ChainContext => ({
-		vault: memoVault,
+		verify: memoVerify,
 		root: r,
 		epoch,
 		candidates: (id: string) => {
@@ -463,7 +461,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const { sig, ...body } = r;
 		let ok = false;
 		try {
-			ok = await memoVault.verify(b64uDecode(pub), revocationBytes(body), b64uDecode(sig));
+			ok = await memoVerify(b64uDecode(pub), revocationBytes(body), b64uDecode(sig));
 		} catch {}
 		if (!ok) return bad();
 		revStore.set(h, r);
@@ -583,8 +581,10 @@ export function createMesh(opts: MeshOptions): Mesh {
 	let persistence: { destroy(): Promise<void> | void } | null = null;
 	const ready = (async () => {
 		// B1: a deviceId IS the fingerprint of the identity key; every peer enforces it, so must we
+		if (vault.devicePublicKey.length !== ML_DSA_PUBLIC_KEY_BYTES)
+			throw new Error("vault.devicePublicKey must be an ML-DSA-65 public key (1952 bytes; ECDSA identities are no longer accepted)");
 		if (!(await idMatchesPub(vault.deviceId, b64uEncode(vault.devicePublicKey)))) {
-			throw new Error("vault.deviceId must be fingerprint(vault.devicePublicKey) (see web/rooms fingerprint)");
+			throw new Error("vault.deviceId must be deviceIdOf(vault.devicePublicKey)");
 		}
 		const r = (await store.get("root")) as TrustRoot | undefined;
 		if (r && typeof r.deviceId === "string" && typeof r.pub === "string" && typeof r.mid === "string") root = r;
@@ -646,7 +646,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const e = meta.get(ECDH_PREFIX + deviceId) as { pub: string; sig: string } | undefined;
 		if (e && typeof e.pub === "string" && typeof e.sig === "string" && e.pub !== ecdhOk[slot]) {
 			try {
-				if (await vault.verify(b64uDecode(idPub), ecdhSignedBytes(deviceId, e.pub), b64uDecode(e.sig))) {
+				if (identityVerify(b64uDecode(idPub), ecdhSignedBytes(deviceId, e.pub), b64uDecode(e.sig))) {
 					ecdhOk = { ...ecdhOk, [slot]: e.pub };
 					await store.set("ecdh", ecdhOk);
 				}
@@ -941,7 +941,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 			if (!pub) return;
 			let ok = false;
 			try {
-				ok = await vault.verify(b64uDecode(pub), frameSigBytes(rid, sender, kind, sessBytes, seq, body), sig);
+				ok = identityVerify(b64uDecode(pub), frameSigBytes(rid, sender, kind, sessBytes, seq, body), sig);
 			} catch {}
 			if (!ok) return reject("bad frame signature", sender);
 			if (rec.closing) return;
@@ -1655,7 +1655,11 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const pairKey = await derivePairKey(offer.pairSecret);
 		const host = new HostPairing(offer, {
 			now,
-			verify: (pub, data, sig) => vault.verify(pub, data, sig),
+			verify: identityVerify,
+			prove: async (transcript) => ({
+				pub: b64uEncode(vault.devicePublicKey),
+				sig: b64uEncode(await vault.sign(hostProofBytes(transcript, vault.deviceId, b64uEncode(vault.devicePublicKey)))),
+			}),
 			onSas: (p: SasPrompt) => emit("sas", { role: "host", ...p }),
 			buildGrant: async (guest): Promise<GrantBody> => {
 				// B1: the ack already proved possession of guest.pub and deviceId = fingerprint(pub). Never admit a
@@ -1795,12 +1799,14 @@ export function createMesh(opts: MeshOptions): Mesh {
 			if (!isEpoch(g.epoch)) throw new Error("pairing grant: bad epoch");
 			const grantAdm = new Map<string, Admission[]>();
 			for (const a of g.admissions) grantAdm.set(a?.deviceId, [...(grantAdm.get(a?.deviceId) ?? []), a]);
-			const gctx: ChainContext = { vault, root: g.root, epoch: g.epoch, candidates: (id: string) => grantAdm.get(id) ?? [], revokedAt: () => undefined };
+			const gctx: ChainContext = { verify: memoVerify, root: g.root, epoch: g.epoch, candidates: (id: string) => grantAdm.get(id) ?? [], revokedAt: () => undefined };
 			const memo = new Map<string, Promise<Admission | null>>();
 			const mine = await verifyChain(gctx, vault.deviceId, memo);
 			if (!mine || mine.pub !== b64uEncode(vault.devicePublicKey)) throw new Error("pairing grant: invalid admission for this device");
+			// the host proved (inside the session) that it holds hostId's ML-DSA key; the admission must come from it
+			if (mine.by !== p.hostId) throw new Error("pairing grant: admission not issued by the paired host");
 			const issuer = await verifyChain(gctx, mine.by, memo);
-			if (!issuer || issuer.pub !== p.dpk) throw new Error("pairing grant: admission not issued by the paired host");
+			if (!issuer || issuer.pub !== g.hostProof?.pub) throw new Error("pairing grant: admission not issued by the paired host");
 			if (g.root.mid !== p.mid || g.mid !== p.mid) throw new Error("pairing grant: mesh id does not match the pairing code");
 			if (g.root.deviceId !== p.root) throw new Error("pairing grant: trust root does not match the pairing code");
 			if (root && root.mid === g.root.mid && (root.deviceId !== g.root.deviceId || root.pub !== g.root.pub))

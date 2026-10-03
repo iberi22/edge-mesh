@@ -3,13 +3,20 @@ import type { MeshStore } from "./store.js";
 
 /** Minimal vault contract. An adapter comes from @swal/vault/web (not a dependency here). */
 export interface VaultClient {
+	/** `deviceIdOf(devicePublicKey)` (web/pq): 43 base64url characters. */
 	readonly deviceId: string;
-	/** Public identity key of this device (raw bytes, whatever scheme `verify` understands). */
+	/** ML-DSA-65 public identity key of this device (raw, 1952 bytes). Any other algorithm is refused. */
 	readonly devicePublicKey: Uint8Array;
 	getOrCreateMeshKey(): Promise<Uint8Array>;
 	setMeshKey(raw: Uint8Array): Promise<void>;
+	/** ML-DSA-65 signature (FIPS 204, pure, empty context; 3309 bytes) of `data` with the identity key. */
 	sign(data: Uint8Array): Promise<Uint8Array>;
-	verify(publicKey: Uint8Array, data: Uint8Array, signature: Uint8Array): Promise<boolean>;
+	/**
+	 * Ignored since the ML-DSA-65 migration: the mesh verifies every identity signature itself (`identityVerify`),
+	 * so a vault can no longer widen what is accepted. Kept optional for source compatibility.
+	 * @deprecated
+	 */
+	verify?(publicKey: Uint8Array, data: Uint8Array, signature: Uint8Array): Promise<boolean>;
 	/**
 	 * Optional: persistent static P-256 ECDH key of this device (non-extractable private key + raw public key),
 	 * used to wrap rotated mesh keys pairwise. Without it the mesh keeps an in-memory key for the session only,

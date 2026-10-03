@@ -1,6 +1,6 @@
 // Regression tests for the second security audit of web/provider + web/webrtc (BL1, BL3, SF1–SF5, notes). Each one
 // reproduces an attack or failure the re-audit proved and asserts that it no longer happens.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 import { signRevocation } from "../../src/web/admission.js";
 import {
@@ -16,6 +16,21 @@ import type {
 } from "../../src/web/index.js";
 import { createLoopbackHub, deriveRoomId } from "../../src/web/index.js";
 import { isRotRecord } from "../../src/web/rotation.js";
+
+// Counts ML-DSA-65 verifications of revocation records (all devices of this process): the mesh verifies identity
+// signatures itself (web/pq identityVerify), not through the vault.
+const pqCount = vi.hoisted(() => ({ revVerifies: 0 }));
+vi.mock("../../src/web/pq.js", async (importOriginal) => {
+	const m = await importOriginal<typeof import("../../src/web/pq.js")>();
+	return {
+		...m,
+		identityVerify: (p: Uint8Array, d: Uint8Array, s: Uint8Array) => {
+			if (new TextDecoder().decode(d.subarray(0, 14)) === '["swal-rev/v2"') pqCount.revVerifies++;
+			return m.identityVerify(p, d, s);
+		},
+	};
+});
+
 import { b64uEncode, concat, randomBytes, utf8 } from "../../src/web/util.js";
 import { dataChannelLink } from "../../src/web/webrtc.js";
 import {
@@ -294,12 +309,6 @@ describe("audit round 2 regressions: web/provider", () => {
 		await a.mesh.revoke(x1.id);
 		await until(() => a.mesh.epoch === 1);
 		x1.mesh.destroy();
-		let verifies = 0;
-		const orig = a.vault.verify.bind(a.vault);
-		a.vault.verify = (p, d, s) => {
-			verifies++;
-			return orig(p, d, s);
-		};
 		const { rid0, mat0, lks } = await retiredRoomLinks(
 			hub,
 			x1,
@@ -315,7 +324,7 @@ describe("audit round 2 regressions: web/provider", () => {
 		});
 		const bad = Array.from({ length: 64 }, () => ({
 			...fake,
-			target: b64uEncode(randomBytes(17)).slice(0, 22),
+			target: b64uEncode(randomBytes(32)), // well-formed (43-char) ids: only the signature check rejects them
 		}));
 		const body = utf8(
 			JSON.stringify({
@@ -333,13 +342,13 @@ describe("audit round 2 regressions: web/provider", () => {
 				wrap: "",
 			}),
 		);
-		const before = verifies;
+		const before = pqCount.revVerifies;
 		const sess = randomBytes(8);
 		for (let i = 0; i < 20; i++)
 			for (const l of lks)
 				l.send(await craft(x1.vault, mat0, rid0, 3, body, sess, i + 1));
 		await settle(1500);
-		expect(verifies - before).toBeLessThan(64);
+		expect(pqCount.revVerifies - before).toBeLessThan(64);
 		for (const d of all) d.mesh.destroy();
 	}, 20_000);
 
@@ -531,8 +540,8 @@ describe("audit round 2 regressions: web/provider", () => {
 	it("SF1: rotation records with an epoch beyond 2^31 - 1 are malformed", () => {
 		const base = {
 			v: 1,
-			from: "A".repeat(22),
-			revoked: ["B".repeat(22)],
+			from: "A".repeat(43),
+			revoked: ["B".repeat(43)],
 			to: [],
 			n: "x",
 			wh: "",

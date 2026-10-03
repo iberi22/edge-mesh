@@ -26,6 +26,7 @@ import {
 	GuestPairing,
 	HostPairing,
 } from "../../src/web/pairing.js";
+import { identityVerify } from "../../src/web/pq.js";
 import { b64uDecode, b64uEncode, randomBytes } from "../../src/web/util.js";
 import { dataChannelLink } from "../../src/web/webrtc.js";
 import {
@@ -35,54 +36,12 @@ import {
 	makeVault,
 	metaOf,
 	pair,
+	pairDirect,
 	trio,
 	until,
 } from "./helpers.js";
 
 type Vault = Awaited<ReturnType<typeof makeVault>>;
-
-/** Run the pairing state machines back to back (no mesh): what does the host admit for this guest vault? */
-async function pairDirect(hostVault: Vault, guestVault: Vault) {
-	const offer = await createPairOffer(hostVault, {
-		mid: "m",
-		root: hostVault.deviceId,
-		appId: "app",
-		topic: "app/data/x",
-		now: Date.now(),
-	});
-	const out: { admitted: string | null; failed: string | null } = {
-		admitted: null,
-		failed: null,
-	};
-	const host = new HostPairing(offer, {
-		now: Date.now,
-		verify: (p, d, s) => hostVault.verify(p, d, s),
-		onSas: (p) => p.confirm(),
-		buildGrant: async (g): Promise<GrantBody> => {
-			out.admitted = g.deviceId;
-			return { meshKey: "", epoch: 0, mid: "m" };
-		},
-		onPaired() {},
-		onFail: (r) => {
-			out.failed = r;
-		},
-	});
-	const guest = await GuestPairing.create(offer.payload, guestVault, {
-		name: "g",
-		onSas: async () => true,
-		now: Date.now(),
-	});
-	type Msg = Parameters<HostPairing["handle"]>[0];
-	const toGuest = (m: Msg) =>
-		queueMicrotask(() => void guest.handle(m, toHost));
-	const toHost = (m: Msg) => queueMicrotask(() => void host.handle(m, toGuest));
-	guest.attach(toHost);
-	const res = await guest.result.then(
-		() => "granted",
-		(e: Error) => e.message,
-	);
-	return { ...out, guest: res };
-}
 
 const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
 
@@ -308,7 +267,7 @@ describe("audit regressions: web/provider", () => {
 			epoch: number,
 			mAdms: Admission[] = [admM0],
 		): ChainContext => ({
-			vault: owner,
+			verify: identityVerify,
 			root,
 			epoch,
 			candidates: (id) =>

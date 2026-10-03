@@ -1,15 +1,25 @@
+import { ml_dsa65 } from "@noble/post-quantum/ml-dsa.js";
 import * as Y from "yjs";
+import type { LoopbackHub } from "../../src/web/index.js";
 import {
-	createMesh,
 	createLoopbackHub,
-	fingerprint,
+	createMesh,
+	deviceIdOf,
 	type Mesh,
 	type MeshOptions,
 	type VaultClient,
 } from "../../src/web/index.js";
-import type { LoopbackHub } from "../../src/web/index.js";
+import {
+	createPairOffer,
+	type GrantBody,
+	GuestPairing,
+	HostPairing,
+	hostProofBytes,
+	type PairPayload,
+} from "../../src/web/pairing.js";
+import { identityVerify } from "../../src/web/pq.js";
 import { generateEcdhIdentity } from "../../src/web/rotation.js";
-import { randomBytes } from "../../src/web/util.js";
+import { b64uEncode, randomBytes } from "../../src/web/util.js";
 
 // A deviceId is the fingerprint of the identity key (B1). Tests name devices with labels ("devA"...) and map
 // between both: `idOf(label)` = id of the LAST vault created with that label (tests in a file run sequentially),
@@ -31,15 +41,9 @@ export const peerLabels = (m: Mesh): string[] => labels(m.peers);
 export async function makeVault(
 	lbl: string,
 ): Promise<VaultClient & { meshKey: Uint8Array | null; epoch: number }> {
-	const kp = (await crypto.subtle.generateKey(
-		{ name: "ECDSA", namedCurve: "P-256" },
-		true,
-		["sign", "verify"],
-	)) as CryptoKeyPair;
-	const pub = new Uint8Array(
-		await crypto.subtle.exportKey("raw", kp.publicKey),
-	);
-	const id = await fingerprint(pub);
+	const kp = ml_dsa65.keygen(); // ML-DSA-65 identity (AGENTS.md §2)
+	const pub = kp.publicKey;
+	const id = await deviceIdOf(pub);
 	ID_OF.set(lbl, id);
 	LABEL_OF.set(id, lbl);
 	const ecdh = await generateEcdhIdentity(); // persistent for the life of this vault (like a real one)
@@ -56,28 +60,7 @@ export async function makeVault(
 			v.meshKey = raw;
 		},
 		async sign(data: Uint8Array) {
-			return new Uint8Array(
-				await crypto.subtle.sign(
-					{ name: "ECDSA", hash: "SHA-256" },
-					kp.privateKey,
-					data as BufferSource,
-				),
-			);
-		},
-		async verify(p: Uint8Array, data: Uint8Array, sig: Uint8Array) {
-			const k = await crypto.subtle.importKey(
-				"raw",
-				p as BufferSource,
-				{ name: "ECDSA", namedCurve: "P-256" },
-				false,
-				["verify"],
-			);
-			return crypto.subtle.verify(
-				{ name: "ECDSA", hash: "SHA-256" },
-				k,
-				sig as BufferSource,
-				data as BufferSource,
-			);
+			return ml_dsa65.sign(data, kp.secretKey);
 		},
 		getEcdhIdentity: async () => ecdh,
 		getEpoch: () => v.epoch,
@@ -212,3 +195,62 @@ export async function trio(
 }
 
 export { createLoopbackHub };
+
+type TestVault = Awaited<ReturnType<typeof makeVault>>;
+
+/** Run the pairing state machines back to back (no mesh): what does the host admit for this guest vault? */
+export async function pairDirect(
+	hostVault: TestVault,
+	guestVault: TestVault,
+	hooks: {
+		prove?: (t: Uint8Array) => Promise<{ pub: string; sig: string }>;
+		payload?: (p: PairPayload) => PairPayload;
+	} = {},
+) {
+	const offer = await createPairOffer(hostVault, {
+		mid: "m",
+		root: hostVault.deviceId,
+		appId: "app",
+		topic: "app/data/x",
+		now: Date.now(),
+	});
+	const out: { admitted: string | null; failed: string | null } = {
+		admitted: null,
+		failed: null,
+	};
+	const host = new HostPairing(offer, {
+		now: Date.now,
+		verify: identityVerify,
+		prove:
+			hooks.prove ??
+			(async (t) => {
+				const pub = b64uEncode(hostVault.devicePublicKey);
+				return { pub, sig: b64uEncode(await hostVault.sign(hostProofBytes(t, hostVault.deviceId, pub))) };
+			}),
+		onSas: (p) => p.confirm(),
+		buildGrant: async (g): Promise<GrantBody> => {
+			out.admitted = g.deviceId;
+			return { meshKey: "", epoch: 0, mid: "m" };
+		},
+		onPaired() {},
+		onFail: (r) => {
+			out.failed = r;
+		},
+	});
+	const guest = await GuestPairing.create(hooks.payload ? hooks.payload(offer.payload) : offer.payload, guestVault, {
+		name: "g",
+		onSas: async () => true,
+		now: Date.now(),
+	});
+	type Msg = Parameters<HostPairing["handle"]>[0];
+	const toGuest = (m: Msg) =>
+		queueMicrotask(() => void guest.handle(m, toHost));
+	const toHost = (m: Msg) => queueMicrotask(() => void host.handle(m, toGuest));
+	guest.attach(toHost);
+	const res = await guest.result.then(
+		() => "granted",
+		(e: Error) => e.message,
+	);
+	return { ...out, guest: res };
+}
+

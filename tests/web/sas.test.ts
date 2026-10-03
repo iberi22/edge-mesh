@@ -32,7 +32,7 @@ describe("SAS on pairing", () => {
 			await pairTranscript(offer.payload, gPub, b64uEncode(randomBytes(16))), // guest nonce
 			await pairTranscript({ ...offer.payload, hostPub: b64uEncode(randomBytes(65)) }, gPub, nonce), // host ephemeral key
 			await pairTranscript({ ...offer.payload, pairSecret: b64uEncode(randomBytes(16)) }, gPub, nonce), // host nonce
-			await pairTranscript({ ...offer.payload, dpk: b64uEncode(randomBytes(65)) }, gPub, nonce), // host identity
+			await pairTranscript({ ...offer.payload, hostId: b64uEncode(randomBytes(32)) }, gPub, nonce), // host identity
 			await pairTranscript({ ...offer.payload, root: "other-root" }, gPub, nonce), // trust root named by the QR
 		];
 		for (const v of variants) expect(Array.from(v)).not.toEqual(Array.from(t));

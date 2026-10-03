@@ -321,5 +321,5 @@ describe("web/merge: determinism with 3 devices and shuffled delivery", () => {
 		expect(
 			(r.inventario.harina as { rejected: unknown[] }).rejected.length,
 		).toBeGreaterThan(0);
-	});
+	}, 30_000); // ~150 ML-DSA-65 signatures and their verifications on every receiver
 });

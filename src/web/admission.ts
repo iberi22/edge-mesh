@@ -2,12 +2,12 @@
 // to the trust root pinned locally on this device. Replaces "whoever writes dev/<id> into meta is a member".
 // Deliberately small: capability grants (per-module permissions, expiry, delegation depth) are a separate
 // layer that can take over through MeshOptions.authorizeDevice / canRotate.
-import { fingerprint } from "./rooms.js";
+import { deviceIdOf } from "./pq.js";
 import type { VaultClient } from "./types.js";
 import { b64uDecode, b64uEncode, utf8 } from "./util.js";
 
-/** A deviceId is the fingerprint of the device identity key: base64url(SHA-256(pub))[0..22]. */
-export const DEVICE_ID_RE = /^[A-Za-z0-9_-]{22}$/;
+/** A deviceId is the fingerprint of the device's ML-DSA-65 identity key (`deviceIdOf`): 43 base64url characters. */
+export const DEVICE_ID_RE = /^[A-Za-z0-9_-]{43}$/;
 export const isDeviceId = (x: unknown): x is string =>
 	typeof x === "string" && DEVICE_ID_RE.test(x);
 
@@ -21,7 +21,7 @@ export async function idMatchesPub(
 	let fp = fpCache.get(pub);
 	if (fp === undefined) {
 		try {
-			fp = await fingerprint(b64uDecode(pub));
+			fp = await deviceIdOf(b64uDecode(pub));
 		} catch {
 			return false;
 		}
@@ -141,7 +141,12 @@ export function rootAdmission(root: TrustRoot): Admission {
 }
 
 export interface ChainContext {
-	vault: VaultClient;
+	/** identity signature check: ML-DSA-65 (`identityVerify` from web/pq), possibly memoized by the caller */
+	verify(
+		publicKey: Uint8Array,
+		data: Uint8Array,
+		signature: Uint8Array,
+	): boolean | Promise<boolean>;
 	root: TrustRoot;
 	/** current mesh epoch of the verifying device: admissions issued at a later epoch are not valid (yet) */
 	epoch: number;
@@ -207,7 +212,7 @@ export async function verifyChain(
 			try {
 				const { sig, ...body } = a;
 				if (
-					await ctx.vault.verify(
+					await ctx.verify(
 						b64uDecode(issuer.pub),
 						admissionBytes(body),
 						b64uDecode(sig),
@@ -288,7 +293,7 @@ export async function verifyRevocation(
 	if (!canRevokeRole(issuer.role, target?.role ?? "member")) return false;
 	try {
 		const { sig, ...body } = r;
-		return await ctx.vault.verify(
+		return await ctx.verify(
 			b64uDecode(issuer.pub),
 			revocationBytes(body),
 			b64uDecode(sig),
