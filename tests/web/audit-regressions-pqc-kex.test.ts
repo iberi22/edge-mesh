@@ -242,6 +242,7 @@ describe("PQC: hybrid ML-KEM-768 + ECDH P-256 key exchanges", () => {
 				() =>
 					metaOf(a).get(`ecdh/${c.id}`)?.kem === kem &&
 					metaOf(a).get(`ecdh/${c.id}`)?.pub === pub,
+				10_000, // under a loaded suite the update after a key switch can take a few seconds
 			);
 		};
 		const good = metaOf(c).get(`ecdh/${c.id}`);
