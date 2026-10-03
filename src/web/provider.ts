@@ -391,8 +391,11 @@ export function createMesh(opts: MeshOptions): Mesh {
 			...(selfAdm ? { admittedBy: selfAdm.by } : {}),
 		};
 	};
-	const devices = (): Device[] => [selfDevice(), ...trusted.values()].sort((a, b) => a.addedAt - b.addedAt);
-	const roleOf = (id: string): Role | null => (id === vault.deviceId ? selfRole() : (trusted.get(id)?.role ?? null));
+	// a device revoked a moment ago is never listed, even before the trust state is recomputed
+	const devices = (): Device[] =>
+		[selfDevice(), ...[...trusted.values()].filter((d) => !isRevoked(d.deviceId))].sort((a, b) => a.addedAt - b.addedAt);
+	const roleOf = (id: string): Role | null =>
+		id === vault.deviceId ? selfRole() : isRevoked(id) ? null : (trusted.get(id)?.role ?? null);
 	/** H2: rotation/revocation only from an authorized issuer. A target that is not admitted counts as a member. */
 	const canRotate = async (issuer: string, target: string): Promise<boolean> => {
 		if (opts.canRotate) return Boolean(await opts.canRotate(issuer, target));
@@ -1884,7 +1887,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		},
 		channel,
 		role(deviceId = vault.deviceId) {
-			return deviceId === vault.deviceId ? selfRole() : (trusted.get(deviceId)?.role ?? null);
+			return roleOf(deviceId);
 		},
 		awareness,
 		ready,
