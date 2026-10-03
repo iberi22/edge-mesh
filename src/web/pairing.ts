@@ -36,6 +36,8 @@ export interface GrantBody {
 	root?: TrustRoot;
 	/** The guest's own admission followed by its issuer's chain up to (excluding) the root. */
 	admissions?: Admission[];
+	/** The rotation that produced `meshKey` (B4: concurrent rotations are resolved by its id). */
+	rot?: unknown;
 	/** Application data attached by the host for this guest (MeshOptions pairHost({ extra })). */
 	extra?: unknown;
 }

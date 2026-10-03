@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createLoopbackHub } from "../../src/web/index.js";
-import { devLabels, makeDev, metaOf, pair, trio, until } from "./helpers.js";
+import { devLabels, makeDev, metaOf, pair, storedWraps, trio, until } from "./helpers.js";
 
 const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
 
@@ -50,7 +50,7 @@ describe("H2: only authorized issuers revoke / rotate", () => {
 		for (const x of [a, adm1, adm2, m]) x.mesh.destroy();
 	});
 
-	it("the `revoked` field of a stored wrap is authenticated: tampering it does not cut off another device", async () => {
+	it("the `revoked` field of a stored rotation is authenticated: tampering it does not cut off another device", async () => {
 		const hub = createLoopbackHub();
 		const { a, b, c } = await trio(hub);
 		const d = await makeDev("devD", hub);
@@ -59,11 +59,11 @@ describe("H2: only authorized issuers revoke / rotate", () => {
 		await until(() => b.mesh.devices().length === 4 && d.mesh.devices().length === 4);
 		b.mesh.destroy(); // B offline (keeps doc + vault)
 		await a.mesh.revoke(c.id);
-		await until(() => d.mesh.epoch === 1 && metaOf(d).has(`rot:1:${b.id}`));
-		// an insider rewrites the `revoked` field of B's stored wrap (here: naming D) to make B cut off another member
-		const w = metaOf(d).get(`rot:1:${b.id}`);
-		metaOf(d).set(`rot:1:${b.id}`, { ...w, revoked: d.id });
-		await until(() => metaOf(a).get(`rot:1:${b.id}`).revoked === d.id);
+		await until(() => d.mesh.epoch === 1 && storedWraps(d, 1).some((w) => w.to === b.id));
+		// an insider rewrites the `revoked` field of the stored rotation (here: naming D) to make B cut off another member
+		const w = storedWraps(d, 1).find((x) => x.to === b.id)!;
+		metaOf(d).set(`rotrec:${w.id}`, { ...w.rec, revoked: [d.id] });
+		await until(() => metaOf(a).get(`rotrec:${w.id}`).revoked[0] === d.id);
 		const revokedSeen: string[] = [];
 		const b2 = await makeDev("devB", hub, undefined, { doc: b.doc, vault: b.vault });
 		const rejected: string[] = [];

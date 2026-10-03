@@ -9,7 +9,11 @@ import {
 	verifyChain,
 	verifyRevocation,
 } from "../../src/web/admission.js";
-import type { LinkTransport, PeerLink } from "../../src/web/index.js";
+import type {
+	LinkTransport,
+	MeshOptions,
+	PeerLink,
+} from "../../src/web/index.js";
 import { createLoopbackHub } from "../../src/web/index.js";
 import {
 	createPairOffer,
@@ -20,6 +24,7 @@ import {
 import { b64uEncode } from "../../src/web/util.js";
 import {
 	type Dev,
+	idOf,
 	makeDev,
 	makeVault,
 	metaOf,
@@ -425,56 +430,146 @@ describe("audit regressions: web/provider", () => {
 		},
 	);
 
-	open(
-		"P6 (B4): concurrent revocations by two admins converge: both targets excluded, one key for everybody else",
-		async () => {
-			const hub = createLoopbackHub();
-			const a = await makeDev("devA", hub);
-			const x1 = await makeDev("x1", hub);
-			const x2 = await makeDev("x2", hub);
-			a.mesh.on("sas", (p) => p.confirm());
-			for (const x of [x1, x2]) {
-				const o = await a.mesh.pairHost({ role: "admin" });
-				await x.mesh.pairJoin(o.payload, { confirmSas: () => true });
-			}
-			const m1 = await makeDev("m1", hub);
-			const m2 = await makeDev("m2", hub);
-			const c = await makeDev("devC", hub);
-			await pair(a, m1);
-			await pair(a, m2);
-			await pair(a, c);
-			const all = [a, x1, x2, m1, m2, c];
-			await until(
-				() =>
-					all.every((d) => all.every((y) => metaOf(d).has(`ecdh/${y.id}`))) &&
-					all.every((d) => d.mesh.devices().length === 6),
-				5000,
-			);
-			await Promise.all([x1.mesh.revoke(m1.id), x2.mesh.revoke(m2.id)]);
-			const rest = [a, x1, x2, c];
-			const key = (d: Dev) => b64uEncode(d.vault.meshKey!);
-			await until(
-				() =>
-					rest.every((d) => key(d) === key(a) && d.mesh.epoch === a.mesh.epoch),
-				8000,
-			);
-			await settle(500);
-			expect(new Set(rest.map(key)).size).toBe(1);
-			expect(key(m1)).not.toBe(key(a));
-			expect(key(m2)).not.toBe(key(a));
-			for (const d of rest) {
-				expect(d.mesh.peers).not.toContain(m1.id);
-				expect(d.mesh.peers).not.toContain(m2.id);
-				expect(d.mesh.devices().map((x) => x.deviceId)).not.toContain(m1.id);
-				expect(d.mesh.devices().map((x) => x.deviceId)).not.toContain(m2.id);
-			}
-			// and the mesh still works for everybody that remains
-			const got: string[] = [];
-			c.mesh.channel("t").onMessage((_d, from) => got.push(from));
-			await x1.mesh.channel("t").send(new Uint8Array([1]));
-			await until(() => got.includes(x1.id));
-			for (const d of all) d.mesh.destroy();
-		},
-		20_000,
-	);
+	it("P6 (B4): concurrent revocations by two admins converge: both targets excluded, one key for everybody else", async () => {
+		const hub = createLoopbackHub();
+		const a = await makeDev("devA", hub);
+		const x1 = await makeDev("x1", hub);
+		const x2 = await makeDev("x2", hub);
+		a.mesh.on("sas", (p) => p.confirm());
+		for (const x of [x1, x2]) {
+			const o = await a.mesh.pairHost({ role: "admin" });
+			await x.mesh.pairJoin(o.payload, { confirmSas: () => true });
+		}
+		const m1 = await makeDev("m1", hub);
+		const m2 = await makeDev("m2", hub);
+		const c = await makeDev("devC", hub);
+		await pair(a, m1);
+		await pair(a, m2);
+		await pair(a, c);
+		const all = [a, x1, x2, m1, m2, c];
+		await until(
+			() =>
+				all.every((d) => all.every((y) => metaOf(d).has(`ecdh/${y.id}`))) &&
+				all.every((d) => d.mesh.devices().length === 6),
+			5000,
+		);
+		await Promise.all([x1.mesh.revoke(m1.id), x2.mesh.revoke(m2.id)]);
+		const rest = [a, x1, x2, c];
+		const key = (d: Dev) => b64uEncode(d.vault.meshKey!);
+		await until(
+			() =>
+				rest.every((d) => key(d) === key(a) && d.mesh.epoch === a.mesh.epoch),
+			8000,
+		);
+		await settle(500);
+		expect(new Set(rest.map(key)).size).toBe(1);
+		expect(key(m1)).not.toBe(key(a));
+		expect(key(m2)).not.toBe(key(a));
+		for (const d of rest) {
+			expect(d.mesh.peers).not.toContain(m1.id);
+			expect(d.mesh.peers).not.toContain(m2.id);
+			expect(d.mesh.devices().map((x) => x.deviceId)).not.toContain(m1.id);
+			expect(d.mesh.devices().map((x) => x.deviceId)).not.toContain(m2.id);
+		}
+		// and the mesh still works for everybody that remains
+		const got: string[] = [];
+		c.mesh.channel("t").onMessage((_d, from) => got.push(from));
+		await x1.mesh.channel("t").send(new Uint8Array([1]));
+		await until(() => got.includes(x1.id));
+		for (const d of all) d.mesh.destroy();
+	}, 20_000);
+
+	/** Owner + two admins + members, everyone connected and every ECDH key known everywhere. */
+	async function adminMesh(
+		hub: ReturnType<typeof createLoopbackHub>,
+		members: string[],
+		ownerOpts: Partial<MeshOptions> = {},
+	) {
+		const a = await makeDev("devA", hub, undefined, ownerOpts);
+		const x1 = await makeDev("x1", hub);
+		const x2 = await makeDev("x2", hub);
+		a.mesh.on("sas", (p) => p.confirm());
+		for (const x of [x1, x2]) {
+			const o = await a.mesh.pairHost({ role: "admin" });
+			await x.mesh.pairJoin(o.payload, { confirmSas: () => true });
+		}
+		const ms: Dev[] = [];
+		for (const m of members) {
+			const d = await makeDev(m, hub);
+			await pair(a, d);
+			ms.push(d);
+		}
+		const all = [a, x1, x2, ...ms];
+		await until(
+			() =>
+				all.every((d) => all.every((y) => metaOf(d).has(`ecdh/${y.id}`))) &&
+				all.every((d) => d.mesh.devices().length === all.length),
+			5000,
+		);
+		return { a, x1, x2, ms, all };
+	}
+	const keyOf = (d: Dev) => b64uEncode(d.vault.meshKey!);
+	const sameKey = (ds: Dev[]) =>
+		ds.every(
+			(d) => keyOf(d) === keyOf(ds[0]!) && d.mesh.epoch === ds[0]!.mesh.epoch,
+		);
+
+	it("P6 (B4): the owner revokes an admin while that admin's revocation of a member is in flight: both end up excluded", async () => {
+		const hub = createLoopbackHub();
+		// frames from x1 reach the owner late: when the owner revokes x1 it has not seen x1's rotation (a real race)
+		const slowFromX1 = (t: LinkTransport): LinkTransport => {
+			const orig = t.onLink.bind(t);
+			t.onLink = (cb) =>
+				orig((link, rid) => {
+					const om = link.onMessage.bind(link);
+					link.onMessage = (f) =>
+						om((d) =>
+							link.id === idOf("x1") ? void setTimeout(() => f(d), 400) : f(d),
+						);
+					cb(link, rid);
+				});
+			return t;
+		};
+		const { a, x1, x2, ms, all } = await adminMesh(hub, ["m1", "devC"], {
+			signaling: [slowFromX1(hub.transport())],
+		});
+		const [m1, c] = ms as [Dev, Dev];
+		const p1 = x1.mesh.revoke(m1.id);
+		await until(() => x2.mesh.epoch === 1 && c.mesh.epoch === 1);
+		expect(a.mesh.epoch).toBe(0);
+		await a.mesh.revoke(x1.id); // concurrent: epoch 1 on both sides, x1's rotation is void (issuer revoked)
+		await p1;
+		const rest = [a, x2, c];
+		await until(() => sameKey(rest) && a.mesh.epoch === 2, 8000);
+		await settle(300);
+		expect(sameKey(rest)).toBe(true);
+		for (const out of [x1, m1]) {
+			expect(keyOf(out)).not.toBe(keyOf(a));
+			for (const d of rest)
+				expect(d.mesh.devices().map((x) => x.deviceId)).not.toContain(out.id);
+			for (const d of rest) expect(d.mesh.peers).not.toContain(out.id);
+		}
+		for (const d of all) d.mesh.destroy();
+	}, 20_000);
+
+	it("P6 (B4): a device offline during concurrent revocations catches up to the final key", async () => {
+		const hub = createLoopbackHub();
+		const { a, x1, x2, ms, all } = await adminMesh(hub, ["m1", "m2", "devC"]);
+		const [m1, m2, c] = ms as [Dev, Dev, Dev];
+		c.mesh.destroy(); // C is offline (keeps doc + vault)
+		await Promise.all([x1.mesh.revoke(m1.id), x2.mesh.revoke(m2.id)]);
+		await until(() => sameKey([a, x1, x2]), 8000);
+		await settle(300);
+		const c2 = await makeDev("devC", hub, undefined, {
+			doc: c.doc,
+			vault: c.vault,
+		});
+		await until(() => sameKey([a, x1, x2, c2]), 8000);
+		expect(keyOf(m1)).not.toBe(keyOf(c2));
+		expect(keyOf(m2)).not.toBe(keyOf(c2));
+		await until(() => c2.mesh.peers.includes(a.id));
+		a.doc.getMap("data").set("after", 1);
+		await until(() => c2.doc.getMap("data").get("after") === 1);
+		for (const d of [...all.filter((d) => d !== c), c2]) d.mesh.destroy();
+	}, 20_000);
 });

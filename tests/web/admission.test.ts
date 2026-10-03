@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { createLoopbackHub, createMesh } from "../../src/web/index.js";
 import { ecdhSignedBytes, unwrapMeshKey } from "../../src/web/rotation.js";
 import { b64uDecode, b64uEncode } from "../../src/web/util.js";
-import { type Dev, devLabels, idOf, makeDev, makeVault, metaOf, pair, trio, until } from "./helpers.js";
+import { type Dev, devLabels, idOf, makeDev, makeVault, metaOf, pair, storedWraps, trio, until } from "./helpers.js";
 
 /** What an insider writes into the shared `meta` map to pose as another device (`id`) with keys it controls. */
 async function forgeSlot(insider: Dev, claimed?: string) {
@@ -30,7 +30,8 @@ describe("H1: only admitted devices are trusted (rotation wraps, ECDH keys, devi
 		const oldKey = a.vault.meshKey!;
 		await a.mesh.revoke(c.id);
 		await until(() => b.mesh.epoch === 1);
-		expect([...metaOf(a).keys()].some((k) => k.startsWith("rot:") && k.endsWith(`:${fake.deviceId}`))).toBe(false);
+		expect(storedWraps(a).map((w) => w.to)).not.toContain(fake.deviceId);
+		expect(storedWraps(a).flatMap((w) => w.rec.to)).not.toContain(fake.deviceId);
 
 		// the attacker now runs the fake device with C's state (old key, old meta, C's local pins) and knocks on the retired room
 		const doc = new Y.Doc();
@@ -54,10 +55,9 @@ describe("H1: only admitted devices are trusted (rotation wraps, ECDH keys, devi
 		const { ecdh } = await forgeSlot(c, b.id);
 		await until(() => metaOf(a).get(`ecdh/${b.id}`).pub !== realBEcdh);
 		await a.mesh.revoke(c.id);
-		const w = metaOf(a).get(`rot:1:${b.id}`);
 		const aPub = b64uDecode(metaOf(a).get(`ecdh/${a.id}`).pub);
-		if (w) {
-			await expect(unwrapMeshKey(ecdh.privateKey, aPub, 1, a.id, b.id, b64uDecode(w.wrap), c.id)).rejects.toThrow();
+		for (const w of storedWraps(a, 1).filter((x) => x.to === b.id)) {
+			await expect(unwrapMeshKey(ecdh.privateKey, aPub, w.id, a.id, b.id, w.wrap)).rejects.toThrow();
 		}
 		// B keeps its real key pinned: it adopts the new epoch (wrap made for its REAL ECDH key)
 		await until(() => b.mesh.epoch === 1);
@@ -74,7 +74,7 @@ describe("H1: only admitted devices are trusted (rotation wraps, ECDH keys, devi
 		await until(() => !a.mesh.devices().some((d) => d.deviceId === b.id));
 		expect(devLabels(a.mesh)).toEqual(["devA", "devC"]);
 		await a.mesh.revoke(c.id);
-		expect(metaOf(a).has(`rot:1:${b.id}`)).toBe(false);
+		expect(storedWraps(a, 1).map((w) => w.to)).not.toContain(b.id);
 		// and the host does not admit a device its policy rejects
 		const d = await makeDev("devB2", hub);
 		const veto2 = await makeDev("hostV", hub, undefined, { authorizeDevice: (id: string) => id !== d.id });

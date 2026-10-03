@@ -1,5 +1,12 @@
 import * as Y from "yjs";
-import { createMesh, createLoopbackHub, fingerprint, type Mesh, type MeshOptions, type VaultClient } from "../../src/web/index.js";
+import {
+	createMesh,
+	createLoopbackHub,
+	fingerprint,
+	type Mesh,
+	type MeshOptions,
+	type VaultClient,
+} from "../../src/web/index.js";
 import type { LoopbackHub } from "../../src/web/index.js";
 import { generateEcdhIdentity } from "../../src/web/rotation.js";
 import { randomBytes } from "../../src/web/util.js";
@@ -15,13 +22,23 @@ export const idOf = (l: string): string => {
 	return id;
 };
 export const label = (id: string): string => LABEL_OF.get(id) ?? id;
-export const labels = (ids: Iterable<string>): string[] => [...ids].map(label).sort();
-export const devLabels = (m: Mesh): string[] => labels(m.devices().map((d) => d.deviceId));
+export const labels = (ids: Iterable<string>): string[] =>
+	[...ids].map(label).sort();
+export const devLabels = (m: Mesh): string[] =>
+	labels(m.devices().map((d) => d.deviceId));
 export const peerLabels = (m: Mesh): string[] => labels(m.peers);
 
-export async function makeVault(lbl: string): Promise<VaultClient & { meshKey: Uint8Array | null; epoch: number }> {
-	const kp = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])) as CryptoKeyPair;
-	const pub = new Uint8Array(await crypto.subtle.exportKey("raw", kp.publicKey));
+export async function makeVault(
+	lbl: string,
+): Promise<VaultClient & { meshKey: Uint8Array | null; epoch: number }> {
+	const kp = (await crypto.subtle.generateKey(
+		{ name: "ECDSA", namedCurve: "P-256" },
+		true,
+		["sign", "verify"],
+	)) as CryptoKeyPair;
+	const pub = new Uint8Array(
+		await crypto.subtle.exportKey("raw", kp.publicKey),
+	);
 	const id = await fingerprint(pub);
 	ID_OF.set(lbl, id);
 	LABEL_OF.set(id, lbl);
@@ -39,11 +56,28 @@ export async function makeVault(lbl: string): Promise<VaultClient & { meshKey: U
 			v.meshKey = raw;
 		},
 		async sign(data: Uint8Array) {
-			return new Uint8Array(await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, kp.privateKey, data as BufferSource));
+			return new Uint8Array(
+				await crypto.subtle.sign(
+					{ name: "ECDSA", hash: "SHA-256" },
+					kp.privateKey,
+					data as BufferSource,
+				),
+			);
 		},
 		async verify(p: Uint8Array, data: Uint8Array, sig: Uint8Array) {
-			const k = await crypto.subtle.importKey("raw", p as BufferSource, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
-			return crypto.subtle.verify({ name: "ECDSA", hash: "SHA-256" }, k, sig as BufferSource, data as BufferSource);
+			const k = await crypto.subtle.importKey(
+				"raw",
+				p as BufferSource,
+				{ name: "ECDSA", namedCurve: "P-256" },
+				false,
+				["verify"],
+			);
+			return crypto.subtle.verify(
+				{ name: "ECDSA", hash: "SHA-256" },
+				k,
+				sig as BufferSource,
+				data as BufferSource,
+			);
 		},
 		getEcdhIdentity: async () => ecdh,
 		getEpoch: () => v.epoch,
@@ -69,11 +103,22 @@ export async function makeDev(
 	id: string,
 	hub: LoopbackHub,
 	now?: () => number,
-	extra: Partial<MeshOptions> & { vault?: Awaited<ReturnType<typeof makeVault>> } = {},
+	extra: Partial<MeshOptions> & {
+		vault?: Awaited<ReturnType<typeof makeVault>>;
+	} = {},
 ): Promise<Dev> {
 	const doc = extra.doc ?? new Y.Doc();
 	const vault = extra.vault ?? (await makeVault(id));
-	const mesh = createMesh({ appId: "fize", topic: "fize/data/r1", doc, vault, signaling: [hub.transport()], deviceName: id, now, ...extra });
+	const mesh = createMesh({
+		appId: "fize",
+		topic: "fize/data/r1",
+		doc,
+		vault,
+		signaling: [hub.transport()],
+		deviceName: id,
+		now,
+		...extra,
+	});
 	await mesh.ready;
 	return { doc, mesh, vault, id: vault.deviceId };
 }
@@ -87,7 +132,11 @@ export const until = async (cond: () => boolean, ms = 3000) => {
 };
 
 /** Full pairing host->guest with both SAS confirmed; returns the SAS codes seen. */
-export async function pair(host: Dev, guest: Dev, opts: { guestOk?: boolean } = {}) {
+export async function pair(
+	host: Dev,
+	guest: Dev,
+	opts: { guestOk?: boolean } = {},
+) {
 	const codes: { host?: string; guest?: string } = {};
 	host.mesh.on("sas", (p) => {
 		codes.host = p.code;
@@ -106,15 +155,59 @@ export async function pair(host: Dev, guest: Dev, opts: { guestOk?: boolean } = 
 
 export const metaOf = (d: Dev) => d.doc.getMap<any>("meta");
 
+/** Rotation wraps stored in a device's meta (rotrec:<id> + rot:<id>:<to>), optionally only those of one epoch. */
+export function storedWraps(d: Pick<Dev, "doc">, epoch?: number) {
+	const m = d.doc.getMap<any>("meta");
+	const out: Array<{
+		id: string;
+		rec: any;
+		to: string;
+		key: string;
+		wrap: string;
+	}> = [];
+	for (const k of m.keys()) {
+		if (!k.startsWith("rotrec:")) continue;
+		const id = k.slice("rotrec:".length);
+		const rec = m.get(k);
+		if (epoch !== undefined && rec?.epoch !== epoch) continue;
+		for (const k2 of m.keys())
+			if (k2.startsWith(`rot:${id}:`))
+				out.push({
+					id,
+					rec,
+					to: k2.slice(`rot:${id}:`.length),
+					key: k2,
+					wrap: m.get(k2),
+				});
+	}
+	return out;
+}
+
 /** A (owner) pairs B and C; waits until everyone is connected and every ECDH key is everywhere. */
-export async function trio(hub: LoopbackHub, extra: { a?: Partial<MeshOptions>; b?: Partial<MeshOptions>; c?: Partial<MeshOptions> } = {}) {
+export async function trio(
+	hub: LoopbackHub,
+	extra: {
+		a?: Partial<MeshOptions>;
+		b?: Partial<MeshOptions>;
+		c?: Partial<MeshOptions>;
+	} = {},
+) {
 	const a = await makeDev("devA", hub, undefined, extra.a);
 	const b = await makeDev("devB", hub, undefined, extra.b);
 	const c = await makeDev("devC", hub, undefined, extra.c);
 	await pair(a, b);
 	await pair(a, c);
-	await until(() => a.mesh.peers.length === 2 && b.mesh.peers.length >= 1 && c.mesh.peers.length >= 1);
-	await until(() => [a, b, c].every((d) => [a, b, c].every((x) => metaOf(d).has(`ecdh/${x.id}`))));
+	await until(
+		() =>
+			a.mesh.peers.length === 2 &&
+			b.mesh.peers.length >= 1 &&
+			c.mesh.peers.length >= 1,
+	);
+	await until(() =>
+		[a, b, c].every((d) =>
+			[a, b, c].every((x) => metaOf(d).has(`ecdh/${x.id}`)),
+		),
+	);
 	return { a, b, c };
 }
 

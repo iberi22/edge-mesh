@@ -18,7 +18,16 @@ import {
 } from "./admission.js";
 import { deriveDocMaterial, deriveSenderKey, hkdf, importAesKey, openUpdate, sealUpdate } from "./crypto.js";
 import { DEFAULT_MAX_FRAME, F_FRAG, Reassembler, fragment } from "./fragment.js";
-import { type EcdhIdentity, ecdhSignedBytes, generateEcdhIdentity, unwrapMeshKey, wrapMeshKey } from "./rotation.js";
+import {
+	type EcdhIdentity,
+	type RotRecord,
+	ecdhSignedBytes,
+	generateEcdhIdentity,
+	isRotRecord,
+	rotationId,
+	unwrapMeshKey,
+	wrapMeshKey,
+} from "./rotation.js";
 import {
 	type GrantBody,
 	GuestPairing,
@@ -62,8 +71,10 @@ export interface MeshOptions {
 	 */
 	authorizeDevice?: (deviceId: string, devicePub: Uint8Array) => boolean | Promise<boolean>;
 	/**
-	 * May `issuer` revoke `target` (which rotates the mesh key for everybody)? Checked before a local revoke() and
-	 * for every incoming rotation. Default: built-in roles (owner > admin > member; nobody revokes the owner).
+	 * May `issuer` revoke `target` (which rotates the mesh key for everybody)? Checked before a local revoke() and,
+	 * when given, for every incoming rotation. Default: built-in roles (owner > admin > member; nobody revokes the
+	 * owner) for a local revoke(); an incoming rotation needs an owner/admin issuer AND a valid signed revocation of
+	 * every device it cuts off.
 	 */
 	canRotate?: (issuer: string, target: string) => boolean | Promise<boolean>;
 	/**
@@ -160,16 +171,23 @@ const REV_PREFIX = "rev/"; // rev/<deviceId>:<epoch> = Revocation signed by the 
 const revKey = (r: { target: string; epoch: number }) => `${REV_PREFIX}${r.target}:${r.epoch}`;
 const REVOKED_KEY = "revoked/v2"; // local store: deviceId -> revocation epochs (v1 held wall-clock times)
 const ECDH_PREFIX = "ecdh/"; // ecdh/<deviceId> = { pub, sig } (sig by the device identity key)
-const ROT_PREFIX = "rot:"; // rot:<epoch>:<deviceId> = { from, wrap, revoked } (pairwise-wrapped new mesh key)
-const OLD_PREFIX = "old:"; // old:<epoch> = previous mesh key (b64u); only readable by current members (meta is under the NEW key)
+const ROTREC_PREFIX = "rotrec:"; // rotrec:<rotId> = RotRecord (public part of a rotation, same for every recipient)
+const ROT_PREFIX = "rot:"; // rot:<rotId>:<deviceId> = that rotation's new key, wrapped pairwise for deviceId
+const OLD_PREFIX = "old:"; // old:<rid> = { e: epoch, k: retired mesh key (b64u) }; meta travels under the CURRENT key
+/** Retired keys tried on (and used to seal) rotation frames, so devices on another branch/epoch still get them. */
+const RETIRED_TRY = 4;
+const MAX_CANDIDATES = 16;
 
+/** K_ROTATE body: the shared rotation record plus the recipient's own pairwise wrap. */
 interface RotateMsg {
-	epoch: number;
-	from: string;
+	rot: RotRecord;
 	to: string;
 	wrap: string;
-	revoked: string;
 }
+type Rot = RotRecord & { id: string };
+/** Total order of rotations (B4): higher epoch first, then the lower rotation id. Deterministic on every device. */
+const betterRot = (a: { epoch: number; id: string }, b: { epoch: number; id: string }) =>
+	a.epoch !== b.epoch ? a.epoch > b.epoch : a.id < b.id;
 
 interface LinkRec {
 	link: PeerLink;
@@ -239,6 +257,16 @@ export function createMesh(opts: MeshOptions): Mesh {
 	let admittedAt = new Map<string, number>(); // epoch of each trusted device's VERIFIED admission
 	let selfAdm: Admission | null = null;
 	const legacy = new Map<string, Legacy>(); // retired data rid -> its epoch material
+	let curRot: Rot | null = null; // rotation that produced the current key (null: epoch 0 / unknown)
+	const cands = new Map<string, { rec: Rot; key: Uint8Array }>(); // verified rotations not adopted (yet)
+	const revRecs = new Map<string, Revocation[]>(); // verified signed revocations per target (justify re-rotations)
+	let rotChain: Promise<unknown> = Promise.resolve();
+	/** Every key change (own rotation, adoption, conflict resolution) runs one at a time. */
+	function serialRot<T>(f: () => Promise<T>): Promise<T> {
+		const run = rotChain.then(f);
+		rotChain = run.catch(() => {});
+		return run;
+	}
 	let ecdhId: EcdhIdentity | null = null;
 	const rooms = new Map<string, () => void>(); // rid -> leave
 	const linkSubs: Array<() => void> = [];
@@ -248,7 +276,13 @@ export function createMesh(opts: MeshOptions): Mesh {
 
 	const maxFrame = opts.maxFrameBytes ?? DEFAULT_MAX_FRAME;
 	const signFrames = opts.signFrames !== false;
-	const peerIds = () => [...new Set([...links].filter((l) => l.deviceId && l.rid !== "pair" && !l.legacy && !l.closing).map((l) => l.deviceId!))];
+	const peerIds = () => [
+		...new Set(
+			[...links]
+				.filter((l) => l.deviceId && l.rid !== "pair" && !l.legacy && !l.closing && !isRevoked(l.deviceId))
+				.map((l) => l.deviceId!),
+		),
+	];
 	const setStatus = () => {
 		const s: MeshStatus = !running ? "off" : peerIds().length > 0 ? "online" : "connecting";
 		if (s !== status) {
@@ -297,7 +331,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 	});
 	let trustChain: Promise<void> = Promise.resolve();
 	const refreshTrust = () => (trustChain = trustChain.then(computeTrust).catch(err));
-	const persistRevoked = () => store.set(REVOKED_KEY, Object.fromEntries(revokedIds));
+	const persistRevoked = async () => store.set(REVOKED_KEY, Object.fromEntries(revokedIds));
 	/** Record a valid revocation of `id` effective from epoch `ep`. Returns true if it is new. */
 	function addRevocation(id: string, ep: number): boolean {
 		const list = revokedIds.get(id) ?? [];
@@ -321,9 +355,14 @@ export function createMesh(opts: MeshOptions): Mesh {
 				const r = meta.get(k) as Revocation;
 				if (!isRevocation(r) || k !== revKey(r) || revokedIds.get(r.target)?.includes(r.epoch)) continue;
 				if (!(await verifyRevocation(rctx, r))) continue;
+				keepRevRecord(r);
 				changed = addRevocation(r.target, r.epoch) || changed;
 			}
-			if (changed) await persistRevoked();
+			if (changed) {
+				await persistRevoked();
+				for (const l of [...links]) if (l.deviceId && isRevoked(l.deviceId)) closeRec(l);
+				void serialRot(coverCheck).catch(err); // a revoked device may hold the current key: re-key (B4)
+			}
 		}
 		const ids = new Set<string>(Object.keys(admCache));
 		for (const k of meta.keys()) {
@@ -355,6 +394,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 		}
 		selfAdm = ctx && root?.deviceId !== vault.deviceId ? await verifyChain(ctx, vault.deviceId, memo) : null;
 		if (selfAdm?.sig) nextCache[vault.deviceId] = selfAdm;
+		// a revoked device keeps its (now void) admission: revocations it signed before are verified "as of" then (B4/B6)
+		for (const [id, a] of Object.entries(admCache)) if (!nextCache[id] && revokedIds.has(id)) nextCache[id] = a;
 		trusted = next;
 		admittedAt = nextAt;
 		if (JSON.stringify(nextCache) !== JSON.stringify(admCache)) {
@@ -382,6 +423,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 			if (Array.isArray(eps)) for (const e of eps) if (Number.isSafeInteger(e) && e >= 1) addRevocation(id, e);
 		}
 		admCache = ((await store.get("adm")) as Record<string, Admission> | undefined) ?? {};
+		const cr = (await store.get("rot")) as Rot | undefined;
+		if (isRotRecord(cr) && typeof cr.id === "string" && cr.id === (await rotationId(cr))) curRot = cr;
 		ecdhOk = ((await store.get("ecdh")) as Record<string, string> | undefined) ?? {};
 		if (opts.persist === "idb" && typeof indexedDB !== "undefined") {
 			const { IndexeddbPersistence } = await import("y-indexeddb");
@@ -441,7 +484,10 @@ export function createMesh(opts: MeshOptions): Mesh {
 	// ---- keys ----
 	function senderKey(material: Uint8Array, deviceId: string): Promise<CryptoKey> {
 		let m = senderKeys.get(material);
-		if (!m) senderKeys.set(material, (m = new Map()));
+		if (!m) {
+			m = new Map();
+			senderKeys.set(material, m);
+		}
 		let key = m.get(deviceId);
 		if (!key) {
 			if (m.size >= 4096) m.clear();
@@ -465,6 +511,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		sigKey = await importAesKey(await hkdf(meshKey, `swal-signal/v1|${topicName}`));
 		instanceId = opts.instance ?? (root ? await fingerprint(b64uDecode(root.pub)) : "");
 		dataRid = await deriveRoomId(meshKey, appId, topicName, epoch, instanceId || undefined);
+		if (curRot && curRot.epoch !== epoch) curRot = null;
 	}
 
 	// ---- link I/O: per-link ordered queue; messages above maxFrame are fragmented (H5) ----
@@ -496,11 +543,21 @@ export function createMesh(opts: MeshOptions): Mesh {
 		signCache.set(body, { rid, kind, sig });
 		return sig;
 	}
-	async function sendFrame(rec: LinkRec, kind: number, body: Uint8Array) {
+	function sendFrame(rec: LinkRec, kind: number, body: Uint8Array) {
 		const lg = rec.legacy;
-		const mat = lg ? lg.material : docMat;
+		return sendFrameWith(rec, kind, body, lg ? lg.material : docMat, lg ? lg.rid : dataRid);
+	}
+	/** Recent retired keys (newest first): rotation frames are also sealed under them, and receivers try them. */
+	const retiredKeys = () => [...legacy.values()].sort((x, y) => y.epoch - x.epoch).slice(0, RETIRED_TRY);
+	/** A rotation frame must reach peers still on the previous key or on a concurrent branch: seal it under each. */
+	async function sendRotate(rec: LinkRec, msg: RotateMsg) {
+		const body = utf8(JSON.stringify(msg));
+		if (rec.legacy) return sendFrame(rec, K_ROTATE, body);
+		await sendFrameWith(rec, K_ROTATE, body, docMat, dataRid);
+		for (const r of retiredKeys()) await sendFrameWith(rec, K_ROTATE, body, r.material, r.rid);
+	}
+	async function sendFrameWith(rec: LinkRec, kind: number, body: Uint8Array, mat: Uint8Array | null, rid: string) {
 		if (!mat || rec.closing) return;
-		const rid = lg ? lg.rid : dataRid;
 		const key = await senderKey(mat, vault.deviceId);
 		const id = utf8(vault.deviceId);
 		let inner: Uint8Array;
@@ -566,24 +623,35 @@ export function createMesh(opts: MeshOptions): Mesh {
 
 	async function onData(rec: LinkRec, data: Uint8Array) {
 		const lg = rec.legacy;
-		const mat = lg ? lg.material : docMat;
-		if (!mat || !running || rec.closing) return;
+		if (!running || rec.closing || data.length < 2) return;
 		const signed = data[0] === F_SDATA;
 		if (!signed && signFrames) return reject("unsigned frame");
 		const idLen = data[1];
 		if (data.length < 2 + idLen) return;
 		const sender = fromUtf8(data.subarray(2, 2 + idLen));
-		if (!isDeviceId(sender) || isRevoked(sender)) return;
+		if (!isDeviceId(sender)) return;
 		if (rec.deviceId && rec.deviceId !== sender) return reject("frame sender does not match the link", sender);
-		const rid = lg ? lg.rid : dataRid;
-		let plain: Uint8Array;
-		try {
-			const key = await senderKey(mat, sender);
-			plain = await openUpdate(key, data.subarray(2 + idLen), `${rid}|${sender}`);
-		} catch {
-			return; // wrong key / tampered / other epoch: drop silently
+		const revoked = isRevoked(sender);
+		// signed frames from a sender whose admission has not reached us yet: hold them (still encrypted, no key derived)
+		if (signed && !revoked && !trusted.has(sender)) {
+			if (!lg) hold(rec, data);
+			return;
 		}
-		if (rec.closing) return;
+		// the link's key first; on a live link also the recent retired keys, which may only carry rotations (B4)
+		const tries = lg ? [{ material: lg.material, rid: lg.rid }] : [{ material: docMat, rid: dataRid }, ...retiredKeys()];
+		let plain: Uint8Array | null = null;
+		let rid = "";
+		let retired = false;
+		for (let i = 0; i < tries.length && !plain; i++) {
+			const t = tries[i];
+			if (!t.material) continue;
+			try {
+				plain = await openUpdate(await senderKey(t.material, sender), data.subarray(2 + idLen), `${t.rid}|${sender}`);
+				rid = t.rid;
+				retired = i > 0;
+			} catch {} // wrong key / tampered / other epoch: try the next one, else drop silently
+		}
+		if (!plain || rec.closing || plain.length < 1) return;
 		const kind = plain[0];
 		let body = plain.subarray(1);
 		if (signed) {
@@ -591,31 +659,33 @@ export function createMesh(opts: MeshOptions): Mesh {
 			if (sigLen < 0 || plain.length < 3 + sigLen) return reject("malformed signed frame", sender);
 			const sig = plain.subarray(3, 3 + sigLen);
 			body = plain.subarray(3 + sigLen);
-			const pub = trusted.get(sender)?.pub;
-			if (!pub) {
-				if (!lg) hold(rec, data); // its admission may still be on its way through another peer
+			if (revoked) {
+				// a revoked device is never listened to... except for the signed revocations its rotation carries: they
+				// verify on their own and must count (concurrent revocations are merged, B4)
+				if (kind === K_ROTATE) await serialRot(() => rotationEvidence(body));
 				return;
 			}
+			const pub = trusted.get(sender)?.pub;
+			if (!pub) return;
 			let ok = false;
 			try {
 				ok = await vault.verify(b64uDecode(pub), frameSigBytes(rid, sender, kind, body), sig);
 			} catch {}
 			if (!ok) return reject("bad frame signature", sender);
 			if (rec.closing) return;
+		} else if (revoked) return;
+		if (retired) {
+			if (kind === K_ROTATE) await serialRot(() => handleRotate(body));
+			return;
 		}
 		if (!rec.deviceId) {
 			rec.deviceId = sender;
 			setStatus();
 		}
 		if (lg) {
-			// retired room: the only thing we do is hand THIS peer its own pairwise wrap for the next epoch
-			if (kind === K_SV) {
-				const w = meta.get(`${ROT_PREFIX}${lg.epoch + 1}:${sender}`) as { from: string; wrap: string; revoked: string } | undefined;
-				if (w) {
-					const msg: RotateMsg = { epoch: lg.epoch + 1, from: w.from, to: sender, wrap: w.wrap, revoked: w.revoked };
-					await sendFrame(rec, K_ROTATE, utf8(JSON.stringify(msg)));
-				}
-			} else if (kind === K_ROTATE) await handleRotate(body);
+			// retired room: the only thing we do is hand THIS peer its own pairwise wraps of later rotations
+			if (kind === K_SV) for (const m of storedRotationsFor(sender, lg.epoch)) await sendRotate(rec, m);
+			else if (kind === K_ROTATE) await serialRot(() => handleRotate(body));
 			return;
 		}
 		if (kind === K_SV) {
@@ -627,7 +697,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		} else if (kind === K_AWARENESS) {
 			applyAwarenessUpdate(awareness, body, ORIGIN);
 		} else if (kind === K_ROTATE) {
-			await handleRotate(body);
+			await serialRot(() => handleRotate(body));
 		} else if (kind === K_CHANNEL) {
 			const n = body.length >= 2 ? (body[0] << 8) | body[1] : -1;
 			if (n < 0 || body.length < 2 + n) return reject("malformed channel frame", sender);
@@ -679,30 +749,143 @@ export function createMesh(opts: MeshOptions): Mesh {
 		};
 	}
 
-	async function handleRotate(body: Uint8Array) {
-		let r: RotateMsg;
+	// ---- rotation messages (B4: concurrent rotations converge deterministically) ----
+	function parseRotate(body: Uint8Array): RotateMsg | null {
 		try {
-			r = JSON.parse(fromUtf8(body)) as RotateMsg;
+			const m = JSON.parse(fromUtf8(body)) as RotateMsg;
+			return m && isRotRecord(m.rot) && typeof m.to === "string" && typeof m.wrap === "string" ? m : null;
 		} catch {
-			return;
+			return null;
 		}
-		if (r.to !== vault.deviceId || r.epoch !== epoch + 1 || isRevoked(r.from) || r.from === r.revoked) return;
-		if (typeof r.revoked !== "string" || r.revoked === vault.deviceId) return;
-		const fromPub = await peerEcdhPub(r.from);
-		if (!fromPub) return;
-		if (!(await canRotate(r.from, r.revoked))) {
-			emit("rejected", { reason: "rotation not authorized", from: r.from, revoked: r.revoked, epoch: r.epoch });
-			return;
+	}
+	function keepRevRecord(r: Revocation) {
+		const list = revRecs.get(r.target) ?? [];
+		if (!list.some((x) => x.sig === r.sig)) revRecs.set(r.target, [...list, r].slice(-4));
+	}
+	/** Verify and record the signed revocations a rotation carries. They count whatever happens to its key. */
+	async function ingestRevs(revs: readonly unknown[]): Promise<boolean> {
+		if (!root) return false;
+		let changed = false;
+		for (const r of revs.slice(0, 64)) {
+			if (!isRevocation(r) || revokedIds.get(r.target)?.includes(r.epoch)) continue;
+			if (!(await verifyRevocation(chainCtx(root), r))) continue;
+			keepRevRecord(r);
+			changed = addRevocation(r.target, r.epoch) || changed;
 		}
+		if (changed) {
+			await persistRevoked();
+			for (const l of [...links]) if (l.deviceId && isRevoked(l.deviceId)) closeRec(l);
+			void refreshTrust();
+		}
+		return changed;
+	}
+	/** A rotation from a device we already consider revoked: only its revocation records are taken into account. */
+	async function rotationEvidence(body: Uint8Array) {
+		const m = parseRotate(body);
+		if (m && (await ingestRevs(m.rot.revs))) await coverCheck();
+	}
+	/** Its issuer was revoked at an epoch <= the rotation's: the rotation is void (its key must not be used). */
+	function rotIssuerRevoked(r: { from: string; epoch: number }): boolean {
+		if (r.from === root?.deviceId || r.from === vault.deviceId) return false;
+		const since = trusted.has(r.from) ? (admittedAt.get(r.from) ?? -1) : -1;
+		return (revokedIds.get(r.from) ?? []).some((e) => e > since && e <= r.epoch);
+	}
+	/** Default: issued by the owner or an admin, and every target has a valid signed revocation (epoch <= rotation). */
+	async function rotationAuthorized(r: RotRecord): Promise<boolean> {
+		if (opts.canRotate) {
+			for (const t of r.revoked) if (!(await opts.canRotate(r.from, t))) return false;
+			return true;
+		}
+		const role = r.from === root?.deviceId ? "owner" : trusted.get(r.from)?.role;
+		if (role !== "owner" && role !== "admin") return false;
+		return r.revoked.every((t) => t !== root?.deviceId && (revokedIds.get(t) ?? []).some((e) => e <= r.epoch));
+	}
+
+	async function handleRotate(body: Uint8Array) {
+		const m = parseRotate(body);
+		if (!m) return;
+		const rot = m.rot;
+		await ingestRevs(rot.revs);
+		const me = vault.deviceId;
+		const id = await rotationId(rot);
+		if (m.to !== me || rot.from === me || rot.revoked.includes(me) || !rot.to.includes(me)) return coverCheck();
+		if (curRot?.id === id || cands.has(id) || rot.epoch < epoch || rotIssuerRevoked(rot)) return coverCheck();
+		const fromPub = await peerEcdhPub(rot.from);
+		if (!fromPub) return coverCheck();
+		const info = { from: rot.from, revoked: rot.revoked, epoch: rot.epoch };
 		let newKey: Uint8Array;
 		try {
-			newKey = await unwrapMeshKey((await ecdhIdentity()).privateKey, fromPub, r.epoch, r.from, r.to, b64uDecode(r.wrap), r.revoked);
+			newKey = await unwrapMeshKey((await ecdhIdentity()).privateKey, fromPub, id, rot.from, me, m.wrap);
 		} catch {
-			emit("rejected", { reason: "rotation wrap does not authenticate", from: r.from, revoked: r.revoked, epoch: r.epoch });
+			emit("rejected", { reason: "rotation wrap does not authenticate", ...info });
 			return;
 		}
-		if (r.epoch !== epoch + 1) return; // raced with another adoption
-		await adoptRotation(newKey, r.epoch, r.revoked);
+		if (!(await rotationAuthorized(rot))) {
+			emit("rejected", { reason: "rotation not authorized", ...info });
+			return;
+		}
+		cands.set(id, { rec: { ...rot, id }, key: newKey });
+		await converge();
+	}
+
+	/**
+	 * Adopt the best valid rotation we know (highest epoch, then lowest id), then make sure no revoked device holds the
+	 * resulting key. Every device applies the same rule to the same set of rotations, so all of them end up on one key.
+	 */
+	async function converge() {
+		const cur = { epoch, id: curRot?.id ?? "\uffff" }; // genesis/unknown loses to any valid rotation of its epoch
+		let best: { rec: Rot; key: Uint8Array } | null = null;
+		for (const [id, c] of cands) {
+			if (c.rec.epoch < epoch || rotIssuerRevoked(c.rec)) {
+				if (c.rec.epoch < epoch) cands.delete(id);
+				continue;
+			}
+			if (betterRot(c.rec, best ? best.rec : cur)) best = c;
+		}
+		if (best) await adopt(best);
+		while (cands.size > MAX_CANDIDATES) cands.delete(cands.keys().next().value as string);
+		await coverCheck();
+	}
+
+	async function adopt(c: { rec: Rot; key: Uint8Array }) {
+		const { oldEpoch, oldKey, oldRid } = await switchEpoch(c.key, c.rec.epoch);
+		curRot = c.rec;
+		await store.set("rot", curRot);
+		for (const [id, x] of cands) if (id === c.rec.id || x.rec.epoch < epoch) cands.delete(id);
+		if (opts.canRotate) for (const t of c.rec.revoked) forget(t, c.rec.epoch); // hook mode: the rotation is the record
+		for (const l of [...links]) if (l.deviceId && isRevoked(l.deviceId)) closeRec(l);
+		meta.set(OLD_PREFIX + oldRid, { e: oldEpoch, k: b64uEncode(oldKey) });
+		void refreshTrust();
+		for (const t of c.rec.revoked) emit("revoked", { deviceId: t, epoch });
+	}
+
+	/**
+	 * Union of concurrent revocations (B4): if the current key went to a device that is now validly revoked (it lost a
+	 * tie-break, or its revocation arrived later), or its issuer was revoked, an owner/admin re-keys at epoch + 1.
+	 */
+	async function coverCheck() {
+		if (!running || !root || !curRot) return;
+		const me = vault.deviceId;
+		const role = selfRole();
+		if (!opts.canRotate && role !== "owner" && role !== "admin") return;
+		const exposed = new Set(curRot.to.filter((t) => t !== me && isRevoked(t)));
+		if (curRot.from !== me && rotIssuerRevoked(curRot)) exposed.add(curRot.from);
+		if (opts.canRotate) for (const t of [...exposed]) if (!(await opts.canRotate(me, t))) exposed.delete(t);
+		if (exposed.size > 0) await rotate([...exposed], false);
+	}
+
+	/** Wraps of stored rotations a straggler (still on the retired room of epoch `from`) is a recipient of, best first. */
+	function storedRotationsFor(deviceId: string, from: number): RotateMsg[] {
+		const out: Array<RotateMsg & { id: string }> = [];
+		for (const k of meta.keys()) {
+			if (!k.startsWith(ROTREC_PREFIX)) continue;
+			const id = k.slice(ROTREC_PREFIX.length);
+			const rot = meta.get(k);
+			const wrap = meta.get(`${ROT_PREFIX}${id}:${deviceId}`);
+			if (isRotRecord(rot) && rot.epoch >= from && typeof wrap === "string") out.push({ rot, to: deviceId, wrap, id });
+		}
+		out.sort((x, y) => (betterRot({ epoch: x.rot.epoch, id: x.id }, { epoch: y.rot.epoch, id: y.id }) ? -1 : 1));
+		return out.slice(0, 8).map(({ id: _id, ...msg }) => msg);
 	}
 
 	async function onPairFrame(rec: LinkRec, data: Uint8Array) {
@@ -822,9 +1005,10 @@ export function createMesh(opts: MeshOptions): Mesh {
 
 	// ---- rotation ----
 	// The new mesh key never travels under the shared (old) key: it is wrapped per remaining device with
-	// ECDH(own static key, peer static key) -> HKDF(swal-rotate/v1|epoch|from|to) -> AES-GCM. The wraps are also
-	// stored in meta (rot:<epoch>:<deviceId>) so a peer that was offline can fetch its own wrap later through the
-	// retired-epoch room (see `legacy`); the revoked device has no wrap and cannot unwrap anyone else's.
+	// ECDH(own static key, peer static key) -> HKDF(swal-rotate/v3|rotId|from|to) -> AES-GCM, where rotId hashes the
+	// rotation record (epoch, issuer, targets, recipients, nonce). Record and wraps are also stored in meta
+	// (rotrec:<rotId>, rot:<rotId>:<deviceId>) so a peer that was offline can fetch its own wrap later through a
+	// retired room (see `legacy`); a revoked device has no wrap and cannot unwrap anyone else's.
 	async function switchEpoch(newKey: Uint8Array, newEpoch: number) {
 		const oldRid = dataRid;
 		const old: Legacy = { epoch, rid: oldRid, material: docMat! };
@@ -836,19 +1020,27 @@ export function createMesh(opts: MeshOptions): Mesh {
 		// links stay up across the rotation; the retired room stays joined ONLY to serve wraps to stragglers
 		for (const l of links) if (l.rid === oldRid && !l.legacy) l.rid = dataRid;
 		legacy.set(oldRid, old);
+		legacy.delete(dataRid);
 		await joinRoom(dataRid, sigKey!);
-		return { oldEpoch: old.epoch, oldKey };
+		return { oldEpoch: old.epoch, oldKey, oldRid };
 	}
 
 	async function syncLegacy() {
 		if (!running) return;
 		for (const k of [...meta.keys()]) {
 			if (!k.startsWith(OLD_PREFIX)) continue;
-			const e = Number(k.slice(OLD_PREFIX.length));
-			if (!Number.isInteger(e) || e >= epoch) continue;
-			const raw = b64uDecode(meta.get(k) as string);
+			const v = meta.get(k) as { e?: unknown; k?: unknown } | undefined;
+			const e = v?.e;
+			if (typeof e !== "number" || !Number.isSafeInteger(e) || e < 0 || e > epoch || typeof v?.k !== "string") continue;
+			let raw: Uint8Array;
+			try {
+				raw = b64uDecode(v.k);
+			} catch {
+				continue;
+			}
+			if (raw.length !== 32) continue;
 			const rid = await deriveRoomId(raw, appId, topicName, e, instanceId || undefined);
-			if (legacy.has(rid) && rooms.has(rid)) continue;
+			if (rid === dataRid || (legacy.has(rid) && rooms.has(rid))) continue;
 			legacy.set(rid, { epoch: e, rid, material: await deriveDocMaterial(raw, topicName) });
 			await joinRoom(rid, await importAesKey(await hkdf(raw, `swal-signal/v1|${topicName}`)));
 		}
@@ -862,16 +1054,68 @@ export function createMesh(opts: MeshOptions): Mesh {
 		addRevocation(deviceId, ep);
 		trusted.delete(deviceId);
 		admittedAt.delete(deviceId);
-		delete admCache[deviceId];
-		void Promise.all([store.set("adm", admCache), persistRevoked()]).catch(err);
+		void persistRevoked().catch(err);
 	}
 
-	async function adoptRotation(newKey: Uint8Array, newEpoch: number, revoked: string) {
-		forget(revoked, newEpoch);
-		for (const l of [...links]) if (l.deviceId === revoked) closeRec(l);
-		const { oldEpoch, oldKey } = await switchEpoch(newKey, newEpoch);
-		meta.set(OLD_PREFIX + oldEpoch, b64uEncode(oldKey));
-		emit("revoked", { deviceId: revoked, epoch });
+	/**
+	 * Re-key at epoch + 1 for every admitted, non-revoked device except `targets`. `fresh`: a new revocation of the
+	 * targets (signed now); otherwise a re-rotation for devices already validly revoked that still hold the key (B4).
+	 */
+	async function rotate(targets: string[], fresh: boolean) {
+		const me = vault.deviceId;
+		const newEpoch = epoch + 1;
+		const newKey = randomBytes(32);
+		const revs: Revocation[] = [];
+		for (const t of targets) {
+			if (fresh && root) {
+				const r = await signRevocation(vault, { mid: root.mid, target: t, by: me, epoch: newEpoch });
+				if (await verifyRevocation(chainCtx(root), r)) keepRevRecord(r);
+				else revs.push(r); // not valid under the built-in ladder (custom canRotate): still sent, receivers decide
+			}
+			if (fresh) forget(t, newEpoch);
+			revs.push(...(revRecs.get(t) ?? []));
+		}
+		for (const l of [...links]) if (l.deviceId && isRevoked(l.deviceId)) closeRec(l);
+		const priv = (await ecdhIdentity()).privateKey;
+		const pubs = new Map<string, Uint8Array>();
+		for (const d of trusted.values()) {
+			if (targets.includes(d.deviceId) || isRevoked(d.deviceId)) continue;
+			const pub = await peerEcdhPub(d.deviceId);
+			if (pub) pubs.set(d.deviceId, pub);
+			else err(new Error(`no verified ECDH key for ${d.deviceId}: it must be re-paired after the rotation`));
+		}
+		const rec: RotRecord = {
+			v: 1,
+			epoch: newEpoch,
+			from: me,
+			revoked: [...targets].sort(),
+			to: [...pubs.keys()].sort(),
+			n: b64uEncode(randomBytes(16)),
+			revs,
+		};
+		const id = await rotationId(rec);
+		const wraps = new Map<string, string>();
+		for (const [to, pub] of pubs) wraps.set(to, await wrapMeshKey(priv, pub, id, me, to, newKey));
+		// 1) hand each connected recipient ITS OWN wrap (under every recent key), 2) switch, 3) publish under the NEW key
+		const sends: Promise<void>[] = [];
+		for (const l of [...links]) {
+			const w = !l.closing && l.deviceId ? wraps.get(l.deviceId) : undefined;
+			if (l.deviceId && w) sends.push(sendRotate(l, { rot: rec, to: l.deviceId, wrap: w }));
+		}
+		await Promise.all(sends);
+		await adopt({ rec: { ...rec, id }, key: newKey });
+		doc.transact(() => {
+			if (fresh) {
+				for (const t of targets) {
+					// its admission stays: void from now on (B6), still needed to verify what it signed before
+					meta.delete(DEV + t);
+					meta.delete(ECDH_PREFIX + t);
+				}
+			}
+			for (const r of revs) meta.set(revKey(r), r);
+			meta.set(ROTREC_PREFIX + id, rec);
+			for (const [to, w] of wraps) meta.set(`${ROT_PREFIX}${id}:${to}`, w);
+		});
 	}
 
 	async function revoke(deviceId: string) {
@@ -881,40 +1125,10 @@ export function createMesh(opts: MeshOptions): Mesh {
 		if (!meta.has(DEV + deviceId) && !trusted.has(deviceId)) throw new Error("unknown device");
 		if (!(await canRotate(vault.deviceId, deviceId))) throw new Error(`not authorized to revoke ${deviceId}`);
 		if (!running) await start();
-		const newKey = randomBytes(32);
-		const newEpoch = epoch + 1;
 		// cut the revoked device off SYNCHRONOUSLY: its link must not be reachable by anything below
-		forget(deviceId, newEpoch);
+		forget(deviceId, epoch + 1);
 		for (const l of [...links]) if (l.deviceId === deviceId) closeRec(l);
-		const rev = root ? await signRevocation(vault, { mid: root.mid, target: deviceId, by: vault.deviceId, epoch: newEpoch }) : null;
-		const priv = (await ecdhIdentity()).privateKey;
-		const wraps = new Map<string, RotateMsg>();
-		for (const d of trusted.values()) {
-			if (d.deviceId === deviceId) continue;
-			const pub = await peerEcdhPub(d.deviceId);
-			if (!pub) {
-				err(new Error(`no verified ECDH key for ${d.deviceId}: it must be re-paired after the rotation`));
-				continue;
-			}
-			const wrap = await wrapMeshKey(priv, pub, newEpoch, vault.deviceId, d.deviceId, newKey, deviceId);
-			wraps.set(d.deviceId, { epoch: newEpoch, from: vault.deviceId, to: d.deviceId, wrap, revoked: deviceId });
-		}
-		// 1) hand each connected remaining peer ITS OWN wrap, 2) switch, 3) publish the removal + wraps under the NEW key
-		await Promise.all(
-			established()
-				.filter((l) => l.deviceId && l.deviceId !== deviceId && wraps.has(l.deviceId))
-				.map((l) => sendFrame(l, K_ROTATE, utf8(JSON.stringify(wraps.get(l.deviceId!))))),
-		);
-		const { oldEpoch, oldKey } = await switchEpoch(newKey, newEpoch);
-		doc.transact(() => {
-			meta.delete(DEV + deviceId);
-			meta.delete(ADM_PREFIX + deviceId);
-			meta.delete(ECDH_PREFIX + deviceId);
-			if (rev) meta.set(revKey(rev), rev);
-			meta.set(OLD_PREFIX + oldEpoch, b64uEncode(oldKey));
-			for (const [to, m] of wraps) meta.set(`${ROT_PREFIX}${newEpoch}:${to}`, { from: m.from, wrap: m.wrap, revoked: deviceId });
-		});
-		emit("revoked", { deviceId, epoch });
+		await serialRot(() => rotate([deviceId], true));
 	}
 
 	// ---- pairing ----
@@ -996,6 +1210,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 					hostDevice: selfDevice(),
 					root: r,
 					admissions: [adm, ...chainOf(vault.deviceId)],
+					...(curRot ? { rot: curRot } : {}),
 					...(extra !== undefined ? { extra } : {}),
 				};
 			},
@@ -1119,6 +1334,11 @@ export function createMesh(opts: MeshOptions): Mesh {
 			await vault.setMeshKey(key);
 			await persistEpoch(g.epoch);
 			epoch = g.epoch;
+			// the rotation that produced this key (if any): lets this device take part in tie-breaks of its epoch
+			const gr = g.rot as Rot | undefined;
+			curRot = isRotRecord(gr) && gr.epoch === g.epoch && gr.id === (await rotationId(gr)) ? gr : null;
+			cands.clear();
+			await store.set("rot", curRot);
 			Y.applyUpdate(doc, b64uDecode(g.snapshot), ORIGIN);
 			doc.transact(() => {
 				meta.set(ADM_PREFIX + vault.deviceId, mine);

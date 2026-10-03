@@ -41,6 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `rev/<id>:<epoch>`) are tied to the mesh epoch: an admission is valid in epochs >= its issue epoch and before any
   later revocation epoch; revocations are verified as of the epoch they rotated from. No `at` comparison is left in
   authorization (a future-dated admission no longer survives a revocation or its replay).
+- **B4 concurrent revocations split the mesh**: rotations carry a shared record (`rotrec:<rotId>`: epoch, issuer,
+  targets, recipients, nonce, signed revocations) and wraps bind its id (`swal-rotate/v3`). Every device adopts the
+  best valid rotation (highest epoch, then lowest `rotId`); a rotation whose issuer was revoked at an epoch <= its own
+  is void; afterwards any owner/admin whose key reached a revoked device re-keys at N+1 excluding the union.
+  Rotation frames are sealed under the current and recent retired keys, and lagging devices may skip epochs.
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,
@@ -62,6 +67,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unauthorized ops, replay, forks, seq cut-off, cascade, order independence, tampering).
 
 ### Changed (breaking)
+- `wrapMeshKey(priv, toPub, rotId, from, to, key)` / `unwrapMeshKey(priv, fromPub, rotId, from, to, wrap)` (v3);
+  meta layout of stored wraps is `rotrec:<rotId>` + `rot:<rotId>:<deviceId>` and `old:<rid> = {e, k}`.
 - `Admission` gains `epoch` (v2) and `Revocation` drops `at` (v2); `ChainContext` gains `epoch` and `revokedAt`
   returns the list of revocation epochs. Admissions/revocations of the previous version are ignored: re-pair.
 - `VaultClient.deviceId` must equal `fingerprint(devicePublicKey)` (`createMesh` rejects other vaults); pairing ack

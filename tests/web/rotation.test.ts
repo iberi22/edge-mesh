@@ -5,7 +5,7 @@ import type { LoopbackHub, LinkTransport } from "../../src/web/index.js";
 import { __setNonceCounter, deriveDocMaterial, deriveSenderKey, openUpdate, sealUpdate } from "../../src/web/crypto.js";
 import { unwrapMeshKey } from "../../src/web/rotation.js";
 import { b64uDecode, b64uEncode, randomBytes } from "../../src/web/util.js";
-import { type Dev, makeVault, pair, until } from "./helpers.js";
+import { type Dev, makeVault, pair, storedWraps, until } from "./helpers.js";
 
 const APP = "fize";
 const TOPIC = "fize/data/r1";
@@ -124,13 +124,13 @@ async function revokedCannotLearn(a: Dev, c: Dev, inbox: Uint8Array[], oldKey: U
 	// ...and none of the stored wraps unwraps for it
 	const cEcdh = await c.vault.getEcdhIdentity!();
 	const aPub = b64uDecode(metaOf(a).get(`ecdh/${a.id}`).pub);
-	const wraps = [...metaOf(a).keys()].filter((k) => k.startsWith("rot:1:"));
+	const wraps = storedWraps(a, 1);
 	expect(wraps.length).toBeGreaterThan(0);
-	expect(wraps).not.toContain(`rot:1:${c.id}`);
-	for (const k of wraps) {
-		const w = metaOf(a).get(k);
-		await expect(unwrapMeshKey(cEcdh.privateKey, aPub, 1, w.from, c.id, b64uDecode(w.wrap), c.id)).rejects.toThrow();
-		await expect(unwrapMeshKey(cEcdh.privateKey, aPub, 1, w.from, k.split(":")[2], b64uDecode(w.wrap), c.id)).rejects.toThrow();
+	expect(wraps.map((w) => w.to)).not.toContain(c.id);
+	for (const w of wraps) {
+		expect(w.rec.to).not.toContain(c.id);
+		await expect(unwrapMeshKey(cEcdh.privateKey, aPub, w.id, w.rec.from, c.id, w.wrap)).rejects.toThrow();
+		await expect(unwrapMeshKey(cEcdh.privateKey, aPub, w.id, w.rec.from, w.to, w.wrap)).rejects.toThrow();
 	}
 }
 
@@ -175,7 +175,7 @@ describe("revoke / rotation", () => {
 		b.mesh.destroy(); // B goes offline (keeps its doc + vault: "persisted")
 		await a.mesh.revoke(c.id);
 		expect(a.mesh.epoch).toBe(1);
-		expect(metaOf(a).has(`rot:1:${b.id}`)).toBe(true);
+		expect(storedWraps(a, 1).map((w) => w.to)).toContain(b.id);
 		expect(b.vault.meshKey).toEqual(oldKey);
 		const b2 = await mk("devB", hub, { doc: b.doc, vault: b.vault });
 		await until(() => b2.mesh.epoch === 1, 5000);

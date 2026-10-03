@@ -1,5 +1,6 @@
+import { isDeviceId, type Revocation } from "./admission.js";
 import { hkdf, importAesKey, openUpdate, sealUpdate } from "./crypto.js";
-import { b64uEncode, bs, utf8 } from "./util.js";
+import { b64uDecode, b64uEncode, bs, utf8 } from "./util.js";
 
 const ECDH = { name: "ECDH", namedCurve: "P-256" } as const;
 
@@ -18,9 +19,53 @@ export async function generateEcdhIdentity(): Promise<EcdhIdentity> {
 /** Bytes the device identity key signs to vouch for its ECDH public key. */
 export const ecdhSignedBytes = (deviceId: string, pubB64: string) => utf8(`swal-ecdh/v1|${deviceId}|${pubB64}`);
 
-/** v2 also binds `revoked`: a relayed wrap cannot be re-labelled to revoke a different device. */
-const rotateInfo = (epoch: number, from: string, to: string, revoked: string) =>
-	`swal-rotate/v2|${epoch}|${from}|${to}|${revoked}`;
+/**
+ * Public part of one key rotation, identical for every recipient (B4). `to` lists the devices that received a wrap of
+ * the new key, `revoked` the devices it cuts off, `revs` the signed revocations that justify it. Two rotations for the
+ * same epoch are resolved deterministically by `rotationId` (see provider: highest epoch, then lowest id, wins).
+ */
+export interface RotRecord {
+	v: 1;
+	epoch: number;
+	from: string;
+	revoked: string[];
+	to: string[];
+	/** 16 random bytes (base64url): two rotations never share an id */
+	n: string;
+	revs: Revocation[];
+}
+
+const MAX_ROT_MEMBERS = 1024;
+const isIdList = (x: unknown): x is string[] =>
+	Array.isArray(x) && x.length <= MAX_ROT_MEMBERS && x.every((i) => isDeviceId(i));
+
+export function isRotRecord(x: unknown): x is RotRecord {
+	const r = x as RotRecord;
+	return (
+		typeof r === "object" &&
+		r !== null &&
+		r.v === 1 &&
+		Number.isSafeInteger(r.epoch) &&
+		r.epoch >= 1 &&
+		isDeviceId(r.from) &&
+		isIdList(r.revoked) &&
+		r.revoked.length >= 1 &&
+		isIdList(r.to) &&
+		typeof r.n === "string" &&
+		r.n.length <= 64 &&
+		Array.isArray(r.revs) &&
+		r.revs.length <= MAX_ROT_MEMBERS
+	);
+}
+
+/** rotId = base64url(SHA-256(["swal-rot/v1", epoch, from, sorted revoked, sorted to, n])). `revs` are signed on their own. */
+export async function rotationId(r: Omit<RotRecord, "revs"> & { revs?: unknown }): Promise<string> {
+	const body = JSON.stringify(["swal-rot/v1", r.epoch, r.from, [...r.revoked].sort(), [...r.to].sort(), r.n]);
+	return b64uEncode(new Uint8Array(await crypto.subtle.digest("SHA-256", bs(utf8(body)))));
+}
+
+/** v3 binds the whole rotation (epoch, issuer, targets, recipients, nonce) through its id. */
+const rotateInfo = (rotId: string, from: string, to: string) => `swal-rotate/v3|${rotId}|${from}|${to}`;
 
 async function pairKey(priv: CryptoKey, peerPub: Uint8Array, info: string): Promise<CryptoKey> {
 	const pub = await crypto.subtle.importKey("raw", bs(peerPub), ECDH, false, []);
@@ -28,29 +73,27 @@ async function pairKey(priv: CryptoKey, peerPub: Uint8Array, info: string): Prom
 	return importAesKey(await hkdf(shared, info));
 }
 
-/** Wrap the new mesh key for ONE device: ECDH(from priv, to pub) -> HKDF(swal-rotate/v2|epoch|from|to|revoked) -> AES-GCM. */
+/** Wrap the new mesh key for ONE device: ECDH(from priv, to pub) -> HKDF(swal-rotate/v3|rotId|from|to) -> AES-GCM. */
 export async function wrapMeshKey(
 	priv: CryptoKey,
 	toPub: Uint8Array,
-	epoch: number,
+	rotId: string,
 	from: string,
 	to: string,
 	newKey: Uint8Array,
-	revoked = "",
 ): Promise<string> {
-	const info = rotateInfo(epoch, from, to, revoked);
+	const info = rotateInfo(rotId, from, to);
 	return b64uEncode(await sealUpdate(await pairKey(priv, toPub, info), newKey, info));
 }
 
 export async function unwrapMeshKey(
 	priv: CryptoKey,
 	fromPub: Uint8Array,
-	epoch: number,
+	rotId: string,
 	from: string,
 	to: string,
-	wrap: Uint8Array,
-	revoked = "",
+	wrap: Uint8Array | string,
 ): Promise<Uint8Array> {
-	const info = rotateInfo(epoch, from, to, revoked);
-	return openUpdate(await pairKey(priv, fromPub, info), wrap, info);
+	const info = rotateInfo(rotId, from, to);
+	return openUpdate(await pairKey(priv, fromPub, info), typeof wrap === "string" ? b64uDecode(wrap) : wrap, info);
 }
