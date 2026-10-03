@@ -412,7 +412,7 @@ describe("audit round 2 regressions: web/provider", () => {
 						for (let i = 0; i < 8; i++) {
 							mb.set(`rotrec:!fake${i}`, {
 								v: 1,
-								epoch: 999999,
+								epoch: 1, // within the skip window: only verification can tell it apart
 								from: b.id,
 								revoked: [c.id],
 								to: [d.id],
@@ -474,58 +474,47 @@ describe("audit round 2 regressions: web/provider", () => {
 	);
 
 	for (const target of [1000, 2 ** 32, Number.MAX_SAFE_INTEGER])
-		open(
-			`SF1: an admin jumping the epoch to ${target} does not brick the mesh`,
-			async () => {
-				const hub = createLoopbackHub();
-				const { a, xs, ms, all } = await mesh(
-					hub,
-					["x1"],
-					["m1", "m2", "devC"],
-				);
-				const x1 = xs[0] as Dev;
-				const [m1, m2, c] = ms as [Dev, Dev, Dev];
-				x1.vault.getEpoch = () => target - 1; // modified admin client: its next loadKeys takes this epoch
-				await x1.mesh.revoke(m1.id); // rotation to epoch 1, adopted by all
-				await until(() => [a, m2, c].every((d) => d.mesh.epoch === 1));
-				await x1.mesh.revoke(m2.id).catch(() => {}); // from its (possibly jumped) epoch
-				await settle(1000);
-				expect(a.mesh.epoch).toBeLessThan(16);
-				expect(c.mesh.epoch).toBe(a.mesh.epoch);
-				// new links still authenticate (restart), and the owner can still revoke the admin
-				c.mesh.destroy();
-				const c2 = await makeDev("devC", hub, undefined, {
-					doc: c.doc,
-					vault: c.vault,
-				});
-				await until(() => c2.mesh.peers.includes(a.id), 5000);
-				await a.mesh.revoke(x1.id);
-				await until(
-					() => c2.mesh.epoch === a.mesh.epoch && keyOf(c2) === keyOf(a),
-					5000,
-				);
-				expect(keyOf(x1)).not.toBe(keyOf(a));
-				for (const d of [...all.filter((x) => x !== c), c2]) d.mesh.destroy();
-			},
-			30_000,
-		);
+		it(`SF1: an admin jumping the epoch to ${target} does not brick the mesh`, async () => {
+			const hub = createLoopbackHub();
+			const { a, xs, ms, all } = await mesh(hub, ["x1"], ["m1", "m2", "devC"]);
+			const x1 = xs[0] as Dev;
+			const [m1, m2, c] = ms as [Dev, Dev, Dev];
+			x1.vault.getEpoch = () => target - 1; // modified admin client: its next loadKeys takes this epoch
+			await x1.mesh.revoke(m1.id); // rotation to epoch 1, adopted by all
+			await until(() => [a, m2, c].every((d) => d.mesh.epoch === 1));
+			await x1.mesh.revoke(m2.id).catch(() => {}); // from its (possibly jumped) epoch
+			await settle(1000);
+			expect(a.mesh.epoch).toBeLessThan(16);
+			expect(c.mesh.epoch).toBe(a.mesh.epoch);
+			// new links still authenticate (restart), and the owner can still revoke the admin
+			c.mesh.destroy();
+			const c2 = await makeDev("devC", hub, undefined, {
+				doc: c.doc,
+				vault: c.vault,
+			});
+			await until(() => c2.mesh.peers.includes(a.id), 5000);
+			await a.mesh.revoke(x1.id);
+			await until(
+				() => c2.mesh.epoch === a.mesh.epoch && keyOf(c2) === keyOf(a),
+				5000,
+			);
+			expect(keyOf(x1)).not.toBe(keyOf(a));
+			for (const d of [...all.filter((x) => x !== c), c2]) d.mesh.destroy();
+		}, 30_000);
 
-	open(
-		"SF1: rotation records with an epoch beyond 2^31 - 1 are malformed",
-		() => {
-			const base = {
-				v: 1,
-				from: "A".repeat(22),
-				revoked: ["B".repeat(22)],
-				to: [],
-				n: "x",
-				revs: [],
-			};
-			expect(isRotRecord({ ...base, epoch: 5 })).toBe(true);
-			expect(isRotRecord({ ...base, epoch: 2 ** 31 })).toBe(false);
-			expect(isRotRecord({ ...base, epoch: 2 ** 32 })).toBe(false);
-		},
-	);
+	it("SF1: rotation records with an epoch beyond 2^31 - 1 are malformed", () => {
+		const base = {
+			v: 1,
+			from: "A".repeat(22),
+			revoked: ["B".repeat(22)],
+			to: [],
+			n: "x",
+			revs: [],
+		};
+		expect(isRotRecord({ ...base, epoch: 5 })).toBe(true);
+		expect(isRotRecord({ ...base, epoch: 2 ** 31 })).toBe(false);
+		expect(isRotRecord({ ...base, epoch: 2 ** 32 })).toBe(false);
+	});
 
 	for (const mib of [20, 8])
 		it(`BL3: a healthy WebRTC link carries a legit ${mib} MiB message`, async () => {

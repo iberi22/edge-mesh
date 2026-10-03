@@ -10,7 +10,10 @@ import {
 	canRevokeRole,
 	idMatchesPub,
 	isDeviceId,
+	isEpoch,
 	isRevocation,
+	MAX_EPOCH,
+	MAX_EPOCH_SKIP,
 	signAdmission,
 	signRevocation,
 	verifyChain,
@@ -526,7 +529,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		}
 		return key;
 	}
-	const localNum = (x: unknown) => (typeof x === "number" && Number.isSafeInteger(x) && x >= 0 ? x : 0);
+	const localNum = (x: unknown) => (isEpoch(x) ? x : 0); // SF1: an out-of-range local value is ignored
 	async function persistEpoch(n: number) {
 		await vault.setEpoch?.(n);
 		await store.set("epoch", n);
@@ -909,6 +912,11 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const id = await rotationId(rot);
 		if (m.to !== me || rot.from === me || rot.revoked.includes(me) || !rot.to.includes(me)) return coverCheck();
 		if (curRot?.id === id || cands.has(id) || rot.epoch < epoch || rotIssuerRevoked(rot)) return coverCheck();
+		if (rot.epoch > epoch + MAX_EPOCH_SKIP) {
+			// SF1: an admin cannot push everybody to an epoch near an integer edge (or strand them far ahead)
+			emit("rejected", { reason: "rotation epoch too far ahead", from: rot.from, epoch: rot.epoch });
+			return;
+		}
 		const fromPub = await peerEcdhPub(rot.from);
 		if (!fromPub) return coverCheck();
 		const info = { from: rot.from, revoked: rot.revoked, epoch: rot.epoch };
@@ -982,7 +990,9 @@ export function createMesh(opts: MeshOptions): Mesh {
 			const id = k.slice(ROTREC_PREFIX.length);
 			const rot = meta.get(k);
 			const wrap = meta.get(`${ROT_PREFIX}${id}:${deviceId}`);
-			if (isRotRecord(rot) && rot.epoch >= from && typeof wrap === "string") out.push({ rot, to: deviceId, wrap, id });
+			// SF1: a straggler can only adopt up to MAX_EPOCH_SKIP ahead: serve it in steps
+			if (isRotRecord(rot) && rot.epoch >= from && rot.epoch <= from + MAX_EPOCH_SKIP && typeof wrap === "string")
+				out.push({ rot, to: deviceId, wrap, id });
 		}
 		out.sort((x, y) => (betterRot({ epoch: x.rot.epoch, id: x.id }, { epoch: y.rot.epoch, id: y.id }) ? -1 : 1));
 		return out.slice(0, 8).map(({ id: _id, ...msg }) => msg);
@@ -1207,6 +1217,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 	async function rotate(targets: string[], fresh: boolean) {
 		const me = vault.deviceId;
 		const newEpoch = epoch + 1;
+		if (newEpoch > MAX_EPOCH) throw new Error("epoch limit reached: re-create the mesh");
 		const newKey = randomBytes(32);
 		const revs: Revocation[] = [];
 		for (const t of targets) {
@@ -1447,7 +1458,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 			// the trust root and our admission arrive over the SAS-authenticated session; the chain must be valid and
 			// lead to the very host key that signed the QR payload
 			if (!g.root || !Array.isArray(g.admissions)) throw new Error("pairing grant carries no admission (host too old?)");
-			if (!Number.isSafeInteger(g.epoch) || g.epoch < 0) throw new Error("pairing grant: bad epoch");
+			if (!isEpoch(g.epoch)) throw new Error("pairing grant: bad epoch");
 			const grantAdm = new Map<string, Admission[]>();
 			for (const a of g.admissions) grantAdm.set(a?.deviceId, [...(grantAdm.get(a?.deviceId) ?? []), a]);
 			const gctx: ChainContext = { vault, root: g.root, epoch: g.epoch, candidates: (id: string) => grantAdm.get(id) ?? [], revokedAt: () => undefined };

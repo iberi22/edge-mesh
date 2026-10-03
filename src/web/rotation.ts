@@ -1,4 +1,4 @@
-import { isDeviceId, type Revocation } from "./admission.js";
+import { isDeviceId, isEpoch, type Revocation } from "./admission.js";
 import { hkdf, importAesKey, openUpdate, sealUpdate } from "./crypto.js";
 import { b64uDecode, b64uEncode, bs, utf8 } from "./util.js";
 
@@ -45,7 +45,7 @@ export function isRotRecord(x: unknown): x is RotRecord {
 		typeof r === "object" &&
 		r !== null &&
 		r.v === 1 &&
-		Number.isSafeInteger(r.epoch) &&
+		isEpoch(r.epoch) &&
 		r.epoch >= 1 &&
 		isDeviceId(r.from) &&
 		isIdList(r.revoked) &&

@@ -83,6 +83,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **BL3 the 16 MiB send-queue cap closed healthy links** (legit messages go up to 64 MiB): `PeerLink.drain()`
   (optional) gives backpressure and the mesh awaits it per frame; `dataChannelLink` only closes a link that is over
   the cap with no drain progress for `stallMs` (15 s).
+- **SF1 epoch jump bricked the mesh**: epochs are bounded to `2^31 - 1` everywhere (`MAX_EPOCH`) and a rotation may be
+  at most `MAX_EPOCH_SKIP` (8) ahead of the local epoch; stragglers are served in steps.
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,

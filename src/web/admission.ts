@@ -64,8 +64,12 @@ export interface TrustRoot {
 }
 
 const ROLES: readonly Role[] = ["owner", "admin", "member"];
-const isEpoch = (x: unknown): x is number =>
-	typeof x === "number" && Number.isSafeInteger(x) && x >= 0;
+/** SF1: epochs stay far below any integer edge (u32 on the wire, safe integers in JS). */
+export const MAX_EPOCH = 2 ** 31 - 1;
+/** SF1: a received rotation may skip at most this many epochs ahead of the local one. */
+export const MAX_EPOCH_SKIP = 8;
+export const isEpoch = (x: unknown): x is number =>
+	typeof x === "number" && Number.isSafeInteger(x) && x >= 0 && x <= MAX_EPOCH;
 
 export const admissionBytes = (a: Omit<Admission, "sig">): Uint8Array =>
 	utf8(

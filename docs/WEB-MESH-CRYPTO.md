@@ -178,6 +178,10 @@ other one revoked). Now:
   immediately to N+1 excluding the union of all revoked devices, attaching their signed revocations. Several admins
   may do so at once: the same rule picks one of those N+1 rotations, and since each excludes every revocation its
   issuer knew, the process ends when no revoked device holds the key.
+- **Bounded epochs (SF1).** Epochs are integers in `[0, 2^31 - 1]` (records, admissions, local state) and a received
+  rotation may be at most 8 epochs ahead of the local one; lagging devices are served stored rotations in steps of at
+  most 8. An admin can therefore neither push the mesh to an integer edge (where `K_AUTH` or `epoch + 1` break) nor
+  strand everybody far ahead.
 - Limitation: a revocation counts once it has reached a remaining device. An admin that is cut off (revoked) before
   its own rotation leaves the device loses that revocation; the owner sees the device still listed and revokes it.
 - Trade-off (vs. an owner-only rotation leader): no single device has to be online for a revocation to take effect.
