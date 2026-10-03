@@ -13,6 +13,7 @@ import {
 	verifyRevocation,
 } from "./admission.js";
 import { deriveDocMaterial, deriveSenderKey, hkdf, importAesKey, openUpdate, sealUpdate } from "./crypto.js";
+import { DEFAULT_MAX_FRAME, F_FRAG, Reassembler, fragment } from "./fragment.js";
 import { type EcdhIdentity, ecdhSignedBytes, generateEcdhIdentity, unwrapMeshKey, wrapMeshKey } from "./rotation.js";
 import {
 	type GrantBody,
@@ -61,6 +62,10 @@ export interface MeshOptions {
 	 * for every incoming rotation. Default: built-in roles (owner > admin > member; nobody revokes the owner).
 	 */
 	canRotate?: (issuer: string, target: string) => boolean | Promise<boolean>;
+	/** Largest message handed to a link; bigger ones are fragmented (H5). Default 64 KiB. */
+	maxFrameBytes?: number;
+	/** Largest reassembled message accepted from a peer. Default 64 MiB. */
+	maxMessageBytes?: number;
 }
 
 export interface PairHostOptions {
@@ -185,6 +190,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 	let guestSession: { s: GuestPairing; rid: string } | null = null;
 	let pairRids = new Set<string>();
 
+	const maxFrame = opts.maxFrameBytes ?? DEFAULT_MAX_FRAME;
 	const peerIds = () => [...new Set([...links].filter((l) => l.deviceId && l.rid !== "pair" && !l.legacy && !l.closing).map((l) => l.deviceId!))];
 	const setStatus = () => {
 		const s: MeshStatus = !running ? "off" : peerIds().length > 0 ? "online" : "connecting";
@@ -370,6 +376,22 @@ export function createMesh(opts: MeshOptions): Mesh {
 		dataRid = await deriveRoomId(meshKey, appId, topicName, epoch);
 	}
 
+	// ---- link I/O: per-link ordered queue; messages above maxFrame are fragmented (H5) ----
+	const outQ = new WeakMap<PeerLink, Promise<void>>();
+	function sendBytes(link: PeerLink, bytes: Uint8Array, alive: () => boolean = () => true): Promise<void> {
+		const next = (outQ.get(link) ?? Promise.resolve())
+			.then(async () => {
+				if (!alive()) return;
+				for (const f of await fragment(bytes, maxFrame)) {
+					if (!alive()) return;
+					link.send(f);
+				}
+			})
+			.catch(err);
+		outQ.set(link, next);
+		return next;
+	}
+
 	// ---- framing ----
 	// Every sender seals under its OWN subkey (HKDF over the sender's deviceId); receivers derive it
 	// from the deviceId in the frame header (also bound in the AAD). Wire: F_DATA | idLen | id | nonce | ct+tag.
@@ -381,7 +403,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const id = utf8(vault.deviceId);
 		const sealed = await sealUpdate(key, concat(new Uint8Array([kind]), body), `${lg ? lg.rid : dataRid}|${vault.deviceId}`);
 		if (rec.closing) return;
-		rec.link.send(concat(new Uint8Array([F_DATA, id.length]), id, sealed));
+		await sendBytes(rec.link, concat(new Uint8Array([F_DATA, id.length]), id, sealed), () => !rec.closing);
 	}
 	const established = () =>
 		[...links].filter(
@@ -405,7 +427,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 	function sendPair(link: PeerLink) {
 		let f = pairSenders.get(link);
 		if (!f) {
-			f = (m: unknown) => link.send(concat(new Uint8Array([F_PAIR]), utf8(JSON.stringify(m))));
+			f = (m: unknown) => void sendBytes(link, concat(new Uint8Array([F_PAIR]), utf8(JSON.stringify(m))));
 			pairSenders.set(link, f);
 		}
 		return f;
@@ -496,13 +518,21 @@ export function createMesh(opts: MeshOptions): Mesh {
 		if (lg) rec.legacy = lg;
 		if (rid === "") rec.rid = ""; // room-less (qr-sdp): frames are self-describing
 		links.add(rec);
+		const reasm = new Reassembler({ maxMessageBytes: opts.maxMessageBytes });
+		const dispatch = (d: Uint8Array) =>
+			d[0] === F_PAIR ? onPairFrame({ ...rec, rid: rid === "" ? ([...pairRids][0] ?? "") : rid }, d) : d[0] === F_DATA ? onData(rec, d) : undefined;
 		link.onMessage((d) => {
 			if (rec.closing) return;
 			rec.chain = rec.chain
-				.then(() => (d[0] === F_PAIR ? onPairFrame({ ...rec, rid: rid === "" ? [...pairRids][0] ?? "" : rid }, d) : d[0] === F_DATA ? onData(rec, d) : undefined))
+				.then(async () => {
+					if (d[0] !== F_FRAG) return dispatch(d);
+					const whole = await reasm.push(d);
+					if (whole && whole[0] !== F_FRAG && !rec.closing) return dispatch(whole);
+				})
 				.catch(err);
 		});
 		link.onClose(() => {
+			reasm.clear();
 			links.delete(rec);
 			setStatus();
 		});
@@ -788,9 +818,12 @@ export function createMesh(opts: MeshOptions): Mesh {
 		(hostSession?.s as any)?._end?.();
 		leaveRoom(rid);
 		pairRids.delete(rid);
-		// let the last frame (grant) flush before dropping the pairing links
+		// let the last frame (grant, possibly fragmented) flush before dropping the pairing links
 		const pairLinks = [...links].filter((l) => l.rid === "pair");
-		setTimeout(() => pairLinks.forEach((l) => l.link.close()), 500);
+		for (const l of pairLinks) {
+			const drained = Promise.race([outQ.get(l.link) ?? Promise.resolve(), new Promise((r) => setTimeout(r, 10_000))]);
+			void drained.then(() => setTimeout(() => l.link.close(), 500));
+		}
 		if (hostSession?.rid === rid) hostSession = null;
 		if (guestSession?.rid === rid) guestSession = null;
 		setStatus();
