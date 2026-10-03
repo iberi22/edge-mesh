@@ -5,7 +5,7 @@ import type { LoopbackHub, LinkTransport } from "../../src/web/index.js";
 import { __setNonceCounter, deriveDocMaterial, deriveSenderKey, openUpdate, sealUpdate } from "../../src/web/crypto.js";
 import { rotationPreId, unwrapMeshKey } from "../../src/web/rotation.js";
 import { b64uDecode, b64uEncode, randomBytes } from "../../src/web/util.js";
-import { type Dev, makeVault, pair, storedWraps, until } from "./helpers.js";
+import { type Dev, kexKnown, makeVault, pair, storedWraps, until } from "./helpers.js";
 
 const APP = "fize";
 const TOPIC = "fize/data/r1";
@@ -79,7 +79,8 @@ async function mk(id: string, hub: LoopbackHub, o: Opts = {}): Promise<Dev> {
 	return { doc, mesh, vault, id: vault.deviceId };
 }
 
-const metaOf = (d: Dev) => d.doc.getMap<any>("meta");
+// biome-ignore lint/suspicious/noExplicitAny: test access to the security view
+const ownerEcdh = (a: Dev) => b64uDecode((a.mesh.security as any).keyAgreement(a.id).ecdh);
 async function trio(hub: LoopbackHub, opts: { c?: Opts; a?: Opts; b?: Opts } = {}) {
 	const a = await mk("devA", hub, opts.a);
 	const b = await mk("devB", hub, opts.b);
@@ -87,8 +88,8 @@ async function trio(hub: LoopbackHub, opts: { c?: Opts; a?: Opts; b?: Opts } = {
 	await pair(a, b);
 	await pair(a, c);
 	await until(() => a.mesh.peers.length === 2 && b.mesh.peers.length >= 1 && c.mesh.peers.length >= 1);
-	// every device's ECDH key reached every other device's meta (needed to wrap)
-	await until(() => [a, b, c].every((d) => [a, b, c].every((x) => metaOf(d).has(`ecdh/${x.id}`))));
+	// every device's key-agreement record reached every other device (needed to wrap)
+	await until(() => [a, b, c].every((d) => [a, b, c].every((x) => kexKnown(d, x.id))));
 	return { a, b, c };
 }
 
@@ -116,7 +117,8 @@ async function revokedCannotLearn(a: Dev, c: Dev, inbox: Uint8Array[], oldKey: U
 	expect(c.mesh.epoch).toBe(0);
 	const seen = await decryptInbox(inbox, oldKey, await fingerprint(a.vault.devicePublicKey)); // instance = owner A
 	expect(seen.length).toBeGreaterThan(0); // sanity: the old key does read the old traffic
-	expect(seen.filter((s) => s.kind === 3)).toHaveLength(0); // no K_ROTATE ever reached it
+	// rotation documents it may have seen carry no wrap for it (and the wraps are opaque: see below)
+	for (const s of seen.filter((x) => x.kind === 7)) expect(s.text).not.toContain(`"${c.id}":"`);
 	for (const s of seen) {
 		expect(s.text).not.toContain(b64uEncode(newKey));
 		expect(s.text).not.toContain(new TextDecoder("latin1").decode(newKey));
@@ -124,7 +126,7 @@ async function revokedCannotLearn(a: Dev, c: Dev, inbox: Uint8Array[], oldKey: U
 	// ...and none of the stored wraps unwraps for it
 	const cEcdh = await c.vault.getEcdhIdentity!();
 	const cKem = await c.vault.getKemIdentity!();
-	const aPub = b64uDecode(metaOf(a).get(`ecdh/${a.id}`).pub);
+	const aPub = ownerEcdh(a);
 	const wraps = storedWraps(a, 1);
 	expect(wraps.length).toBeGreaterThan(0);
 	expect(wraps.map((w) => w.to)).not.toContain(c.id);
@@ -169,7 +171,7 @@ describe("revoke / rotation", () => {
 		for (const x of [a, b, c]) x.mesh.destroy();
 	});
 
-	it("a peer that was offline during the revoke catches up from its pairwise wrap in meta", async () => {
+	it("a peer that was offline during the revoke catches up from the stored rotation (its pairwise wrap)", async () => {
 		const hub = createLoopbackHub();
 		const inbox: Uint8Array[] = [];
 		const { a, b, c } = await trio(hub, { c: { inbox } });

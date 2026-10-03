@@ -2,7 +2,6 @@
 // reproduces an attack or failure the re-audit proved and asserts that it no longer happens.
 import { describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
-import { signRevocation } from "../../src/web/admission.js";
 import {
 	deriveDocMaterial,
 	deriveSenderKey,
@@ -15,17 +14,19 @@ import type {
 	PeerLink,
 } from "../../src/web/index.js";
 import { createLoopbackHub, deriveRoomId } from "../../src/web/index.js";
-import { isRotRecord } from "../../src/web/rotation.js";
+import { isRotDoc } from "../../src/web/rotation.js";
+import { vaultSigner } from "../../src/web/secstate.js";
+import { issueRevocation } from "../../src/web/trust/docs.js";
 
-// Counts ML-DSA-65 verifications of revocation records (all devices of this process): the mesh verifies identity
-// signatures itself (web/pq identityVerify), not through the vault.
-const pqCount = vi.hoisted(() => ({ revVerifies: 0 }));
+// Counts ML-DSA-65 verifications of frames (all devices of this process): the mesh verifies identity signatures
+// itself (web/pq identityVerify), not through the vault.
+const pqCount = vi.hoisted(() => ({ verifies: 0 }));
 vi.mock("../../src/web/pq.js", async (importOriginal) => {
 	const m = await importOriginal<typeof import("../../src/web/pq.js")>();
 	return {
 		...m,
 		identityVerify: (p: Uint8Array, d: Uint8Array, s: Uint8Array) => {
-			if (new TextDecoder().decode(d.subarray(0, 14)) === '["swal-rev/v2"') pqCount.revVerifies++;
+			pqCount.verifies++;
 			return m.identityVerify(p, d, s);
 		},
 	};
@@ -35,6 +36,7 @@ import { b64uEncode, concat, randomBytes, utf8 } from "../../src/web/util.js";
 import { dataChannelLink } from "../../src/web/webrtc.js";
 import {
 	type Dev,
+	kexKnown,
 	makeDev,
 	type makeVault,
 	metaOf,
@@ -96,12 +98,17 @@ async function craft(
 	);
 }
 
-/** Owner devA, the given admins, the given members; everyone connected and every ECDH key known everywhere. */
+/**
+ * Owner devA, the given admins, the given members; everyone connected and every key record known everywhere.
+ * `by` names the admin that admits a member (default: the owner): round 5 (web/trust), an admin revokes the devices
+ * it admitted.
+ */
 async function mesh(
 	hub: Hub,
 	admins: string[],
 	members: string[],
 	ownerOpts: Partial<MeshOptions> = {},
+	by: Record<string, string> = {},
 ) {
 	const a = await makeDev("devA", hub, undefined, ownerOpts);
 	a.mesh.on("sas", (p) => p.confirm());
@@ -115,15 +122,16 @@ async function mesh(
 	const ms: Dev[] = [];
 	for (const m of members) {
 		const d = await makeDev(m, hub);
-		await pair(a, d);
+		const host = by[m] ? (xs[admins.indexOf(by[m] as string)] as Dev) : a;
+		await pair(host, d);
 		ms.push(d);
 	}
 	const all = [a, ...xs, ...ms];
 	await until(
 		() =>
-			all.every((d) => all.every((y) => metaOf(d).has(`ecdh/${y.id}`))) &&
+			all.every((d) => all.every((y) => kexKnown(d, y.id))) &&
 			all.every((d) => d.mesh.devices().length === all.length),
-		8000,
+		20_000,
 	);
 	return { a, xs, ms, all };
 }
@@ -148,11 +156,7 @@ async function retiredRoomLinks(
 describe("audit round 2 regressions: web/provider", () => {
 	it("V1 (B4 guard): three admins revoke three members at once: one key, all three out, bounded epochs", async () => {
 		const hub = createLoopbackHub();
-		const { a, xs, ms, all } = await mesh(
-			hub,
-			["x1", "x2", "x3"],
-			["m1", "m2", "m3", "devC"],
-		);
+		const { a, xs, ms, all } = await mesh(hub, ["x1", "x2", "x3"], ["m1", "m2", "m3", "devC"], {}, { m1: "x1", m2: "x2", m3: "x3" });
 		const c = ms[3] as Dev;
 		await Promise.all(xs.map((x, i) => x.mesh.revoke((ms[i] as Dev).id)));
 		const rest = [a, ...xs, c];
@@ -177,7 +181,7 @@ describe("audit round 2 regressions: web/provider", () => {
 	for (const order of ["P1-first", "P2-first"])
 		it(`BL1: partitions that rotated independently converge once they heal (${order})`, async () => {
 			const g = createLoopbackHub();
-			const { a, xs, ms } = await mesh(g, ["x1", "x2"], ["m1", "m2", "devC"]);
+			const { a, xs, ms } = await mesh(g, ["x1", "x2"], ["m1", "m2", "devC"], {}, { m1: "x2", m2: "x1" });
 			const [x1, x2] = xs as [Dev, Dev];
 			const [m1, m2, c] = ms as [Dev, Dev, Dev];
 			for (const d of [a, x1, x2, m1, m2, c]) d.mesh.destroy();
@@ -262,35 +266,22 @@ describe("audit round 2 regressions: web/provider", () => {
 			instance,
 			3,
 		);
+		// the revoked admin signs revocations of members (with its own, revoked grant as parent) and pushes them as
+		// security documents into the retired room
+		const x1Grant = a.mesh.security!.trust.grantsOf(x1.id)[0]!;
 		const revs = [];
 		for (const m of [m1, m2])
 			revs.push(
-				await signRevocation(x1.vault, {
-					mid,
-					target: m.id,
-					by: x1.id,
-					epoch: 1,
-				}),
+				await issueRevocation(
+					vaultSigner(x1.vault, b64uEncode(x1.vault.devicePublicKey)),
+					{ target: a.mesh.security!.trust.grantsOf(m.id)[0]!.id, lastSeq: 0 },
+					{ inst: mid, parent: x1Grant },
+				),
 			);
-		const body = utf8(
-			JSON.stringify({
-				rot: {
-					v: 1,
-					epoch: 1,
-					from: x1.id,
-					revoked: [m1.id, m2.id],
-					to: [],
-					n: "x",
-					wh: "",
-					revs,
-				},
-				to: "",
-				wrap: "",
-			}),
-		);
+		const body = utf8(JSON.stringify({ t: "docs", docs: revs }));
 		const sess = randomBytes(8);
 		for (const l of lks)
-			l.send(await craft(x1.vault, mat0, rid0, 3, body, sess, 1));
+			l.send(await craft(x1.vault, mat0, rid0, 7, body, sess, 1));
 		await settle(1500);
 		expect(a.mesh.epoch).toBe(1);
 		expect(ids(a)).toEqual(expect.arrayContaining([m1.id, m2.id]));
@@ -316,39 +307,25 @@ describe("audit round 2 regressions: web/provider", () => {
 			instance,
 			1,
 		);
-		const fake = await signRevocation(x1.vault, {
-			mid,
-			target: x1.id,
-			by: x1.id,
-			epoch: 1,
-		});
-		const bad = Array.from({ length: 64 }, () => ({
-			...fake,
-			target: b64uEncode(randomBytes(32)), // well-formed (43-char) ids: only the signature check rejects them
-		}));
-		const body = utf8(
-			JSON.stringify({
-				rot: {
-					v: 1,
-					epoch: 1,
-					from: x1.id,
-					revoked: [x1.id],
-					to: [],
-					n: "x",
-					wh: "",
-					revs: bad,
-				},
-				to: "",
-				wrap: "",
-			}),
-		);
-		const before = pqCount.revVerifies;
+		const x1Grant = a.mesh.security!.trust.grantsOf(x1.id)[0]!;
+		const bad = [];
+		for (let i = 0; i < 64; i++)
+			bad.push({
+				...(await issueRevocation(
+					vaultSigner(x1.vault, b64uEncode(x1.vault.devicePublicKey)),
+					{ target: b64uEncode(randomBytes(32)), lastSeq: 0 },
+					{ inst: mid, parent: x1Grant },
+				)),
+			});
+		const body = utf8(JSON.stringify({ t: "docs", docs: bad }));
+		const before = pqCount.verifies;
 		const sess = randomBytes(8);
 		for (let i = 0; i < 20; i++)
 			for (const l of lks)
-				l.send(await craft(x1.vault, mat0, rid0, 3, body, sess, i + 1));
+				l.send(await craft(x1.vault, mat0, rid0, 7, body, sess, i + 1));
 		await settle(1500);
-		expect(pqCount.revVerifies - before).toBeLessThan(64);
+		// frames of a revoked device are dropped before any signature check
+		expect(pqCount.verifies - before).toBeLessThan(64);
 		for (const d of all) d.mesh.destroy();
 	}, 20_000);
 
@@ -370,30 +347,14 @@ describe("audit round 2 regressions: web/provider", () => {
 			instance,
 			2,
 		);
-		const rev = await signRevocation(x1.vault, {
-			mid,
-			target: m1.id,
-			by: x1.id,
-			epoch: 1,
-		});
-		const body = utf8(
-			JSON.stringify({
-				rot: {
-					v: 1,
-					epoch: 1,
-					from: x1.id,
-					revoked: [m1.id],
-					to: [],
-					n: "x",
-					wh: "",
-					revs: [rev],
-				},
-				to: "",
-				wrap: "",
-			}),
+		const rev = await issueRevocation(
+			vaultSigner(x1.vault, b64uEncode(x1.vault.devicePublicKey)),
+			{ target: a.mesh.security!.trust.grantsOf(m1.id)[0]!.id, lastSeq: 0 },
+			{ inst: mid, parent: a.mesh.security!.trust.grantsOf(x1.id)[0]! },
 		);
+		const body = utf8(JSON.stringify({ t: "docs", docs: [rev] }));
 		const toC = lks.find((l) => l.id === c.id) as PeerLink;
-		toC.send(await craft(x1.vault, mat0, rid0, 3, body, randomBytes(8), 1));
+		toC.send(await craft(x1.vault, mat0, rid0, 7, body, randomBytes(8), 1));
 		await settle(2000);
 		expect(ids(c).includes(m1.id)).toBe(ids(a).includes(m1.id));
 		expect(keyOf(m1) === keyOf(a)).toBe(ids(a).includes(m1.id));
@@ -411,7 +372,7 @@ describe("audit round 2 regressions: web/provider", () => {
 			const all = [a, b, c, d];
 			await until(
 				() =>
-					all.every((x) => all.every((y) => metaOf(x).has(`ecdh/${y.id}`))) &&
+					all.every((x) => all.every((y) => kexKnown(x, y.id))) &&
 					all.every((x) => x.mesh.devices().length === 4),
 				5000,
 			);
@@ -489,7 +450,7 @@ describe("audit round 2 regressions: web/provider", () => {
 		const all = [a, b, c];
 		await until(
 			() =>
-				all.every((x) => all.every((y) => metaOf(x).has(`ecdh/${y.id}`))) &&
+				all.every((x) => all.every((y) => kexKnown(x, y.id))) &&
 				all.every((x) => x.mesh.devices().length === 3),
 			5000,
 		);
@@ -511,7 +472,7 @@ describe("audit round 2 regressions: web/provider", () => {
 	for (const target of [1000, 2 ** 32, Number.MAX_SAFE_INTEGER])
 		it(`SF1: an admin jumping the epoch to ${target} does not brick the mesh`, async () => {
 			const hub = createLoopbackHub();
-			const { a, xs, ms, all } = await mesh(hub, ["x1"], ["m1", "m2", "devC"]);
+			const { a, xs, ms, all } = await mesh(hub, ["x1"], ["m1", "m2", "devC"], {}, { m1: "x1", m2: "x1" });
 			const x1 = xs[0] as Dev;
 			const [m1, m2, c] = ms as [Dev, Dev, Dev];
 			x1.vault.getEpoch = () => target - 1; // modified admin client: its next loadKeys takes this epoch
@@ -539,19 +500,24 @@ describe("audit round 2 regressions: web/provider", () => {
 			for (const d of [...all.filter((x) => x !== c), c2]) d.mesh.destroy();
 		}, 30_000);
 
-	it("SF1: rotation records with an epoch beyond 2^31 - 1 are malformed", () => {
+	it("SF1: rotation documents with an epoch beyond 2^31 - 1 are malformed", () => {
 		const base = {
-			v: 1,
+			t: "rot",
+			v: 2,
+			inst: "m",
 			from: "A".repeat(43),
-			revoked: ["B".repeat(43)],
 			to: [],
+			revoked: ["B".repeat(43)],
+			cut: [],
+			revs: [],
 			n: "x",
 			wh: "",
-			revs: [],
+			wraps: {},
+			sig: "s",
 		};
-		expect(isRotRecord({ ...base, epoch: 5 })).toBe(true);
-		expect(isRotRecord({ ...base, epoch: 2 ** 31 })).toBe(false);
-		expect(isRotRecord({ ...base, epoch: 2 ** 32 })).toBe(false);
+		expect(isRotDoc({ ...base, epoch: 5 })).toBe(true);
+		expect(isRotDoc({ ...base, epoch: 2 ** 31 })).toBe(false);
+		expect(isRotDoc({ ...base, epoch: 2 ** 32 })).toBe(false);
 	});
 
 	for (const mib of [20, 8])
@@ -602,7 +568,7 @@ describe("audit round 2 regressions: web/provider", () => {
 			b.mesh.destroy(); // B offline while A pairs C
 			const c = await makeDev("devC", hub);
 			await pair(a, c);
-			await until(() => metaOf(c).has(`adm/${b.id}`));
+			await until(() => ids(c).includes(b.id));
 			a.mesh.destroy(); // A offline
 			const b2 = await makeDev("devB", hub, () => Date.now() + skew, {
 				doc: b.doc,

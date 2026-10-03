@@ -158,8 +158,38 @@ export async function pair(
 
 export const metaOf = (d: Dev) => d.doc.getMap<any>("meta");
 
+/** Security view of a mesh (round 5 model: signed documents outside the Y.Doc), or null before it existed. */
+// biome-ignore lint/suspicious/noExplicitAny: test helper over an API that changed shape
+const secOf = (d: Pick<Dev, "mesh">): any => (d.mesh as any).security ?? null;
+
+/** Does `d` know (and trust) the key-agreement keys of device `id`? */
+export const kexKnown = (d: Dev, id: string): boolean => {
+	const sec = secOf(d);
+	return sec ? sec.keyAgreement(id) !== null : metaOf(d).has(`ecdh/${id}`);
+};
+
+/** Every device lists every other one and knows its key-agreement keys. */
+export const meshReady = (devs: Dev[], ms = 20_000) =>
+	until(
+		() =>
+			devs.every((d) => d.mesh.devices().length >= devs.length) &&
+			devs.every((d) => devs.every((y) => kexKnown(d, y.id))),
+		ms,
+	);
+
 /** Rotation wraps stored in a device's meta (rotrec:<id> + rot:<id>:<to>), optionally only those of one epoch. */
-export function storedWraps(d: Pick<Dev, "doc">, epoch?: number) {
+export function storedWraps(d: Pick<Dev, "doc"> & Partial<Pick<Dev, "mesh">>, epoch?: number) {
+	const sec = d.mesh ? secOf(d as Pick<Dev, "mesh">) : null;
+	if (sec) {
+		// round 5: verified owner rotations kept in the device's security state (not in the shared doc)
+		const out: Array<{ id: string; rec: any; to: string; key: string; wrap: string }> = [];
+		for (const r of sec.rotations()) {
+			if (epoch !== undefined && r.epoch !== epoch) continue;
+			for (const [to, wrap] of Object.entries(r.wraps as Record<string, string>))
+				out.push({ id: r.id, rec: r, to, key: `${r.id}:${to}`, wrap });
+		}
+		return out;
+	}
 	const m = d.doc.getMap<any>("meta");
 	const out: Array<{
 		id: string;
@@ -207,9 +237,7 @@ export async function trio(
 			c.mesh.peers.length >= 1,
 	);
 	await until(() =>
-		[a, b, c].every((d) =>
-			[a, b, c].every((x) => metaOf(d).has(`ecdh/${x.id}`)),
-		),
+		[a, b, c].every((d) => [a, b, c].every((x) => kexKnown(d, x.id))),
 	);
 	return { a, b, c };
 }

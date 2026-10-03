@@ -1,43 +1,34 @@
 import * as Y from "yjs";
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate, removeAwarenessStates } from "y-protocols/awareness";
 import {
-	type Admission,
-	type ChainContext,
-	type Revocation,
-	type Role,
-	type TrustRoot,
 	canIssue,
-	canRevokeRole,
 	idMatchesPub,
 	isDeviceId,
 	isEpoch,
-	isRevocation,
 	MAX_EPOCH,
 	MAX_EPOCH_SKIP,
-	signAdmission,
-	signRevocation,
-	verifyChain,
-	revocationBytes,
-	verifyRevocation,
+	type Role,
+	type TrustRoot,
 } from "./admission.js";
 import { deriveDocMaterial, deriveSenderKey, hkdf, importAesKey, openUpdate, sealUpdate } from "./crypto.js";
 import { type ByteBudget, DEFAULT_MAX_FRAME, DEFAULT_MAX_MESSAGE, F_FRAG, Reassembler, fragment } from "./fragment.js";
 import {
 	type EcdhIdentity,
-	type KemIdentity,
-	type RotRecord,
-	ecdhSignedBytes,
 	generateEcdhIdentity,
-	isEcdhPublicKey,
-	isRotRecord,
+	type KemIdentity,
+	MAX_ROT_MEMBERS,
+	MAX_ROT_REFS,
+	type RotDoc,
 	rotationId,
 	rotationPreId,
 	rotationSigBytes,
-	MAX_ROT_MEMBERS,
-	wrapsHash,
 	unwrapMeshKey,
 	wrapMeshKey,
+	wrapsHash,
 } from "./rotation.js";
+import { MAX_MEMBERS_PER_ADMIN, type SecDoc, SecurityState, vaultSigner } from "./secstate.js";
+import type { TrustStore } from "./trust/store.js";
+import type { TrustSchema } from "./trust/types.js";
 import {
 	type GrantBody,
 	GuestPairing,
@@ -49,18 +40,11 @@ import {
 	derivePairKey,
 	hostProofBytes,
 } from "./pairing.js";
-import {
-	identityVerify,
-	kemEncapsulate,
-	kemKeygen,
-	ML_DSA_PUBLIC_KEY_BYTES,
-	ML_KEM_PUBLIC_KEY_BYTES,
-	ML_KEM_SECRET_KEY_BYTES,
-} from "./pq.js";
+import { identityVerify, kemKeygen, ML_DSA_PUBLIC_KEY_BYTES, ML_KEM_PUBLIC_KEY_BYTES, ML_KEM_SECRET_KEY_BYTES } from "./pq.js";
 import { derivePairRoomId, deriveRoomId, fingerprint, meshNamespace } from "./rooms.js";
 import { type MeshStore, idbStore, memoryStore } from "./store.js";
 import type { Device, PeerLink, RtcOptions, SigTransport, VaultClient } from "./types.js";
-import { b64uDecode, b64uEncode, bs, concat, equalBytes, fromUtf8, randomBytes, utf8 } from "./util.js";
+import { b64uDecode, b64uEncode, concat, equalBytes, fromUtf8, randomBytes, utf8 } from "./util.js";
 import { connectViaSignaling } from "./webrtc.js";
 
 export type MeshStatus = "off" | "connecting" | "online";
@@ -78,22 +62,25 @@ export interface MeshOptions {
 	rtc?: RtcOptions;
 	now?: () => number;
 	/**
-	 * Device-local store for trust state (pinned root, verified admissions, revocations). Default: `vault.store`,
-	 * else IndexedDB when persist:'idb', else memory (a reloaded device then has to be paired again).
+	 * Device-local store for the security state (pinned root, signed grants, revocations, key records, rotations).
+	 * Default: `vault.store`, else IndexedDB when persist:'idb', else memory (a reloaded device then has to be paired
+	 * again). Nothing of it lives in the shared Y.Doc.
 	 */
 	store?: MeshStore;
 	/**
-	 * Replaces the built-in admission check (signed admission chain up to the pinned root). Called for every
-	 * candidate device with the identity key the mesh would trust for it (the mesh already checked that `deviceId`
-	 * is the fingerprint of that key); it decides whether that key is a member (e.g. against a signed grant).
-	 * Only devices it accepts receive rotation wraps, have their ECDH key used and appear in `devices()`.
+	 * Schema of the mesh's web/trust store (round 5: the single source of membership and authority). Default
+	 * `MESH_SCHEMA` (module "mesh", roles "admin"/"member"). An app may pass its own schema (it must keep the module
+	 * "mesh" and the roles "admin" and "member") to issue its own permissions into the same store (`mesh.security`).
+	 */
+	trustSchema?: TrustSchema;
+	/**
+	 * Extra membership filter on top of the signed grants: called for every device the trust store makes a member,
+	 * with its identity key. Only devices it accepts receive rotation wraps and appear in `devices()`.
 	 */
 	authorizeDevice?: (deviceId: string, devicePub: Uint8Array) => boolean | Promise<boolean>;
 	/**
-	 * May `issuer` revoke `target` (which rotates the mesh key for everybody)? Checked before a local revoke() and,
-	 * when given, for every incoming rotation. Default: built-in roles (owner > admin > member; nobody revokes the
-	 * owner) for a local revoke(); an incoming rotation needs an owner/admin issuer AND a valid signed revocation of
-	 * every device it cuts off.
+	 * Extra policy for revocations: may `issuer` revoke `target`? Checked before a local revoke() (on top of web/trust:
+	 * the owner revokes anybody, an admin the devices it admitted) and for every device an incoming owner rotation cuts.
 	 */
 	canRotate?: (issuer: string, target: string) => boolean | Promise<boolean>;
 	/**
@@ -158,6 +145,26 @@ export interface PairOffer {
 	cancel(): void;
 }
 
+/** Read access to the mesh's security state, plus adding documents (e.g. app-issued grants, a backup). */
+export interface MeshSecurity {
+	/** Membership and authority (web/trust). */
+	readonly trust: TrustStore;
+	/** Every security document held (grants, revocations, key records, recent owner rotations). */
+	docs(): Promise<SecDoc[]>;
+	/** Verified owner rotations kept (the most recent ones), oldest first. */
+	rotations(): Array<RotDoc & { id: string }>;
+	/** Key-agreement keys of a device (base64url), or null if unknown. */
+	keyAgreement(deviceId: string): { ecdh: string; kem: string } | null;
+	/** Grant ids executed (cut) by owner rotations. */
+	executedCuts(): string[];
+	/** Add a signed document (verified like any received one) and hand it to the mesh. */
+	add(doc: unknown): Promise<{ status: string; id?: string; reason?: string }>;
+	/** Several documents at once (any order; e.g. a backup). */
+	addMany(docs: readonly unknown[]): Promise<Array<{ status: string; id?: string; reason?: string }>>;
+	/** Sign a grant with this device's identity (owner, or an admin for members). Not added: pass it to `add`. */
+	issueGrant(subjectPub: string, opts: { role: "admin" | "member"; name?: string }): Promise<unknown>;
+}
+
 export interface Mesh {
 	readonly status: MeshStatus;
 	readonly peers: string[];
@@ -173,16 +180,28 @@ export interface Mesh {
 	channel(kind: string): MeshChannel;
 	pairHost(opts?: PairHostOptions): Promise<PairOffer>;
 	pairJoin(payload: string, opts?: { confirmSas?: (code: string) => Promise<boolean> | boolean }): Promise<PairJoinResult>;
-	/** This device plus every ADMITTED device (self-registered entries in the shared doc are ignored). */
+	/** This device plus every device a valid signed grant makes a member (and the owner). */
 	devices(): Device[];
-	/** Verified role of a device (default: this one), or null if it is not admitted. */
+	/** Verified role of a device (default: this one), or null if it is not a member. */
 	role(deviceId?: string): Role | null;
 	/**
-	 * Revoke a device: its writes and links are cut at once. Only owner devices re-key the mesh; after an admin's
-	 * revocation `rekeyPending` stays true until an owner device is online and has re-keyed (UI: "pendiente de que el
-	 * dueño se conecte"): until then the revoked device still holds the current mesh key.
+	 * Revoke a device: signs web/trust revocations of its grants (the owner: all of them; an admin: the ones it issued,
+	 * directly or below), and its writes and links are cut at once everywhere. Only owner devices re-key the mesh; after
+	 * an admin's revocation `rekeyPending` stays true until an owner device is online and has re-keyed (UI: "pendiente
+	 * de que el dueño se conecte"): until then the revoked device still holds the current mesh key. `heads` (web/oplog
+	 * `headIds()`) keep the device's op history up to there; without them none of its ops stays authorized.
 	 */
-	revoke(deviceId: string): Promise<void>;
+	revoke(
+		deviceId: string,
+		opts?: { heads?: Readonly<Record<string, number | { seq: number; id: string }>>; reason?: string },
+	): Promise<void>;
+	/**
+	 * Owner only: give devices that lost membership through a revoked admin (revocations cascade) a grant of their own
+	 * from the owner. They get the current key with the next re-key.
+	 */
+	reanchor(deviceIds: string[]): Promise<void>;
+	/** Security state (round 5: signed documents outside the Y.Doc), or null before the first pairing. */
+	readonly security: MeshSecurity | null;
 	/** A known revocation has not been followed by an owner re-key yet (the revoked device may still read new data). */
 	readonly rekeyPending: boolean;
 	leave(): void;
@@ -196,10 +215,12 @@ const F_SDATA = 3; // signed data frame: plaintext = kind | sess(8) | seq(u32) |
 const K_SV = 0;
 const K_UPDATE = 1;
 const K_AWARENESS = 2;
-const K_ROTATE = 3;
+// kind 3 (pre-round-5 rotation frames) is retired: such frames are ignored
 const K_CHANNEL = 4; // body = nsLen(u16) | namespace | payload
 const K_HELLO = 5; // body = nonce(16): fresh challenge of this link (S1)
 const K_AUTH = 6; // body = peer's nonce(16) | epoch(u32), signed: the sender is live on THIS link (S1)
+/** round 5: security documents (JSON {t:"inv",ids} | {t:"want",ids} | {t:"docs",docs}), also under retired keys */
+const K_TRUST = 7;
 const NONCE_BYTES = 16;
 /** finding 4: bytes of bulk data waiting for one link beyond the message in progress (then the link is closed) */
 const MAX_OUTSTANDING = 16 * 1024 * 1024;
@@ -215,28 +236,14 @@ const HS_VERIFY_MAX = 64;
 /** Replay window per sender session: seqs at most this far behind the highest one are still accepted once. */
 const REPLAY_WINDOW = 1024;
 const ORIGIN = Symbol("swal-mesh");
-const DEV = "dev/"; // dev/<deviceId> = Device (informative only: trust comes from adm/)
-const ADM_PREFIX = "adm/"; // adm/<deviceId> = Admission signed by an owner/admin, verified against the local root pin
-const REV_PREFIX = "rev/"; // rev/<deviceId>:<epoch> = Revocation signed by the revoker (H4: replicated + persisted locally)
-const revKey = (r: { target: string; epoch: number }) => `${REV_PREFIX}${r.target}:${r.epoch}`;
-/** local store: every signed revocation record kept (the revoked set is recomputed from them) */
-const REVRECORDS_KEY = "revrecords";
-/** local store: cuts not backed by a built-in-valid record (custom `canRotate` hook) */
-const LOCALCUTS_KEY = "localcuts";
-/**
- * R4-B1: pending revocation REQUESTS are bounded per issuer (an admin cannot crowd out anybody else's records); beyond
- * the cap the issuer's newest are set aside (and retried once the owner executes some). EXECUTED revocations (by the
- * owner, or cut by an adopted owner rotation) are kept for good as compact tombstones (`executed`), never evicted.
- */
-const MAX_PENDING_PER_ISSUER = 64;
-/** Revocation records a rotation carries and a receiver reads (R4-B2: the same bound on both ends). */
-const REVS_CARRIED = 16;
-/** Full records of executed revocations kept to carry/republish; the fact itself lives on in the tombstones. */
-const MAX_SETTLED_RECORDS = 256;
-/** local store: executed revocations, deviceId -> [[epoch, record hash ("" if cut by a rotation alone)]] */
-const EXECUTED_KEY = "revexecuted";
-/** A hybrid wrap is base64url(ML-KEM-768 ciphertext 1088 B || AES-GCM(32 B) 60 B) = 1531 characters. */
-const MAX_WRAP_CHARS = 1600;
+/** round 5: trust-channel limits (per message / per peer) */
+const TRUST_INV_MAX = 20_000;
+const TRUST_WANT_MAX = 2048;
+const TRUST_DOCS_MAX = 256;
+const TRUST_BATCH_BYTES = 512 * 1024;
+/** documents served to one peer per minute, and failed documents accepted from one sender per minute */
+const TRUST_SERVE_PER_MIN = 8192;
+const TRUST_FAIL_PER_MIN = 64;
 /** R4-S2: bounded caches drop their least recently used entry instead of being cleared all at once. */
 class Lru<K, V> {
 	private m = new Map<K, V>();
@@ -261,12 +268,6 @@ class Lru<K, V> {
 		this.m.clear();
 	}
 }
-const sha256Tag = async (s: string) =>
-	b64uEncode(new Uint8Array(await crypto.subtle.digest("SHA-256", bs(utf8(s)))));
-const KEX_KEY = "kex"; // device-local store: verified key-agreement keys (the pre-PQC "ecdh" entry is ignored)
-const ECDH_PREFIX = "ecdh/"; // ecdh/<deviceId> = { pub, kem, sig }: P-256 + ML-KEM-768 keys, sig by the ML-DSA identity
-const ROTREC_PREFIX = "rotrec:"; // rotrec:<rotId> = RotRecord (public part of a rotation, same for every recipient)
-const ROT_PREFIX = "rot:"; // rot:<rotId>:<deviceId> = that rotation's new key, wrapped pairwise for deviceId
 /** SF5: retired keys this device itself held, kept in its LOCAL store (never read from the shared doc) */
 const RETIRED_KEY = "retired";
 const MAX_RETIRED = 16;
@@ -274,18 +275,7 @@ const MAX_RETIRED = 16;
 const RETIRED_TRY = 4;
 const MAX_CANDIDATES = 16;
 
-/** K_ROTATE body: the shared rotation record plus the recipient's own pairwise wrap. */
-interface RotateMsg {
-	rot: RotRecord;
-	to: string;
-	wrap: string;
-	/**
-	 * Every recipient's pairwise wrap (each opens only for its addressee): lets any device that adopted the rotation
-	 * relay it to recipients the issuer has no link to (partial topologies, healed partitions).
-	 */
-	wraps?: Record<string, string>;
-}
-type Rot = RotRecord & { id: string };
+type Rot = RotDoc & { id: string };
 /** Total order of rotations (B4): higher epoch first, then the lower rotation id. Deterministic on every device. */
 const betterRot = (a: { epoch: number; id: string }, b: { epoch: number; id: string }) =>
 	a.epoch !== b.epoch ? a.epoch > b.epoch : a.id < b.id;
@@ -359,7 +349,6 @@ export function createMesh(opts: MeshOptions): Mesh {
 	const { appId, topic: topicName, doc, vault } = opts;
 	const transports = opts.signaling ?? [];
 	const now = opts.now ?? (() => Date.now());
-	const meta = doc.getMap<any>("meta");
 	const awareness = new Awareness(doc);
 	const listeners = new Map<MeshEvent, Set<(d: any) => void>>();
 	const emit = (e: MeshEvent, d?: unknown) => {
@@ -384,32 +373,21 @@ export function createMesh(opts: MeshOptions): Mesh {
 	// per-sender AES-GCM keys, cached PER KEY MATERIAL (never by epoch number: two meshes, or two concurrent
 	// rotations, can share an epoch number). Reset by loadKeys (B3).
 	let senderKeys = new WeakMap<Uint8Array, Map<string, Promise<CryptoKey>>>();
-	// deviceId -> epochs of its valid revocations (B6: epochs, never clocks). DERIVED: recomputed from every known
-	// revocation record (`revStore`) in epoch order, so a record that is no longer valid drops out (round 3, B2)
-	const revokedIds = new Map<string, number[]>();
-	// every signed revocation record seen (shared doc, owner rotations, own), keyed by the hash of the whole record
-	const revStore = new Map<string, Revocation>();
-	/** R4-B1: executed revocations (tombstones): permanent, independent of the bounded pool of requests */
-	const executed = new Map<string, Array<[number, string]>>();
-	/** requests set aside because their issuer is over its cap (retried when the owner executes some) */
-	const overCap = new Set<string>();
-	// local cuts that are not backed by a record valid under the built-in ladder (custom `canRotate` hook)
-	const localCuts = new Map<string, number[]>();
 	const store: MeshStore =
 		opts.store ??
 		vault.store ??
 		(opts.persist === "idb" && typeof indexedDB !== "undefined" ? idbStore(`swal-mesh-local/${appId}/${topicName}`) : memoryStore());
 	let root: TrustRoot | null = null;
-	let admCache: Record<string, Admission> = {}; // verified admissions: survive tampering with the shared doc
-	// `${deviceId}|${identityPub}` -> verified key-agreement keys (ECDH P-256 + ML-KEM-768, base64url)
-	let ecdhOk: Record<string, { pub: string; kem: string }> = {};
-	let trusted = new Map<string, Device>(); // admitted devices other than this one
-	let admittedAt = new Map<string, number>(); // epoch of each trusted device's VERIFIED admission
-	let selfAdm: Admission | null = null;
+	/** round 5: the security state (signed documents, web/trust membership); null until a root is pinned */
+	let sec: SecurityState | null = null;
+	const selfPub = b64uEncode(vault.devicePublicKey);
+	const signer = vaultSigner(vault, selfPub);
+	let trusted = new Map<string, Device>(); // members other than this one (and the owner), from the security state
 	const legacy = new Map<string, Legacy>(); // retired data rid -> its epoch material
 	let curRot: Rot | null = null; // rotation that produced the current key (null: epoch 0 / unknown)
+	let curRotId: string | null = null; // its id, kept even before the document itself has arrived (pairing grant)
 	const cands = new Map<string, { rec: Rot; key: Uint8Array }>(); // verified rotations not adopted (yet)
-	const revRecs = new Map<string, Revocation[]>(); // verified signed revocations per target (justify re-rotations)
+	const unwrapFailed = new Set<string>(); // rotations whose wrap for us did not open (reported once)
 	let rotChain: Promise<unknown> = Promise.resolve();
 	/** Every key change (own rotation, adoption, conflict resolution) runs one at a time. */
 	function serialRot<T>(f: () => Promise<T>): Promise<T> {
@@ -444,61 +422,31 @@ export function createMesh(opts: MeshOptions): Mesh {
 	};
 	const err = (e: unknown) => emit("error", e);
 
-	// ---- devices: only ADMITTED ones (H1). The 'meta' map is writable by every member, so a device entry is
-	// trusted only through a signed admission chain up to the locally pinned root (or the authorizeDevice hook).
-	const selfRole = (): Role | null => (root?.deviceId === vault.deviceId ? "owner" : (selfAdm?.role ?? null));
+	// ---- devices: members by signed web/trust grants (round 5). Nothing in the shared doc counts. ----
+	const selfRole = (): Role | null => (root?.deviceId === vault.deviceId ? "owner" : (sec?.roleOf(vault.deviceId) ?? null));
 	const selfDevice = (): Device => {
-		const d = meta.get(DEV + vault.deviceId) as Device | undefined;
+		const g = sec?.memberGrant(vault.deviceId);
 		return {
 			deviceId: vault.deviceId,
-			pub: b64uEncode(vault.devicePublicKey),
-			name: d?.name ?? opts.deviceName ?? "device",
-			addedAt: d?.addedAt ?? 0,
+			pub: selfPub,
+			name: g?.name ?? opts.deviceName ?? "device",
+			addedAt: g?.issuedAt ?? 0,
 			...(selfRole() ? { role: selfRole()! } : {}),
-			...(selfAdm ? { admittedBy: selfAdm.by } : {}),
+			...(g ? { admittedBy: g.issuer } : {}),
 		};
 	};
+	/** A device that had a grant and has none left that makes it a member (revoked, or cut by the owner). */
+	const isRevoked = (id: string) => sec?.isOut(id) ?? false;
 	// a device revoked a moment ago is never listed, even before the trust state is recomputed
 	const devices = (): Device[] =>
 		[selfDevice(), ...[...trusted.values()].filter((d) => !isRevoked(d.deviceId))].sort((a, b) => a.addedAt - b.addedAt);
 	const roleOf = (id: string): Role | null =>
 		id === vault.deviceId ? selfRole() : isRevoked(id) ? null : (trusted.get(id)?.role ?? null);
-	/** H2: rotation/revocation only from an authorized issuer. A target that is not admitted counts as a member. */
-	const canRotate = async (issuer: string, target: string): Promise<boolean> => {
-		if (opts.canRotate) return Boolean(await opts.canRotate(issuer, target));
-		const ir = roleOf(issuer);
-		const tr = target === root?.deviceId ? "owner" : (roleOf(target) ?? "member");
-		return ir !== null && canRevokeRole(ir, tr);
-	};
-	// signature checks of trust records (admissions, revocations) are memoized: they are re-evaluated often
-	const sigMemo = new Lru<string, Promise<boolean>>(8192);
-	// ML-DSA-65 verification (AGENTS.md §2) is ~2 ms: memoize it for the chain checks, which repeat
-	const memoVerify = (pub: Uint8Array, data: Uint8Array, sig: Uint8Array): Promise<boolean> => {
-		const k = `${b64uEncode(pub)}|${b64uEncode(sig)}|${b64uEncode(data)}`;
-		let p = sigMemo.get(k);
-		if (!p) {
-			p = Promise.resolve(identityVerify(pub, data, sig));
-			sigMemo.set(k, p);
-		}
-		return p;
-	};
-	const chainCtx = (r: TrustRoot): ChainContext => ({
-		verify: memoVerify,
-		root: r,
-		epoch,
-		candidates: (id: string) => {
-			const out: Admission[] = [];
-			const m = meta.get(ADM_PREFIX + id) as Admission | undefined;
-			if (m) out.push(m);
-			if (admCache[id] && admCache[id].sig !== m?.sig) out.push(admCache[id]);
-			return out;
-		},
-		revokedAt: (id: string) => revokedIds.get(id),
-	});
+
 	let trustChain: Promise<void> = Promise.resolve();
 	/**
-	 * R4-S2: one trust pass at most waits behind the running one. Every meta transaction asks for a pass; those that
-	 * arrive while one is queued share it (it starts after them, so it sees their writes).
+	 * R4-S2: one trust pass at most waits behind the running one. Every change of the security state asks for a pass;
+	 * those that arrive while one is queued share it (it starts after them, so it sees their documents).
 	 */
 	let trustQueued: Promise<void> | null = null;
 	const refreshTrust = (): Promise<void> => {
@@ -511,216 +459,61 @@ export function createMesh(opts: MeshOptions): Mesh {
 		trustChain = trustQueued;
 		return trustQueued;
 	};
-	const persistRevoked = async () => {
-		await store.set(REVRECORDS_KEY, [...revStore.values()]);
-		await store.set(EXECUTED_KEY, Object.fromEntries(executed));
-		await store.set(LOCALCUTS_KEY, Object.fromEntries(localCuts));
-	};
-	const recHash = async (r: Revocation) =>
-		b64uEncode(new Uint8Array(await crypto.subtle.digest("SHA-256", bs(utf8(JSON.stringify([r.v, r.mid, r.target, r.by, r.epoch, r.sig]))))));
-	/** Records that can never count (malformed for this mesh, or a bad signature by a known issuer), by RECORD hash (B1). */
-	const badRevs = new Lru<string, true>(4096);
-	/** R4-S2: `ecdh/` entries that failed verification, by the hash of the whole entry */
-	const badKex = new Lru<string, true>(1024);
-	/**
-	 * Keep a signed revocation record if its issuer is the root or a verified admission and the signature verifies.
-	 * Whether it COUNTS is decided by recomputeRevoked (issuer valid as of the epoch before, role ladder).
-	 */
-	async function addRecord(x: unknown): Promise<boolean> {
-		if (!root || !isRevocation(x)) return false;
-		const r: Revocation = { v: x.v, mid: x.mid, target: x.target, by: x.by, epoch: x.epoch, sig: x.sig };
-		const h = await recHash(r);
-		if (revStore.has(h) || badRevs.has(h) || overCap.has(h)) return false;
-		const bad = () => {
-			badRevs.set(h, true);
-			return false;
-		};
-		if (r.mid !== root.mid || r.target === root.deviceId || r.by === r.target || !isDeviceId(r.target)) return bad();
-		const pub = r.by === root.deviceId ? root.pub : admCache[r.by]?.pub;
-		if (!pub) return false; // issuer not known (yet): not cached, the record comes back with the doc
-		const { sig, ...body } = r;
-		let ok = false;
-		try {
-			ok = await memoVerify(b64uDecode(pub), revocationBytes(body), b64uDecode(sig));
-		} catch {}
-		if (!ok) return bad();
-		revStore.set(h, r);
-		if (r.by === root.deviceId) settleRevocation(r.target, r.epoch, h); // the owner's own decision: final
-		if (!boundRecords(r.by, h)) return false;
-		// note V2: republish what we verified, so devices that never saw where it came from learn it too
-		if (!meta.has(revKey(r))) meta.set(revKey(r), r);
-		return true;
-	}
-	const isSettled = (r: Revocation) => (executed.get(r.target) ?? []).some(([e]) => e === r.epoch);
-	/**
-	 * R4-B1: bound the pool. An issuer keeps at most MAX_PENDING_PER_ISSUER unexecuted requests (its newest beyond that
-	 * are set aside); executed records beyond MAX_SETTLED_RECORDS leave the pool (their tombstone stays). Never evicts
-	 * an unexecuted request of another issuer. Returns whether `h` is still in the pool.
-	 */
-	function boundRecords(issuer: string, h: string): boolean {
-		const mine = [...revStore.entries()].filter(([, x]) => x.by === issuer && !isSettled(x));
-		while (issuer !== root?.deviceId && mine.length > MAX_PENDING_PER_ISSUER) {
-			let k = 0; // the newest: highest epoch, latest arrival on ties
-			for (let i = 1; i < mine.length; i++) if ((mine[i] as [string, Revocation])[1].epoch >= (mine[k] as [string, Revocation])[1].epoch) k = i;
-			const [drop] = mine.splice(k, 1)[0] as [string, Revocation];
-			revStore.delete(drop);
-			overCap.add(drop);
-		}
-		const settled = [...revStore.entries()].filter(([, x]) => isSettled(x));
-		if (settled.length > MAX_SETTLED_RECORDS) {
-			settled.sort((x, y) => x[1].epoch - y[1].epoch);
-			for (const [k] of settled.slice(0, settled.length - MAX_SETTLED_RECORDS)) revStore.delete(k);
-		}
-		return revStore.has(h);
-	}
-	/**
-	 * R4-B1: record an executed revocation for good (compact: epoch + record hash), unpin the device's key-agreement keys
-	 * (nothing is ever wrapped for it again, whatever the pool of requests holds), and let requests set aside retry.
-	 */
-	function settleRevocation(target: string, ep: number, h: string): boolean {
-		const l = executed.get(target) ?? [];
-		if (l.some(([e]) => e === ep)) return false;
-		executed.set(target, [...l, [ep, h] as [number, string]].sort((x, y) => x[0] - y[0]).slice(-64));
-		const pins = Object.keys(ecdhOk).filter((k) => k.startsWith(`${target}|`));
-		if (pins.length) {
-			ecdhOk = Object.fromEntries(Object.entries(ecdhOk).filter(([k]) => !pins.includes(k)));
-			void store.set(KEX_KEY, ecdhOk);
-		}
-		overCap.clear();
-		return true;
-	}
-	/**
-	 * B2: the revoked set is a pure function of the known records. Records are evaluated in epoch order: one of epoch R
-	 * counts if its issuer was valid as of R - 1 given the records of earlier epochs (and the ladder allowed it). So a
-	 * revocation signed by an admin that was itself revoked before, learned only later, drops out again.
-	 */
-	async function recomputeRevoked(): Promise<boolean> {
-		if (!root) return false;
-		const acc = new Map<string, number[]>();
-		const add = (id: string, ep: number) => {
-			const l = acc.get(id) ?? [];
-			if (!l.includes(ep)) acc.set(id, [...l, ep].sort((x, y) => x - y).slice(-64));
-		};
-		for (const [id, eps] of localCuts) for (const e of eps) add(id, e);
-		for (const [id, eps] of executed) for (const [e] of eps) add(id, e);
-		const ctx: ChainContext = { ...chainCtx(root), revokedAt: (id) => acc.get(id) };
-		const recs = [...revStore.values()].sort((x, y) => x.epoch - y.epoch);
-		const nextRecs = new Map<string, Revocation[]>();
-		for (let i = 0; i < recs.length; ) {
-			const ep = (recs[i] as Revocation).epoch;
-			const group: Revocation[] = [];
-			while (i < recs.length && (recs[i] as Revocation).epoch === ep) group.push(recs[i++] as Revocation);
-			const memo = new Map<string, Promise<Admission | null>>();
-			const ok: Revocation[] = [];
-			for (const r of group) if (await verifyRevocation(ctx, r, memo)) ok.push(r);
-			for (const r of ok) {
-				add(r.target, r.epoch);
-				nextRecs.set(r.target, [...(nextRecs.get(r.target) ?? []), r].slice(-4));
-			}
-		}
-		revRecs.clear();
-		for (const [k, v] of nextRecs) revRecs.set(k, v);
-		const same =
-			acc.size === revokedIds.size && [...acc].every(([k, v]) => JSON.stringify(v) === JSON.stringify(revokedIds.get(k)));
-		if (same) return false;
-		revokedIds.clear();
-		for (const [k, v] of acc) revokedIds.set(k, v);
-		return true;
-	}
-	/** After the revoked set changed: cut links, persist, and (owner) re-key. */
-	async function applyRevoked() {
-		await persistRevoked();
-		for (const l of [...links]) if (l.deviceId && isRevoked(l.deviceId)) closeRec(l);
-		void serialRot(ownerRekey).catch(err);
-	}
-	/** A device is cut off if revoked and not re-admitted afterwards (an admission issued at or after the revocation epoch). */
-	const isRevoked = (id: string) => {
-		const revs = revokedIds.get(id);
-		if (!revs?.length) return false;
-		return !(trusted.has(id) && (admittedAt.get(id) ?? -1) >= revs[revs.length - 1]);
-	};
 	async function computeTrust() {
-		// 1) signed revocation records replicated in the doc; the revoked set is recomputed from all known records
-		if (root) {
-			for (const k of meta.keys()) {
-				if (!k.startsWith(REV_PREFIX)) continue;
-				const r = meta.get(k) as Revocation;
-				if (isRevocation(r) && k === revKey(r)) await addRecord(r);
-			}
-			if (await recomputeRevoked()) await applyRevoked();
-		}
-		const ids = new Set<string>(Object.keys(admCache));
-		for (const k of meta.keys()) {
-			if (k.startsWith(ADM_PREFIX)) ids.add(k.slice(ADM_PREFIX.length));
-			else if (opts.authorizeDevice && k.startsWith(DEV)) ids.add(k.slice(DEV.length));
-		}
-		if (root) ids.add(root.deviceId);
-		ids.delete(vault.deviceId);
-		const memo = new Map<string, Promise<Admission | null>>();
-		const ctx = root ? chainCtx(root) : null;
 		const next = new Map<string, Device>();
-		const nextAt = new Map<string, number>();
-		const nextCache: Record<string, Admission> = {};
-		for (const id of ids) {
-			const adm = ctx ? await verifyChain(ctx, id, memo) : null;
-			if (adm?.sig) nextCache[id] = adm;
-			const dev = meta.get(DEV + id) as Device | undefined;
-			const pub = adm?.pub ?? (opts.authorizeDevice && typeof dev?.pub === "string" ? dev.pub : undefined);
-			if (!pub || !(await idMatchesPub(id, pub))) continue;
-			if (opts.authorizeDevice ? !(await opts.authorizeDevice(id, b64uDecode(pub))) : !adm) continue;
-			if (adm) nextAt.set(id, adm.epoch);
-			next.set(id, {
-				deviceId: id,
-				pub,
-				name: adm?.name || dev?.name || id,
-				addedAt: adm?.at || dev?.addedAt || 0,
-				...(adm ? { role: adm.role, admittedBy: adm.by } : {}),
-			});
+		if (sec && root) {
+			if (root.deviceId !== vault.deviceId)
+				next.set(root.deviceId, { deviceId: root.deviceId, pub: root.pub, name: ownerName ?? "owner", addedAt: 0, role: "owner" });
+			for (const m of sec.members()) {
+				if (m.deviceId === vault.deviceId) continue;
+				if (opts.authorizeDevice && !(await opts.authorizeDevice(m.deviceId, b64uDecode(m.pub)))) continue;
+				next.set(m.deviceId, {
+					deviceId: m.deviceId,
+					pub: m.pub,
+					name: m.grant.name || m.deviceId,
+					addedAt: m.grant.issuedAt,
+					role: m.role,
+					admittedBy: m.grant.issuer,
+				});
+			}
 		}
-		selfAdm = ctx && root?.deviceId !== vault.deviceId ? await verifyChain(ctx, vault.deviceId, memo) : null;
-		if (selfAdm?.sig) nextCache[vault.deviceId] = selfAdm;
-		// a revoked device keeps its (now void) admission: revocations it signed before are verified "as of" then (B4/B6)
-		for (const [id, a] of Object.entries(admCache)) if (!nextCache[id] && revokedIds.has(id)) nextCache[id] = a;
 		trusted = next;
-		admittedAt = nextAt;
-		if (JSON.stringify(nextCache) !== JSON.stringify(admCache)) {
-			admCache = nextCache;
-			await store.set("adm", admCache);
-		}
-		// verify (and remember) each member's ECDH key now, so a later overwrite in meta cannot replace it
-		for (const id of next.keys()) await peerEcdhPub(id);
+		for (const l of [...links]) if (l.deviceId && isRevoked(l.deviceId)) closeRec(l);
 		emit("devices", devices());
 		replayHeld();
+		if (sec && running) {
+			void serialRot(considerRotations).catch(err);
+		}
 	}
-	meta.observe(() => void refreshTrust());
 
 	// ---- persistence ----
 	let persistence: { destroy(): Promise<void> | void } | null = null;
+	let ownerName: string | null = null;
+	/** Open (or switch to) the security state of the pinned root, and follow its changes. */
+	let secUnsub: (() => void) | null = null;
+	async function openSecurity(r: TrustRoot) {
+		secUnsub?.();
+		sec = await SecurityState.open({ root: r, store, schema: opts.trustSchema, now });
+		secUnsub = sec.onChange(() => void refreshTrust());
+	}
 	const ready = (async () => {
 		// B1: a deviceId IS the fingerprint of the identity key; every peer enforces it, so must we
 		if (vault.devicePublicKey.length !== ML_DSA_PUBLIC_KEY_BYTES)
 			throw new Error("vault.devicePublicKey must be an ML-DSA-65 public key (1952 bytes; ECDSA identities are no longer accepted)");
-		if (!(await idMatchesPub(vault.deviceId, b64uEncode(vault.devicePublicKey)))) {
+		if (!(await idMatchesPub(vault.deviceId, selfPub))) {
 			throw new Error("vault.deviceId must be deviceIdOf(vault.devicePublicKey)");
 		}
 		const r = (await store.get("root")) as TrustRoot | undefined;
 		if (r && typeof r.deviceId === "string" && typeof r.pub === "string" && typeof r.mid === "string") root = r;
-		admCache = ((await store.get("adm")) as Record<string, Admission> | undefined) ?? {};
-		const recs = (await store.get(REVRECORDS_KEY)) as unknown[] | undefined;
-		for (const r of Array.isArray(recs) ? recs : []) if (isRevocation(r)) revStore.set(await recHash(r), r);
-		const ex = (await store.get(EXECUTED_KEY)) as Record<string, unknown> | undefined;
-		for (const [id, eps] of Object.entries(ex ?? {})) {
-			if (!isDeviceId(id) || !Array.isArray(eps)) continue;
-			const ok = eps.filter((x): x is [number, string] => Array.isArray(x) && isEpoch(x[0]) && typeof x[1] === "string");
-			if (ok.length) executed.set(id, ok.slice(-64));
+		const on = await store.get("ownerName");
+		if (typeof on === "string") ownerName = on;
+		const cr = await store.get("rotId");
+		if (typeof cr === "string") curRotId = cr;
+		if (root) {
+			await openSecurity(root);
+			const c = curRotId ? sec!.rotation(curRotId) : undefined;
+			if (c) curRot = c;
 		}
-		const lc = (await store.get(LOCALCUTS_KEY)) as Record<string, unknown> | undefined;
-		for (const [id, eps] of Object.entries(lc ?? {})) {
-			if (Array.isArray(eps)) localCuts.set(id, eps.filter((e) => isEpoch(e) && e >= 1) as number[]);
-		}
-		const cr = (await store.get("rot")) as Rot | undefined;
-		if (isRotRecord(cr) && typeof cr.id === "string" && cr.id === (await rotationId(cr))) curRot = cr;
-		ecdhOk = ((await store.get(KEX_KEY)) as typeof ecdhOk | undefined) ?? {};
 		if (opts.persist === "idb" && typeof indexedDB !== "undefined") {
 			const { IndexeddbPersistence } = await import("y-indexeddb");
 			const p = new IndexeddbPersistence(`swal-mesh/${appId}/${topicName}`, doc);
@@ -730,15 +523,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		if (opts.persist === "idb" && typeof indexedDB === "undefined") {
 			throw new Error("persist:'idb' requested but IndexedDB is not available");
 		}
-		if (!meta.has(DEV + vault.deviceId)) {
-			meta.set(DEV + vault.deviceId, {
-				deviceId: vault.deviceId,
-				pub: b64uEncode(vault.devicePublicKey),
-				name: opts.deviceName ?? "device",
-				addedAt: now(),
-			} satisfies Device);
-		}
-		await publishEcdh();
+		if (sec) await publishKex();
 		await refreshTrust();
 		epoch = Math.max(localNum(await vault.getEpoch?.()), localNum(await store.get("epoch")), epoch); // known before start
 		// already paired: resume (unless the app is about to move this device to another mesh, see `resume`)
@@ -746,7 +531,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 	})();
 	ready.catch(err);
 
-	// ---- pairwise ECDH identity (rotation wraps) ----
+	// ---- key-agreement identity (rotation wraps) ----
 	async function ecdhIdentity(): Promise<EcdhIdentity> {
 		return (ecdhId ??= (await vault.getEcdhIdentity?.()) ?? (await generateEcdhIdentity()));
 	}
@@ -759,56 +544,19 @@ export function createMesh(opts: MeshOptions): Mesh {
 		}
 		return kemId;
 	}
-	async function publishEcdh() {
-		const id = await ecdhIdentity();
-		const pub = b64uEncode(id.publicKey);
+	/** This device's key-agreement record (a signed document; a new one only when the keys changed). */
+	async function publishKex() {
+		if (!sec) return;
+		const ecdh = b64uEncode((await ecdhIdentity()).publicKey);
 		const kem = b64uEncode((await kemIdentity()).publicKey);
-		const cur = meta.get(ECDH_PREFIX + vault.deviceId) as { pub: string; kem?: string } | undefined;
-		if (cur?.pub === pub && cur.kem === kem) return;
-		const sig = b64uEncode(await vault.sign(ecdhSignedBytes(vault.deviceId, pub, kem)));
-		meta.set(ECDH_PREFIX + vault.deviceId, { pub, kem, sig });
+		const cur = sec.keyAgreement(vault.deviceId);
+		if (cur?.ecdh === ecdh && cur.kem === kem) return;
+		await addLocal([await sec.kexRecord(signer, ecdh, kem)]);
 	}
-	/**
-	 * ECDH public key of an ADMITTED device, verified against the identity key from its admission (never against
-	 * the self-declared dev/<id> entry). A key verified once is remembered, so tampering with meta cannot swap it.
-	 */
-	async function peerEcdhPub(deviceId: string): Promise<{ pub: Uint8Array; kem: Uint8Array } | null> {
-		const idPub = trusted.get(deviceId)?.pub;
-		if (!idPub) return null;
-		const slot = `${deviceId}|${idPub}`;
-		const e = meta.get(ECDH_PREFIX + deviceId) as { pub: string; kem: string; sig: string } | undefined;
-		const cur = ecdhOk[slot];
-		if (
-			e &&
-			typeof e.pub === "string" &&
-			typeof e.kem === "string" &&
-			typeof e.sig === "string" &&
-			(e.pub !== cur?.pub || e.kem !== cur?.kem)
-		) {
-			// R4-S2: an entry that already failed the check is not checked again (by the hash of all of it)
-			const tag = await sha256Tag(`${slot}|${e.pub}|${e.kem}|${e.sig}`);
-			let ok = false;
-			if (!badKex.has(tag)) {
-				try {
-					const kem = b64uDecode(e.kem);
-					ok =
-						kem.length === ML_KEM_PUBLIC_KEY_BYTES &&
-						(await isEcdhPublicKey(b64uDecode(e.pub))) &&
-						identityVerify(b64uDecode(idPub), ecdhSignedBytes(deviceId, e.pub, e.kem), b64uDecode(e.sig));
-					// FIPS 203 input check (modulus) once, here, like the P-256 point check above: a member must not be able
-					// to break the owner's re-keying by vouching for a malformed key (wrapping would throw on it)
-					if (ok) kemEncapsulate(kem);
-				} catch {
-					ok = false;
-				}
-				if (ok) {
-					ecdhOk = { ...ecdhOk, [slot]: { pub: e.pub, kem: e.kem } };
-					await store.set(KEX_KEY, ecdhOk);
-				} else badKex.set(tag, true);
-			}
-		}
-		const k = ecdhOk[slot];
-		return k ? { pub: b64uDecode(k.pub), kem: b64uDecode(k.kem) } : null;
+	/** Key-agreement keys of a device, from its signed record (members only use those of members). */
+	function kexOf(deviceId: string): { pub: Uint8Array; kem: Uint8Array } | null {
+		const k = sec?.keyAgreement(deviceId);
+		return k ? { pub: b64uDecode(k.ecdh), kem: b64uDecode(k.kem) } : null;
 	}
 
 	// ---- keys ----
@@ -934,16 +682,17 @@ export function createMesh(opts: MeshOptions): Mesh {
 	}
 	/** Recent retired keys (newest first): rotation frames are also sealed under them, and receivers try them. */
 	const retiredKeys = (n = RETIRED_TRY) => [...legacy.values()].sort((x, y) => y.epoch - x.epoch).slice(0, n);
-	/** A rotation frame must reach peers still on the previous key or on a concurrent branch: seal it under each. */
-	async function sendRotate(rec: LinkRec, msg: RotateMsg) {
-		const body = utf8(JSON.stringify(msg));
-		if (rec.legacy) return sendFrameWith(rec, K_ROTATE, body, rec.legacy.material, rec.legacy.rid, true);
-		await sendFrameWith(rec, K_ROTATE, body, docMat, dataRid, true);
+	/**
+	 * A rotation must reach peers still on the previous key or on a concurrent branch: its security-document frame is
+	 * sealed under the current key, the recent retired ones and the key the peer is known to hold.
+	 */
+	async function sendTrustEverywhere(rec: LinkRec, body: Uint8Array) {
+		if (rec.legacy) return sendFrameWith(rec, K_TRUST, body, rec.legacy.material, rec.legacy.rid, true);
+		await sendFrameWith(rec, K_TRUST, body, docMat, dataRid, true);
 		const recent = retiredKeys();
-		for (const r of recent) await sendFrameWith(rec, K_ROTATE, body, r.material, r.rid, true);
-		// a key this peer is known to hold, if it is neither our current one nor among the recent ones above
+		for (const r of recent) await sendFrameWith(rec, K_TRUST, body, r.material, r.rid, true);
 		const c = rec.common;
-		if (c && c.rid !== dataRid && !recent.some((r) => r.rid === c.rid)) await sendFrameWith(rec, K_ROTATE, body, c.material, c.rid, true);
+		if (c && c.rid !== dataRid && !recent.some((r) => r.rid === c.rid)) await sendFrameWith(rec, K_TRUST, body, c.material, c.rid, true);
 	}
 	async function sendFrameWith(
 		rec: LinkRec,
@@ -1097,7 +846,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 			const sig = plain.subarray(15, 15 + sigLen);
 			body = plain.subarray(15 + sigLen);
 			sess = b64uEncode(sessBytes);
-			if (revoked) return; // a revoked device is never listened to (its revocation requests travel as doc records)
+			if (revoked) return; // a revoked device is never listened to
 			const pub = trusted.get(sender)?.pub;
 			if (!pub) return;
 			// R4-S1: everything that can be decided without the (2 ms) signature check is decided first
@@ -1178,10 +927,11 @@ export function createMesh(opts: MeshOptions): Mesh {
 			if (sess !== rec.peerSess || !freshSeq(sender, sess, seq)) return; // replay / other link
 		} else if (revoked) return;
 		if (retired) {
-			if (kind === K_ROTATE) await serialRot(() => handleRotate(body));
+			// security documents travel under any key the peer may hold (a straggler, a peer on another branch)
+			if (kind === K_TRUST && via) await handleTrust(rec, body, sender, via);
 			// (d) an authenticated peer still talks under one of our retired keys: it missed a rotation. Offer it the
 			// stored rotations from that key's epoch (once per link and current rotation).
-			else if (via && rec.authed) offerRotations(rec, sender, via.epoch);
+			else if (via && rec.authed) offerRotations(rec, sender, via);
 			return;
 		}
 		if (!rec.deviceId) {
@@ -1190,9 +940,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 			setStatus();
 		}
 		if (lg) {
-			// retired room: the only thing we do is hand THIS peer its own pairwise wraps of later rotations
-			if (kind === K_SV) for (const m of await storedRotationsFor(sender, lg.epoch)) await sendRotate(rec, m);
-			else if (kind === K_ROTATE) await serialRot(() => handleRotate(body));
+			// retired room: only security documents (the peer catches up with the rotations and revocations it missed)
+			if (kind === K_TRUST) await handleTrust(rec, body, sender, lg);
 			return;
 		}
 		if (kind === K_SV) {
@@ -1203,8 +952,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 			Y.applyUpdate(doc, body, ORIGIN);
 		} else if (kind === K_AWARENESS) {
 			applyAwarenessUpdate(awareness, body, ORIGIN);
-		} else if (kind === K_ROTATE) {
-			await serialRot(() => handleRotate(body));
+		} else if (kind === K_TRUST) {
+			await handleTrust(rec, body, sender, { material: docMat as Uint8Array, rid: dataRid, epoch });
 		} else if (kind === K_CHANNEL) {
 			const n = body.length >= 2 ? (body[0] << 8) | body[1] : -1;
 			if (n < 0 || body.length < 2 + n) return reject("malformed channel frame", sender);
@@ -1256,176 +1005,169 @@ export function createMesh(opts: MeshOptions): Mesh {
 		};
 	}
 
-	// ---- rotation messages (B4: concurrent rotations converge deterministically) ----
-	function parseRotate(body: Uint8Array): RotateMsg | null {
-		try {
-			const m = JSON.parse(fromUtf8(body)) as RotateMsg;
-			if (!m || !isRotRecord(m.rot) || typeof m.to !== "string" || typeof m.wrap !== "string" || m.wrap.length > MAX_WRAP_CHARS)
-				return null;
-			const w = m.wraps;
-			const okWraps =
-				w === undefined ||
-				(typeof w === "object" &&
-					w !== null &&
-					!Array.isArray(w) &&
-					Object.entries(w).every(([k, v]) => m.rot.to.includes(k) && typeof v === "string" && v.length <= MAX_WRAP_CHARS));
-			return okWraps ? m : null;
-		} catch {
-			return null;
+	// ---- security documents: the trust channel (round 5) ----
+	// Every device holds the same append-only set of signed documents and exchanges it with every authenticated peer:
+	// `inv` (the keys it holds), `want` (keys it lacks), `docs`. A new document is announced to every link. Rotations
+	// are also pushed whole, under every key a peer may still hold.
+	type TrustKey = { material: Uint8Array | null; rid: string; epoch: number };
+	const linkKey = (l: LinkRec): TrustKey => l.legacy ?? { material: docMat, rid: dataRid, epoch };
+	const budgets = { serve: new Map<string, { t: number; n: number }>(), fail: new Map<string, { t: number; n: number }>() };
+	/** Per-peer budget over a sliding minute; false when `n` more would exceed `max`. */
+	function budget(m: Map<string, { t: number; n: number }>, peer: string, n: number, max: number): boolean {
+		const t = now();
+		let b = m.get(peer);
+		if (!b || t - b.t > 60_000) {
+			b = { t, n: 0 };
+			m.delete(peer);
+			m.set(peer, b);
+			if (m.size > 4096) m.delete(m.keys().next().value as string);
 		}
-	}
-	/** Its issuer is not the owner, or was revoked at an epoch <= the rotation's: the rotation is void. */
-	function rotIssuerRevoked(r: { from: string; epoch: number }): boolean {
-		return r.from !== root?.deviceId;
-	}
-	/** The owner's ML-DSA-65 signature over the rotation id (memoized: relays repeat the same record). */
-	const rotSigOk = new Lru<string, boolean>(1024);
-	function rotationSigned(r: RotRecord, id: string): boolean {
-		if (!root || r.from !== root.deviceId || typeof r.sig !== "string") return false;
-		const k = `${id}|${r.sig}`;
-		let ok = rotSigOk.get(k);
-		if (ok === undefined) {
-			try {
-				ok = identityVerify(b64uDecode(root.pub), rotationSigBytes(id), b64uDecode(r.sig));
-			} catch {
-				ok = false;
-			}
-			rotSigOk.set(k, ok);
-		}
-		return ok;
-	}
-	/**
-	 * R4-B2: the owner decides who a rotation cuts off. Only owner devices re-key and every rotation carries the owner's
-	 * ML-DSA-65 signature over its id (record + wraps, checked before this), so its cut list is authoritative: a receiver
-	 * never needs to have seen the revocation records behind it (an offline member may never get them: the retired room
-	 * does not sync the doc). Records a rotation carries (`revs`, at most REVS_CARRIED) are only learned. A custom
-	 * `canRotate` hook still vets every target.
-	 */
-	async function rotationAuthorized(r: RotRecord): Promise<boolean> {
-		if (r.from !== root?.deviceId || r.revoked.includes(root.deviceId)) return false;
-		if (opts.canRotate) {
-			for (const t of r.revoked) if (!(await opts.canRotate(r.from, t))) return false;
-		}
+		if (b.n + n > max) return false;
+		b.n += n;
 		return true;
 	}
-
-	async function handleRotate(body: Uint8Array) {
-		const m = parseRotate(body);
-		if (!m) return;
-		const rot = m.rot;
-		// round 3: only the owner (the mesh root) re-keys. Anything else is rejected before any of it is processed.
-		if (!root || rot.from !== root.deviceId) {
-			emit("rejected", { reason: "rotation not from the owner", from: rot.from, epoch: rot.epoch });
-			return;
+	function sendTrust(rec: LinkRec, msg: unknown, key: TrustKey) {
+		const body = utf8(JSON.stringify(msg));
+		if (rec.legacy) return sendFrameWith(rec, K_TRUST, body, rec.legacy.material, rec.legacy.rid, true);
+		return sendFrameWith(rec, K_TRUST, body, key.material, key.rid, true);
+	}
+	/** Documents in batches (count and bytes bounded). */
+	async function sendDocs(rec: LinkRec, docs: readonly unknown[], key: TrustKey) {
+		let batch: unknown[] = [];
+		let bytes = 0;
+		for (const d of docs) {
+			const n = JSON.stringify(d).length;
+			if (batch.length && (batch.length >= TRUST_DOCS_MAX || bytes + n > TRUST_BATCH_BYTES)) {
+				await sendTrust(rec, { t: "docs", docs: batch }, key);
+				batch = [];
+				bytes = 0;
+			}
+			batch.push(d);
+			bytes += n;
 		}
-		const id = await rotationId(rot);
-		if (!rotationSigned(rot, id)) {
-			emit("rejected", { reason: "rotation signature invalid", from: rot.from, epoch: rot.epoch });
-			return;
+		if (batch.length) await sendTrust(rec, { t: "docs", docs: batch }, key);
+	}
+	/** Tell every authenticated peer (but `except`) about new documents. */
+	function announce(keys: readonly string[], except?: LinkRec) {
+		if (!keys.length) return;
+		for (const l of [...links]) {
+			if (l === except || l.closing || l.rid === "pair" || !l.deviceId || isRevoked(l.deviceId)) continue;
+			if (signFrames && !l.authed) continue;
+			void sendTrust(l, { t: "inv", ids: keys }, linkKey(l)).catch(err);
 		}
-		let added = false;
-		for (const r of rot.revs.slice(0, REVS_CARRIED)) added = (await addRecord(r)) || added;
-		if (added && (await recomputeRevoked())) await applyRevoked();
-		const me = vault.deviceId;
-		// finding 5: a wrap map is used (relayed) only if it is exactly the set the owner committed to
-		const mapOk = m.wraps !== undefined && (await wrapsHash(m.wraps)) === rot.wh;
-		if (curRot?.id === id) {
-			if (mapOk && m.wraps) relayRotation(curRot, m.wraps); // a good copy after a corrupted one still goes on
-			return;
-		}
-		if (m.to !== me || rot.from === me || rot.revoked.includes(me) || !rot.to.includes(me)) return;
-		if (cands.has(id) || rot.epoch < epoch) return;
-		if (rot.epoch > epoch + MAX_EPOCH_SKIP) {
-			// SF1: nobody is pushed to an epoch near an integer edge (or stranded far ahead)
-			emit("rejected", { reason: "rotation epoch too far ahead", from: rot.from, epoch: rot.epoch });
-			return;
-		}
-		const fromPub = await peerEcdhPub(rot.from);
-		if (!fromPub) return;
-		const info = { from: rot.from, revoked: rot.revoked, epoch: rot.epoch };
-		let newKey: Uint8Array;
+	}
+	/** Add documents made or received here, and announce the new ones. */
+	async function addLocal(docs: readonly unknown[], except?: LinkRec) {
+		if (!sec) return [];
+		const outs = await sec.addMany(docs);
+		announce(
+			outs.filter((o) => o.status === "accepted" && o.id).map((o) => o.id as string),
+			except,
+		);
+		return outs;
+	}
+	async function handleTrust(rec: LinkRec, body: Uint8Array, sender: string, key: TrustKey) {
+		if (!sec) return;
+		let m: { t?: unknown; ids?: unknown; docs?: unknown };
 		try {
-			newKey = await unwrapMeshKey(
-				(await ecdhIdentity()).privateKey,
-				(await kemIdentity()).secretKey,
-				fromPub.pub,
-				await rotationPreId(rot),
-				rot.from,
-				me,
-				m.wrap,
-			);
+			m = JSON.parse(fromUtf8(body));
 		} catch {
-			emit("rejected", { reason: "rotation wrap does not authenticate", ...info });
-			return;
+			return reject("malformed trust message", sender);
 		}
-		if (!(await rotationAuthorized(rot))) {
-			emit("rejected", { reason: "rotation not authorized", ...info });
-			return;
-		}
-		cands.set(id, { rec: { ...rot, id }, key: newKey });
-		await converge();
-		if (curRot?.id === id) {
-			if (mapOk && m.wraps) relayRotation(curRot, m.wraps);
-			else void relayFromMeta(); // corrupted or missing map: relay once the owner's own wraps are in meta
+		if (!m || typeof m !== "object") return;
+		if (m.t === "inv" && Array.isArray(m.ids) && m.ids.length <= TRUST_INV_MAX) {
+			const want = sec.missing(m.ids).slice(0, TRUST_WANT_MAX);
+			if (want.length) await sendTrust(rec, { t: "want", ids: want }, key);
+		} else if (m.t === "want" && Array.isArray(m.ids) && m.ids.length <= TRUST_WANT_MAX) {
+			const ids = m.ids.filter((x): x is string => typeof x === "string");
+			if (!budget(budgets.serve, sender, ids.length, TRUST_SERVE_PER_MIN)) return reject("security documents asked too often", sender);
+			await sendDocs(rec, await sec.get(ids), key);
+		} else if (m.t === "docs" && Array.isArray(m.docs) && m.docs.length <= TRUST_DOCS_MAX) {
+			// a sender whose documents keep failing (bad signatures, junk) is cut off for a while: each costs a check
+			for (let i = 0; i < m.docs.length; i += 16) {
+				if (!budget(budgets.fail, sender, 0, TRUST_FAIL_PER_MIN)) return reject("too many bad security documents", sender);
+				const outs = await addLocal(m.docs.slice(i, i + 16), rec);
+				for (const o of outs) if (o.status === "rejected") reject(o.reason ?? "invalid security document", sender);
+				const bad = outs.filter((o) => o.status === "rejected").length;
+				if (bad && !budget(budgets.fail, sender, bad, TRUST_FAIL_PER_MIN)) return reject("too many bad security documents", sender);
+			}
 		}
 	}
-	/** Relay the current rotation with the wrap set stored in meta (written by the owner), if it matches `wh`. */
-	async function relayFromMeta() {
-		const cur = curRot;
-		if (!cur) return;
-		const wraps: Record<string, string> = {};
-		for (const t of cur.to) {
-			const w = meta.get(`${ROT_PREFIX}${cur.id}:${t}`);
-			if (typeof w !== "string") return;
-			wraps[t] = w;
-		}
-		if ((await wrapsHash(wraps)) === cur.wh && curRot?.id === cur.id) relayRotation(cur, wraps);
+	/** Rotation documents `peer` (still on a key of `fromEpoch`) can adopt, best last (at most MAX_EPOCH_SKIP ahead). */
+	function rotationsFor(peer: string, fromEpoch: number): Array<Omit<Rot, "id">> {
+		if (!sec) return [];
+		return sec
+			.rotations()
+			.filter((r) => r.to.includes(peer) && r.epoch > fromEpoch && r.epoch <= fromEpoch + MAX_EPOCH_SKIP && r.epoch <= epoch)
+			.map(({ id: _id, ...d }) => d);
 	}
-	meta.observe((ev) => {
-		const cur = curRot;
-		if (cur && [...ev.keysChanged].some((k) => k.startsWith(`${ROT_PREFIX}${cur.id}:`))) void relayFromMeta().catch(err);
-	});
 	const offered = new Set<string>();
-	function offerRotations(rec: LinkRec, peer: string, from: number) {
-		const k = `${curRot?.id ?? epoch}|${peer}|${from}`;
-		if (offered.has(k)) return;
+	/** (d) a peer still talks under one of our retired keys: hand it what it missed, under that key. */
+	function offerRotations(rec: LinkRec, peer: string, via: TrustKey) {
+		const k = `${curRot?.id ?? epoch}|${peer}|${via.epoch}`;
+		if (offered.has(k) || !sec) return;
 		if (offered.size >= 4096) offered.clear();
 		offered.add(k);
 		void (async () => {
-			for (const m of await storedRotationsFor(peer, from)) await sendRotate(rec, m);
+			await sendDocs(rec, rotationsFor(peer, via.epoch), via);
+			if (sec) await sendTrust(rec, { t: "inv", ids: sec.inventory() }, via);
 		})().catch(err);
 	}
-	/** Relayed (rotation, peer) pairs: each adopted rotation is passed on at most once per peer. */
-	const relayed = new Set<string>();
-	/** Hand an adopted rotation to connected recipients (the owner may have no link to them). */
-	function relayRotation(rot: Rot, wraps: Record<string, string>) {
-		for (const l of [...links]) {
-			const p = l.deviceId;
-			if (!p || l.closing || p === rot.from || p === vault.deviceId || !rot.to.includes(p) || !wraps[p]) continue;
-			const k = `${rot.id}|${p}`;
-			if (relayed.has(k)) continue;
-			if (relayed.size >= 4096) relayed.clear();
-			relayed.add(k);
-			const { id: _id, ...rec } = rot;
-			sendRotate(l, { rot: rec, to: p, wrap: wraps[p], wraps }).catch(err);
-		}
-	}
 
+	// ---- rotations (owner only issues them; every device adopts the best one it can open) ----
 	/**
-	 * Adopt the best valid rotation we know (highest epoch, then lowest id). Only owner-identity devices issue them, so
-	 * concurrency only exists between devices of the owner; every device applies the same rule to the same set.
+	 * Adopt the best rotation we are a recipient of (highest epoch, then lowest id), one window of MAX_EPOCH_SKIP at a
+	 * time. Only owner-identity devices issue rotations, so concurrency only exists between devices of the owner;
+	 * every device applies the same rule to the same set. Rotations are documents: whatever order they arrive in, and
+	 * whoever relays them, every device ends on the same one.
 	 */
-	async function converge() {
-		const cur = { epoch, id: curRot ? curRot.id : "\uffff" }; // genesis/unknown loses to any rotation of its epoch
-		let best: { rec: Rot; key: Uint8Array } | null = null;
-		for (const [id, c] of cands) {
-			if (c.rec.epoch < epoch) {
-				cands.delete(id);
-				continue;
+	async function considerRotations() {
+		if (!sec || !root || !running) return;
+		const me = vault.deviceId;
+		for (let guard = 0; guard < 64; guard++) {
+			const ownerKex = kexOf(root.deviceId);
+			for (const r of sec.rotations()) {
+				if (!curRot && curRotId === r.id && r.epoch === epoch) curRot = r; // the rotation our pairing key came from
+				if (r.epoch < epoch || r.id === curRot?.id || cands.has(r.id) || unwrapFailed.has(r.id)) continue;
+				if (r.epoch > epoch + MAX_EPOCH_SKIP || !r.to.includes(me) || !r.wraps[me]) continue;
+				if (opts.canRotate) {
+					let ok = true;
+					for (const t of r.revoked) if (!(await opts.canRotate(r.from, t))) ok = false;
+					if (!ok) {
+						unwrapFailed.add(r.id);
+						emit("rejected", { reason: "rotation not authorized", from: r.from, epoch: r.epoch });
+						continue;
+					}
+				}
+				if (!ownerKex) continue; // the owner's key record has not arrived yet: tried again on the next change
+				try {
+					const key = await unwrapMeshKey(
+						(await ecdhIdentity()).privateKey,
+						(await kemIdentity()).secretKey,
+						ownerKex.pub,
+						await rotationPreId(r),
+						r.from,
+						me,
+						r.wraps[me] as string,
+					);
+					cands.set(r.id, { rec: r, key });
+				} catch {
+					unwrapFailed.add(r.id);
+					emit("rejected", { reason: "rotation wrap does not authenticate", from: r.from, epoch: r.epoch });
+				}
 			}
-			if (betterRot(c.rec, best ? best.rec : cur)) best = c;
+			const cur = { epoch, id: curRot ? curRot.id : (curRotId ?? "\uffff") }; // genesis/unknown loses to any rotation of its epoch
+			let best: { rec: Rot; key: Uint8Array } | null = null;
+			for (const [id, c] of cands) {
+				if (c.rec.epoch < epoch) {
+					cands.delete(id);
+					continue;
+				}
+				if (betterRot(c.rec, best ? best.rec : cur)) best = c;
+			}
+			if (!best) break;
+			await adopt(best);
 		}
-		if (best) await adopt(best);
 		while (cands.size > MAX_CANDIDATES) cands.delete(cands.keys().next().value as string);
 		await ownerRekey();
 	}
@@ -1435,85 +1177,70 @@ export function createMesh(opts: MeshOptions): Mesh {
 		if (curRot && meshKey && curRot.epoch === c.rec.epoch && curRot.id !== c.rec.id) cands.set(curRot.id, { rec: curRot, key: meshKey });
 		const { oldEpoch, oldKey, oldRid } = await switchEpoch(c.key, c.rec.epoch);
 		curRot = c.rec;
-		await store.set("rot", curRot);
+		curRotId = c.rec.id;
+		await store.set("rotId", curRotId);
 		cands.delete(c.rec.id);
 		for (const [id, x] of cands) if (x.rec.epoch < epoch) cands.delete(id);
-		// R4-B1: what an owner rotation cut off is executed for good (tombstone; the epoch of the record that justified
-		// it when known, else the rotation's)
-		let settledAny = false;
-		for (const t of c.rec.revoked) {
-			const rec = (revRecs.get(t) ?? []).filter((r) => r.epoch <= c.rec.epoch).pop();
-			settledAny = settleRevocation(t, rec ? rec.epoch : c.rec.epoch, rec ? await recHash(rec) : "") || settledAny;
-		}
-		if (settledAny) {
-			await recomputeRevoked();
-			await persistRevoked();
-		}
-		if (opts.canRotate) {
-			// hook mode: the rotation itself is the record of who is cut off
-			for (const t of c.rec.revoked) {
-				const l = localCuts.get(t) ?? [];
-				if (!l.includes(c.rec.epoch)) localCuts.set(t, [...l, c.rec.epoch]);
-			}
-			if (await recomputeRevoked()) await persistRevoked();
-		}
 		for (const l of [...links]) if (l.deviceId && isRevoked(l.deviceId)) closeRec(l);
 		await rememberRetired(oldEpoch, oldKey, oldRid);
 		void refreshTrust();
 		for (const t of c.rec.revoked) emit("revoked", { deviceId: t, epoch });
 	}
 
-	/** Devices that may hold the current key although they are validly revoked (the owner must re-key without them). */
-	function exposedRevoked(): string[] {
-		const me = vault.deviceId;
-		// before any rotation, only a device that was ever admitted can hold the key (made-up ids in requests cannot)
-		const hadKey = (t: string) => trusted.has(t) || admCache[t] !== undefined || meta.has(ADM_PREFIX + t);
-		return [...revokedIds.keys()].filter((t) => t !== me && isRevoked(t) && (curRot ? curRot.to.includes(t) : hadKey(t)));
-	}
-	/** A revocation is known here whose device the current key has not been taken away from yet (UI: pending owner). */
-	const rekeyPending = () => exposedRevoked().length > 0;
 	/**
-	 * Owner devices only: re-key at epoch + 1 without every verified revoked device that may hold the current key (a
-	 * revocation by an admin is a request the owner executes here), and (b) to include members admitted before the
-	 * current rotation that it left out (e.g. their ECDH key was not known yet).
+	 * A known revocation has not been executed by an owner rotation yet: the devices it cut off may hold the current
+	 * key, whenever they were paired (R5-B2). The UI shows it as "pendiente de que el dueño se conecte".
+	 */
+	const rekeyPending = () => (sec ? sec.unexecuted().devices.length > 0 : false);
+	/**
+	 * Members a rotation left out although they were admitted before it (e.g. their key record was not known yet), or
+	 * members whose grant handed over no key (re-anchored): the owner re-keys to include them.
+	 */
+	function missed(): string[] {
+		if (!sec || !curRot) return [];
+		const cr = curRot;
+		const out: string[] = [];
+		for (const d of trusted.values()) {
+			if (d.deviceId === root?.deviceId || cr.to.includes(d.deviceId)) continue;
+			const g = sec.memberGrant(d.deviceId);
+			if (!g || (g.epoch !== undefined && g.epoch >= cr.epoch)) continue;
+			if (kexOf(d.deviceId)) out.push(d.deviceId);
+		}
+		return out;
+	}
+	/**
+	 * Owner devices only: re-key at epoch + 1 without every device a revocation cut off that no owner rotation has
+	 * executed yet (an admin's revocation is executed here), and to include members a previous rotation missed. Runs
+	 * after every change of the security state (R5-S3: a re-key refused once is retried as soon as it can work).
 	 */
 	async function ownerRekey() {
-		if (!running || !root || root.deviceId !== vault.deviceId) return;
-		const exposed = exposedRevoked();
-		const missed = curRot
-			? [...trusted.keys()].filter(
-					(t) => !isRevoked(t) && !curRot?.to.includes(t) && (admittedAt.get(t) ?? Number.POSITIVE_INFINITY) < (curRot?.epoch ?? 0),
-				)
-			: [];
-		const missedWithKey: string[] = [];
-		for (const t of missed) if (await peerEcdhPub(t)) missedWithKey.push(t);
-		if (exposed.length === 0 && missedWithKey.length === 0) return;
-		// R4-S3: no rotation lists more devices than a receiver accepts: cut them in several rotations (each one already
-		// leaves out every revoked device; the later ones list the rest so receivers record them as executed)
-		const sorted = [...exposed].sort();
-		for (let i = 0; i === 0 || i < sorted.length; i += MAX_ROT_MEMBERS) {
-			if (!running || destroyed) return;
-			await rotate(sorted.slice(i, i + MAX_ROT_MEMBERS));
+		if (!running || !sec || !root || root.deviceId !== vault.deviceId || destroyed) return;
+		const u = sec.unexecuted();
+		if (u.devices.length === 0 && missed().length === 0) return;
+		// R4-S3: no rotation lists more than a receiver accepts: cut in several rotations if needed
+		const chunks: string[][] = [];
+		let cur: string[] = [];
+		let refs = 0;
+		for (const dev of u.devices) {
+			const n = sec.trust.grantsOf(dev).length;
+			if (cur.length && (cur.length >= MAX_ROT_MEMBERS || refs + n > MAX_ROT_REFS)) {
+				chunks.push(cur);
+				cur = [];
+				refs = 0;
+			}
+			cur.push(dev);
+			refs += n;
 		}
-	}
-
-	/** Wraps of stored rotations a straggler (still on a key of epoch `from`) is a recipient of, best first. */
-	async function storedRotationsFor(deviceId: string, from: number): Promise<RotateMsg[]> {
-		const out: Array<RotateMsg & { id: string }> = [];
-		for (const k of meta.keys()) {
-			if (!k.startsWith(ROTREC_PREFIX)) continue;
-			const id = k.slice(ROTREC_PREFIX.length);
-			const rot = meta.get(k);
-			const wrap = meta.get(`${ROT_PREFIX}${id}:${deviceId}`);
-			// SF1: a straggler can only adopt up to MAX_EPOCH_SKIP ahead: serve it in steps; never past our own epoch
-			if (!isRotRecord(rot) || rot.epoch < from || rot.epoch > from + MAX_EPOCH_SKIP || rot.epoch > epoch) continue;
-			if (typeof wrap !== "string" || !rot.to.includes(deviceId)) continue;
-			// SF3: the shared doc is writable by every member: serve only rotations that verify here
-			if (id !== (await rotationId(rot)) || !rotationSigned(rot, id) || !(await rotationAuthorized(rot))) continue;
-			out.push({ rot, to: deviceId, wrap, id });
+		chunks.push(cur);
+		for (const chunk of chunks) {
+			if (!running || destroyed || !sec) return;
+			try {
+				await rotate(sec.unexecuted(new Set(chunk)));
+			} catch (e) {
+				err(e);
+				return;
+			}
 		}
-		out.sort((x, y) => (betterRot({ epoch: x.rot.epoch, id: x.id }, { epoch: y.rot.epoch, id: y.id }) ? -1 : 1));
-		return out.slice(0, 8).map(({ id: _id, ...msg }) => msg);
 	}
 
 	async function onPairFrame(rec: LinkRec, data: Uint8Array) {
@@ -1577,28 +1304,26 @@ export function createMesh(opts: MeshOptions): Mesh {
 	function maybeStart(rec: LinkRec) {
 		if (!rec.authed || !rec.authSent || rec.started || rec.closing) return;
 		rec.started = true;
+		const peer = rec.deviceId as string;
 		if (rec.legacy) {
-			// retired room (BL1): the peer may be a straggler, or a partition that rotated on its own. Offer it the stored
-			// rotations it can unwrap; it converges (and re-keys if needed) and offers us its own the same way. Bounded:
-			// once per authenticated link, at most 8 rotations.
-			const peer = rec.deviceId as string;
+			// retired room (BL1): the peer may be a straggler, or a partition that rotated on its own. Hand it the
+			// rotations it can adopt and our inventory; it converges (and re-keys if needed) and does the same for us.
 			const lg = rec.legacy;
 			void (async () => {
-				for (const m of await storedRotationsFor(peer, lg.epoch)) await sendRotate(rec, m);
+				await sendDocs(rec, rotationsFor(peer, lg.epoch), lg);
+				if (sec) await sendTrust(rec, { t: "inv", ids: sec.inventory() }, lg);
 			})().catch(err);
 			return;
 		}
 		sendFrame(rec, K_SV, Y.encodeStateVector(doc)).catch(err);
 		if (awareness.getLocalState()) sendFrame(rec, K_AWARENESS, encodeAwarenessUpdate(awareness, [doc.clientID])).catch(err);
-		// the peer may be on another key of this epoch (its handshake crossed a key switch): offer the rotation we
-		// are on if it is a recipient; one record, ignored if already known
+		if (sec) void sendTrust(rec, { t: "inv", ids: sec.inventory() }, linkKey(rec)).catch(err);
+		// the peer may be on another key of this epoch (its handshake crossed a key switch): push the rotation we are on
+		// if it is a recipient, under every key it may hold
 		const cur = curRot;
-		const peer = rec.deviceId as string;
 		if (cur && cur.to.includes(peer)) {
-			void (async () => {
-				const m = (await storedRotationsFor(peer, cur.epoch)).find((x) => x.rot.n === cur.n && x.rot.from === cur.from);
-				if (m) await sendRotate(rec, m);
-			})().catch(err);
+			const { id: _id, ...d } = cur;
+			void sendTrustEverywhere(rec, utf8(JSON.stringify({ t: "docs", docs: [d] }))).catch(err);
 		}
 	}
 
@@ -1688,9 +1413,9 @@ export function createMesh(opts: MeshOptions): Mesh {
 		setStatus();
 		await joinRoom(dataRid, sigKey!);
 		await syncLegacy();
-		// an owner device executes what is pending at once (a revocation recorded before a restart, or a re-key
-		// interrupted by the app tearing the mesh down): those trigger no new event once the device is back
-		void serialRot(ownerRekey).catch(err);
+		// adopt what is pending (rotations already held) and, on an owner device, execute what is pending at once (a
+		// revocation recorded before a restart, or a re-key interrupted by the app tearing the mesh down)
+		void serialRot(considerRotations).catch(err);
 	}
 
 	function stopNetwork() {
@@ -1720,10 +1445,10 @@ export function createMesh(opts: MeshOptions): Mesh {
 
 	// ---- rotation ----
 	// The new mesh key never travels under the shared (old) key: it is wrapped per remaining device with a hybrid
-	// key, HKDF(ML-KEM-768 secret || ECDH(own static key, peer static key), swal-rotate/v4|preId|from|to) -> AES-GCM,
-	// where preId hashes the rotation record (epoch, issuer, targets, recipients, nonce); the owner signs the final id. Record and wraps are also stored in meta
-	// (rotrec:<rotId>, rot:<rotId>:<deviceId>) so a peer that was offline can fetch its own wrap later through a
-	// retired room (see `legacy`); a revoked device has no wrap and cannot unwrap anyone else's.
+	// key, HKDF(ML-KEM-768 secret || ECDH(owner static key, peer static key), swal-rotate/v4|preId|from|to) -> AES-GCM,
+	// where preId hashes the rotation document (epoch, recipients, cuts, nonce); the owner signs its id. Every device
+	// keeps the recent rotation documents in its local store and hands them to devices that were offline (through a
+	// retired room, see `legacy`); a revoked device has no wrap and cannot unwrap anyone else's.
 	async function switchEpoch(newKey: Uint8Array, newEpoch: number) {
 		// a re-key still in flight when the app destroyed the mesh must not overwrite the vault: the next instance on
 		// the same vault would start from a key nobody else ever received
@@ -1778,129 +1503,128 @@ export function createMesh(opts: MeshOptions): Mesh {
 	}
 
 	/**
-	 * Owner only: re-key at epoch + 1 for every admitted, non-revoked device. `targets` are the revoked devices this
-	 * rotation takes the key away from (their signed revocations travel with it).
+	 * Owner only: re-key at epoch + 1 for every member (not revoked, key record known), cutting `part.devices` and
+	 * executing `part.cut` (their grants). The rotation is a signed document: recorded here first, then handed to every
+	 * connected device under every key it may hold, then adopted.
 	 */
-	async function rotate(targets: string[]) {
+	async function rotate(part: { devices: string[]; cut: string[]; revs: string[] }) {
 		const me = vault.deviceId;
-		if (root?.deviceId !== me) throw new Error("only the owner re-keys the mesh");
+		if (!sec || root?.deviceId !== me) throw new Error("only the owner re-keys the mesh");
 		const newEpoch = epoch + 1;
 		if (newEpoch > MAX_EPOCH) throw new Error("epoch limit reached: re-create the mesh");
-		const newKey = randomBytes(32);
-		// R4-B2: carry what receivers read (REVS_CARRIED): one record per target, informative only (the cut list is
-		// authoritative through the owner's signature)
-		const revs: Revocation[] = [];
-		for (const t of targets) {
-			const r = (revRecs.get(t) ?? [])[0];
-			if (r && revs.length < REVS_CARRIED) revs.push(r);
-		}
-		for (const l of [...links]) if (l.deviceId && isRevoked(l.deviceId)) closeRec(l);
-		const priv = (await ecdhIdentity()).privateKey;
+		const cutDevs = new Set(part.devices);
+		for (const l of [...links]) if (l.deviceId && (cutDevs.has(l.deviceId) || isRevoked(l.deviceId))) closeRec(l);
 		const pubs = new Map<string, { pub: Uint8Array; kem: Uint8Array }>();
 		for (const d of trusted.values()) {
-			if (targets.includes(d.deviceId) || isRevoked(d.deviceId)) continue;
-			const pub = await peerEcdhPub(d.deviceId);
-			if (pub) pubs.set(d.deviceId, pub);
-			else err(new Error(`no verified ECDH key for ${d.deviceId} yet: it gets the key with a later rotation`));
+			if (d.deviceId === me || cutDevs.has(d.deviceId) || isRevoked(d.deviceId)) continue;
+			const k = kexOf(d.deviceId);
+			if (k) pubs.set(d.deviceId, k);
+			else err(new Error(`no key record of ${d.deviceId} yet: it gets the key with a later rotation`));
 		}
-		// R4-S3: a rotation receivers would drop as malformed must never be adopted here (the owner would end alone)
-		if (targets.length > MAX_ROT_MEMBERS || pubs.size > MAX_ROT_MEMBERS)
+		// R4-S3/R5-S3: a rotation receivers would refuse must never be adopted here (the owner would end alone)
+		if (pubs.size > MAX_ROT_MEMBERS || cutDevs.size > MAX_ROT_MEMBERS || part.cut.length > MAX_ROT_REFS)
 			throw new Error(
-				`re-key refused: ${pubs.size} recipients and ${targets.length} cut devices; a rotation carries at most ${MAX_ROT_MEMBERS} of each`,
+				`re-key refused: ${pubs.size} recipients and ${cutDevs.size} cut devices; a rotation carries at most ${MAX_ROT_MEMBERS} of each`,
 			);
-		const rec: RotRecord = {
-			v: 1,
+		const newKey = randomBytes(32);
+		const base = {
+			t: "rot" as const,
+			v: 2 as const,
+			inst: (root as TrustRoot).mid,
 			epoch: newEpoch,
 			from: me,
-			revoked: [...targets].sort(),
 			to: [...pubs.keys()].sort(),
+			revoked: [...cutDevs].sort(),
+			cut: [...part.cut].sort(),
+			revs: [...part.revs].sort().slice(0, MAX_ROT_REFS),
 			n: b64uEncode(randomBytes(16)),
-			revs,
-			wh: "",
 		};
-		// wraps are bound to the pre-id; the final id also commits to the whole wrap set (finding 5)
-		const pid = await rotationPreId(rec);
-		const wraps = new Map<string, string>();
-		for (const [to, k] of pubs) wraps.set(to, await wrapMeshKey(priv, k.pub, k.kem, pid, me, to, newKey));
-		// (every key in `pubs` passed the ML-KEM input check in peerEcdhPub, so no recipient can make this throw)
-		rec.wh = await wrapsHash(Object.fromEntries(wraps));
-		const id = await rotationId(rec);
-		// the owner signs the id (record + wrap set) with its ML-DSA-65 identity: the rotation does not rest on P-256 alone
-		rec.sig = b64uEncode(await vault.sign(rotationSigBytes(id)));
+		// wraps are bound to the pre-id; the id also commits to the whole wrap set, and the owner signs the id
+		const pid = await rotationPreId(base);
+		const priv = (await ecdhIdentity()).privateKey;
+		const wraps: Record<string, string> = {};
+		for (const [to, k] of pubs) wraps[to] = await wrapMeshKey(priv, k.pub, k.kem, pid, me, to, newKey);
+		const wh = await wrapsHash(wraps);
+		const id = await rotationId({ ...base, wh });
+		const sig = b64uEncode(await vault.sign(rotationSigBytes(id)));
 		if (destroyed) return; // torn down while signing: publish nothing, keep the vault as it was
-		if (!isRotRecord(rec)) throw new Error("re-key refused: the rotation record would be malformed for receivers");
-		// 1) hand each connected recipient ITS OWN wrap (under every recent key), 2) switch, 3) publish under the NEW key
-		const sends: Promise<void>[] = [];
-		for (const l of [...links]) {
-			const w = !l.closing && l.deviceId ? wraps.get(l.deviceId) : undefined;
-			if (l.deviceId && w) sends.push(sendRotate(l, { rot: rec, to: l.deviceId, wrap: w, wraps: Object.fromEntries(wraps) }));
-		}
-		await Promise.all(sends);
-		await adopt({ rec: { ...rec, id }, key: newKey });
-		doc.transact(() => {
-			for (const t of targets) {
-				// its admission stays: void from now on (B6), still needed to verify what it signed before
-				meta.delete(DEV + t);
-				meta.delete(ECDH_PREFIX + t);
-			}
-			for (const r of revs) meta.set(revKey(r), r);
-			meta.set(ROTREC_PREFIX + id, rec);
-			for (const [to, w] of wraps) meta.set(`${ROT_PREFIX}${id}:${to}`, w);
-		});
+		const docR: RotDoc = { ...base, wh, wraps, sig };
+		const out = await sec.add(docR); // verified like any received rotation; records its cuts for good
+		if (out.status !== "accepted" && out.status !== "duplicate") throw new Error(`re-key refused: ${out.reason}`);
+		// 1) every connected device gets the rotation under every key it may hold, 2) switch
+		const body = utf8(JSON.stringify({ t: "docs", docs: [docR] }));
+		await Promise.all(
+			[...links]
+				.filter((l) => !l.closing && l.deviceId && l.rid !== "pair" && (!signFrames || l.authed))
+				.map((l) => sendTrustEverywhere(l, body).catch(err)),
+		);
+		await adopt({ rec: { ...docR, id }, key: newKey });
+		announce([`R:${id}`]);
 	}
 
 	/**
-	 * Revoke a device. Its writes and links are cut here at once, and a signed revocation record goes into the shared
-	 * doc. On the owner the mesh is re-keyed right away; on an admin it is a REQUEST that the next owner device online
-	 * executes (until then `rekeyPending` is true: the revoked device still holds the current key).
+	 * Revoke a device: signed web/trust revocations of its grants, cut here at once and handed to every device. On the
+	 * owner the mesh is re-keyed right away; on an admin it is a REQUEST that the next owner device online executes
+	 * (until then `rekeyPending` is true: the revoked device still holds the current key).
 	 */
-	async function revoke(deviceId: string) {
+	async function revoke(
+		deviceId: string,
+		o: { heads?: Readonly<Record<string, number | { seq: number; id: string }>>; reason?: string } = {},
+	) {
 		await ready;
 		if (deviceId === vault.deviceId) throw new Error("cannot revoke the current device");
+		if (!sec || !root) throw new Error("unknown device");
 		await refreshTrust();
-		if (!meta.has(DEV + deviceId) && !trusted.has(deviceId)) throw new Error("unknown device");
-		if (!(await canRotate(vault.deviceId, deviceId))) throw new Error(`not authorized to revoke ${deviceId}`);
+		if (deviceId === root.deviceId) throw new Error(`not authorized to revoke ${deviceId}`);
+		if (sec.trust.grantsOf(deviceId).length === 0) throw new Error("unknown device");
+		if (opts.canRotate && !(await opts.canRotate(vault.deviceId, deviceId))) throw new Error(`not authorized to revoke ${deviceId}`);
+		const docs = await sec.revocationsFor(signer, deviceId, { heads: o.heads, reason: o.reason, now: now() });
+		if (docs.length === 0 && !isRevoked(deviceId)) throw new Error(`not authorized to revoke ${deviceId}`);
 		if (!running) await start();
-		const r = root ? await signRevocation(vault, { mid: root.mid, target: deviceId, by: vault.deviceId, epoch: epoch + 1 }) : null;
-		if (r) {
-			await addRecord(r);
-			if (!meta.has(revKey(r))) meta.set(revKey(r), r);
-		}
-		await recomputeRevoked();
-		if (!isRevoked(deviceId)) {
-			// a custom `canRotate` allowed it although the built-in ladder does not: a local cut
-			const l = localCuts.get(deviceId) ?? [];
-			localCuts.set(deviceId, [...l, epoch + 1]);
-			await recomputeRevoked();
-		}
-		await persistRevoked();
+		await addLocal(docs);
 		// cut the revoked device off SYNCHRONOUSLY: its link must not be reachable by anything below
 		for (const l of [...links]) if (l.deviceId === deviceId || (l.deviceId && isRevoked(l.deviceId))) closeRec(l);
-		void refreshTrust();
-		emit("revoked", { deviceId, epoch, pending: root?.deviceId !== vault.deviceId });
-		await serialRot(ownerRekey);
+		await refreshTrust();
+		emit("revoked", { deviceId, epoch, pending: root.deviceId !== vault.deviceId });
+		await serialRot(ownerRekey).catch(err);
+	}
+
+	/** Owner only: own grants for devices that lost membership through a revoked admin (cascade). */
+	async function reanchor(deviceIds: string[]) {
+		await ready;
+		if (!sec || root?.deviceId !== vault.deviceId) throw new Error("only the owner re-anchors devices");
+		const grants = [];
+		for (const id of deviceIds) {
+			if (sec.memberGrant(id)) continue;
+			const old = sec.trust.grantsOf(id)[0];
+			if (!old) throw new Error(`unknown device ${id}`);
+			grants.push(await sec.issueGrant(signer, old.subject.pub, { role: old.delegate >= 1 ? "admin" : "member", name: old.name, now: now() }));
+		}
+		await addLocal(grants);
+		await refreshTrust();
+		await serialRot(ownerRekey).catch(err);
 	}
 
 	// ---- pairing ----
 	/** First pairing of a fresh mesh: this device becomes its owner (the pinned trust root). */
 	async function ensureRoot(): Promise<TrustRoot> {
-		if (root) return root;
-		// a NEW mesh id, never one read from the shared doc (anybody could have copied another mesh's id there)
+		if (root && sec) return root;
+		// a NEW mesh id, never one read from anywhere else (anybody could copy another mesh's id)
 		const mid = b64uEncode(randomBytes(16));
-		meta.set("mid", mid);
-		root = { mid, deviceId: vault.deviceId, pub: b64uEncode(vault.devicePublicKey) };
+		root = { mid, deviceId: vault.deviceId, pub: selfPub };
 		await store.set("root", root);
+		await openSecurity(root);
+		await publishKex();
 		return root;
 	}
 
-	/** Admission chain of `id` from the local cache, up to (excluding) the root. */
-	function chainOf(id: string): Admission[] {
-		const out: Admission[] = [];
-		for (let cur = id, i = 0; i < 8 && cur !== root?.deviceId; i++) {
-			const a = admCache[cur];
-			if (!a) break;
-			out.push(a);
-			cur = a.by;
+	/** Grant chain of this device (its member grant, then its issuers' up to the root): what a guest needs to verify. */
+	function ownChain(): unknown[] {
+		const out: unknown[] = [];
+		let g = sec?.memberGrant(vault.deviceId) ?? null;
+		for (let i = 0; g && i < 8; i++) {
+			out.push(g);
+			g = g.parent ? (sec?.trust.getGrant(g.parent) ?? null) : null;
 		}
 		return out;
 	}
@@ -1912,7 +1636,11 @@ export function createMesh(opts: MeshOptions): Mesh {
 		await refreshTrust();
 		const mine = selfRole();
 		if (!mine || !canIssue(mine, guestRole)) throw new Error(`this device (${mine ?? "not admitted"}) cannot admit a ${guestRole}`);
-		const key = await vault.getOrCreateMeshKey();
+		// R5-S3: refuse an admission the next re-key could not carry (receivers accept at most MAX_ROT_MEMBERS recipients)
+		if (trusted.size + 1 >= MAX_ROT_MEMBERS) throw new Error(`the mesh is full (${MAX_ROT_MEMBERS} devices)`);
+		if (mine === "admin" && (sec?.trust.docs().filter((d) => d.t === "grant" && d.issuer === vault.deviceId).length ?? 0) >= MAX_MEMBERS_PER_ADMIN)
+			throw new Error(`this admin already admitted ${MAX_MEMBERS_PER_ADMIN} devices`);
+		await vault.getOrCreateMeshKey();
 		const offer = await createPairOffer(vault, { mid: r.mid, root: r.deviceId, appId, topic: topicName, now: now() });
 		const rid = await derivePairRoomId(offer.pairSecret);
 		const pairKey = await derivePairKey(offer.pairSecret);
@@ -1920,53 +1648,43 @@ export function createMesh(opts: MeshOptions): Mesh {
 			now,
 			verify: identityVerify,
 			prove: async (transcript) => ({
-				pub: b64uEncode(vault.devicePublicKey),
-				sig: b64uEncode(await vault.sign(hostProofBytes(transcript, vault.deviceId, b64uEncode(vault.devicePublicKey)))),
+				pub: selfPub,
+				sig: b64uEncode(await vault.sign(hostProofBytes(transcript, vault.deviceId, selfPub))),
 			}),
 			onSas: (p: SasPrompt) => emit("sas", { role: "host", ...p }),
 			buildGrant: async (guest): Promise<GrantBody> => {
-				// B1: the ack already proved possession of guest.pub and deviceId = fingerprint(pub). Never admit a
-				// device under the identity of this host, of the root, or of a member admitted with another key.
+				// B1: the ack already proved possession of guest.pub and deviceId = fingerprint(pub)
 				if (guest.deviceId === vault.deviceId || guest.deviceId === r.deviceId) throw new Error("guest claims the host/root identity");
-				const known = trusted.get(guest.deviceId)?.pub ?? admCache[guest.deviceId]?.pub;
-				if (known !== undefined && known !== guest.pub) throw new Error("deviceId already admitted with another key");
-				const adm = await signAdmission(vault, {
-					mid: r.mid,
-					deviceId: guest.deviceId,
-					pub: guest.pub,
-					name: guest.name,
-					role: guestRole,
-					by: vault.deviceId,
-					epoch, // B6: valid from this epoch on; a revocation at a later epoch voids it (no clock involved)
-					at: now(), // display only
-				});
-				const dev: Device = { ...guest, addedAt: adm.at, role: guestRole, admittedBy: vault.deviceId };
-				const extra = o.extra ? await o.extra(dev) : undefined;
+				if (!sec) throw new Error("no security state");
 				if (opts.authorizeDevice && !(await opts.authorizeDevice(guest.deviceId, b64uDecode(guest.pub)))) {
 					throw new Error("device not authorized by the mesh policy");
 				}
-				// explicit re-admission: valid because it is issued at an epoch >= every known revocation of the guest
-				// (revocation records stay: they keep voiding the OLD admissions, whoever replays them)
-				const revs = revokedIds.get(guest.deviceId);
-				if (revs?.length && revs[revs.length - 1] > epoch) throw new Error("guest is being revoked: pair it after the rotation");
-				admCache[guest.deviceId] = adm;
-				trusted.set(guest.deviceId, dev);
-				admittedAt.set(guest.deviceId, adm.epoch);
-				doc.transact(() => {
-					meta.set(ADM_PREFIX + guest.deviceId, adm);
-					meta.set(DEV + guest.deviceId, { deviceId: dev.deviceId, pub: dev.pub, name: dev.name, addedAt: dev.addedAt });
-				});
-				await store.set("adm", admCache);
+				// the key, its epoch and its rotation are read together, at the very moment the grant is made (a re-key may
+				// have happened since the offer was shown)
+				const keyNow = meshKey ?? (await vault.getOrCreateMeshKey());
+				const epochNow = epoch;
+				const rotNow = curRot;
+				// a grant of its own (re-admission included: a new grant id, untouched by earlier revocations), handed the
+				// key of this epoch
+				const grant = await sec.issueGrant(signer, guest.pub, { role: guestRole === "admin" ? "admin" : "member", name: guest.name, epoch: epochNow, now: now() });
+				const dev: Device = { ...guest, addedAt: grant.issuedAt, role: guestRole, admittedBy: vault.deviceId };
+				const extra = o.extra ? await o.extra(dev) : undefined;
+				await addLocal([grant]);
+				await refreshTrust();
+				const docs: unknown[] = [grant, ...ownChain()];
+				for (const k of [sec.kexDoc(r.deviceId), sec.kexDoc(vault.deviceId)]) if (k && !docs.includes(k)) docs.push(k);
+				if (rotNow && JSON.stringify(rotNow).length < 128 * 1024) {
+					const { id: _id, ...d } = rotNow;
+					docs.push(d);
+				}
 				return {
-					meshKey: b64uEncode(key),
-					epoch,
+					meshKey: b64uEncode(keyNow),
+					epoch: epochNow,
 					mid: r.mid,
 					hostDevice: selfDevice(),
 					root: r,
-					admissions: [adm, ...chainOf(vault.deviceId)],
-					// receivers only read the first 16 revocations of a rotation (handleRotate); with ML-DSA-65 each is ~4.6 KB,
-					// so a rotation that cut many devices at once would otherwise push the grant past PAIR_MAX
-					...(curRot ? { rot: { ...curRot, revs: curRot.revs.slice(0, REVS_CARRIED) } } : {}),
+					docs,
+					...(rotNow ? { rotId: rotNow.id } : {}),
 					...(extra !== undefined ? { extra } : {}),
 				};
 			},
@@ -2014,13 +1732,9 @@ export function createMesh(opts: MeshOptions): Mesh {
 	const ROOT_MISMATCH_ERR = "pairing refused: this mesh id is pinned to another owner key";
 	const MOVE_MESH_ERR =
 		"this device belongs to another mesh: to join a different one, create a new Mesh with a fresh Y.Doc";
-	/** Only this device's own bookkeeping (dev/<self>, ecdh/<self>) and no shared content at all. */
+	/** No shared content at all (the mesh itself never writes to the doc). */
 	function docIsFresh(): boolean {
-		for (const [name, t] of doc.share) {
-			if (name === "meta") {
-				for (const k of meta.keys()) if (k !== DEV + vault.deviceId && k !== ECDH_PREFIX + vault.deviceId) return false;
-				continue;
-			}
+		for (const [, t] of doc.share) {
 			const ty = t as unknown as { _start: unknown; _map: Map<string, unknown> };
 			if (ty._start !== null || ty._map.size > 0) return false;
 		}
@@ -2033,8 +1747,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		if (p.appId !== appId || p.topic !== topicName) throw new Error("pairing payload is for a different app/topic");
 		// B3: a device moving to ANOTHER mesh would merge this mesh's doc into it (and keep serving it). Only a fresh
 		// doc may change meshes: create a new Mesh with a new Y.Doc for that.
-		// S6: trust on first use. The QR (signed by the host) names the root; a device never re-pins another key for
-		// a mesh id it already knows
+		// S6: trust on first use. The QR names the root; a device never re-pins another key for a mesh id it already knows
 		if (root && root.mid === p.mid && root.deviceId !== p.root) throw new Error(ROOT_MISMATCH_ERR);
 		const moving = root !== null && root.mid !== p.mid;
 		if (moving && !docIsFresh()) throw new Error(MOVE_MESH_ERR);
@@ -2058,24 +1771,23 @@ export function createMesh(opts: MeshOptions): Mesh {
 		try {
 			const g = await guest.result;
 			clearTimeout(timeout);
-			// the trust root and our admission arrive over the SAS-authenticated session; the chain must be valid and
-			// lead to the very host key that signed the QR payload
-			if (!g.root || !Array.isArray(g.admissions)) throw new Error("pairing grant carries no admission (host too old?)");
+			// the trust root and our grant arrive over the SAS-authenticated session; the grant chain must be valid and
+			// issued by the very host that proved the identity named by the QR
+			if (!g.root || !Array.isArray(g.docs)) throw new Error("pairing grant carries no grant (host too old?)");
 			if (!isEpoch(g.epoch)) throw new Error("pairing grant: bad epoch");
-			const grantAdm = new Map<string, Admission[]>();
-			for (const a of g.admissions) grantAdm.set(a?.deviceId, [...(grantAdm.get(a?.deviceId) ?? []), a]);
-			const gctx: ChainContext = { verify: memoVerify, root: g.root, epoch: g.epoch, candidates: (id: string) => grantAdm.get(id) ?? [], revokedAt: () => undefined };
-			const memo = new Map<string, Promise<Admission | null>>();
-			const mine = await verifyChain(gctx, vault.deviceId, memo);
-			if (!mine || mine.pub !== b64uEncode(vault.devicePublicKey)) throw new Error("pairing grant: invalid admission for this device");
-			// the host proved (inside the session) that it holds hostId's ML-DSA key; the admission must come from it
-			if (mine.by !== p.hostId) throw new Error("pairing grant: admission not issued by the paired host");
-			const issuer = await verifyChain(gctx, mine.by, memo);
-			if (!issuer || issuer.pub !== g.hostProof?.pub) throw new Error("pairing grant: admission not issued by the paired host");
 			if (g.root.mid !== p.mid || g.mid !== p.mid) throw new Error("pairing grant: mesh id does not match the pairing code");
 			if (g.root.deviceId !== p.root) throw new Error("pairing grant: trust root does not match the pairing code");
+			if (!(await idMatchesPub(g.root.deviceId, g.root.pub))) throw new Error("pairing grant: invalid trust root");
 			if (root && root.mid === g.root.mid && (root.deviceId !== g.root.deviceId || root.pub !== g.root.pub))
 				throw new Error(ROOT_MISMATCH_ERR);
+			// verify in a scratch state first: nothing is pinned or stored before the grant checks out
+			const probe = await SecurityState.open({ root: g.root, store: memoryStore(), schema: opts.trustSchema, now });
+			await probe.addMany(g.docs);
+			const mine = probe.memberGrant(vault.deviceId);
+			if (!mine || mine.subject.pub !== selfPub) throw new Error("pairing grant: invalid grant for this device");
+			// the host proved (inside the session) that it holds hostId's ML-DSA key; the grant must come from it
+			if (mine.issuer !== p.hostId) throw new Error("pairing grant: grant not issued by the paired host");
+			if (probe.identityOf(p.hostId) !== g.hostProof?.pub) throw new Error("pairing grant: grant not issued by the paired host");
 			const switching = root?.mid !== g.root.mid;
 			if (switching && root && !docIsFresh()) throw new Error(MOVE_MESH_ERR);
 			// same mesh: never step back to an older epoch (and its older key) because the host lags behind us
@@ -2083,51 +1795,39 @@ export function createMesh(opts: MeshOptions): Mesh {
 			// leave the current network BEFORE touching keys or the doc: nothing of one mesh may reach the other
 			if (running) stopNetwork();
 			if (switching) {
-				admCache = {};
-				ecdhOk = {};
-				revokedIds.clear();
+				// nothing of the old mesh's security state survives a move
+				secUnsub?.();
+				sec = null;
 				trusted = new Map();
-				admittedAt = new Map();
-				selfAdm = null;
 				legacy.clear();
-				revRecs.clear();
-				badRevs.clear();
-				badKex.clear();
-				revStore.clear();
-				localCuts.clear();
-				executed.clear();
-				overCap.clear();
 				replay.clear();
 				cands.clear();
+				unwrapFailed.clear();
 				curRot = null;
+				curRotId = null;
+				for (const k of ["sec/trust", "sec/kex", "sec/rots", "sec/cuts", "sec/gone"]) await store.set(k, []);
 				await store.set(RETIRED_KEY, []);
-				await store.set(KEX_KEY, ecdhOk);
-				await persistRevoked();
+				await store.set("rotId", null);
 			}
 			root = g.root;
 			await store.set("root", root);
-			for (const list of grantAdm.values()) for (const a of list) if (a.deviceId !== g.root.deviceId) admCache[a.deviceId] = a;
-			await store.set("adm", admCache);
+			if (g.hostDevice && g.hostDevice.deviceId === g.root.deviceId && typeof g.hostDevice.name === "string") {
+				ownerName = g.hostDevice.name;
+				await store.set("ownerName", ownerName);
+			}
+			if (!sec) await openSecurity(root);
+			await (sec as SecurityState).addMany(g.docs);
 			const key = b64uDecode(g.meshKey);
 			await vault.setMeshKey(key);
 			await persistEpoch(g.epoch);
 			epoch = g.epoch;
 			// the rotation that produced this key (if any): lets this device take part in tie-breaks of its epoch
-			const gr = g.rot as Rot | undefined;
-			// root is g.root (pinned above): the owner's signature must verify, like for any received rotation
-			curRot = isRotRecord(gr) && gr.epoch === g.epoch && gr.id === (await rotationId(gr)) && rotationSigned(gr, gr.id) ? gr : null;
+			curRotId = typeof g.rotId === "string" ? g.rotId : null;
+			const cr = curRotId ? sec?.rotation(curRotId) : undefined;
+			curRot = cr && cr.epoch === g.epoch ? cr : null;
 			cands.clear();
-			await store.set("rot", curRot);
-			doc.transact(() => {
-				meta.set(ADM_PREFIX + vault.deviceId, mine);
-				meta.set(DEV + vault.deviceId, {
-					deviceId: vault.deviceId,
-					pub: b64uEncode(vault.devicePublicKey),
-					name: opts.deviceName ?? "device",
-					addedAt: mine.at,
-				} satisfies Device);
-			});
-			await publishEcdh();
+			await store.set("rotId", curRotId);
+			await publishKex();
 			await refreshTrust();
 			endPairing(rid);
 			emit("paired", g.hostDevice);
@@ -2170,6 +1870,21 @@ export function createMesh(opts: MeshOptions): Mesh {
 		pairJoin,
 		devices,
 		revoke,
+		reanchor,
+		get security(): MeshSecurity | null {
+			const st = sec;
+			if (!st) return null;
+			return {
+				trust: st.trust,
+				docs: async () => st.get(st.inventory()),
+				rotations: () => st.rotations(),
+				keyAgreement: (id: string) => st.keyAgreement(id),
+				executedCuts: () => st.executedCuts(),
+				add: async (d: unknown) => (await addLocal([d]))[0] ?? { status: "rejected" },
+				addMany: (ds: readonly unknown[]) => addLocal(ds),
+				issueGrant: (subjectPub: string, o2: { role: "admin" | "member"; name?: string }) => st.issueGrant(signer, subjectPub, { ...o2, now: now() }),
+			};
+		},
 		leave() {
 			stopNetwork();
 		},

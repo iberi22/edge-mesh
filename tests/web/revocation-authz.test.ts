@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createLoopbackHub } from "../../src/web/index.js";
-import { rotationPreId, unwrapMeshKey } from "../../src/web/rotation.js";
-import { b64uDecode } from "../../src/web/util.js";
-import { devLabels, makeDev, metaOf, pair, storedWraps, trio, until } from "./helpers.js";
+import { rotationId, rotationPreId, rotationSigBytes, unwrapMeshKey, wrapsHash } from "../../src/web/rotation.js";
+import { b64uDecode, b64uEncode, randomBytes } from "../../src/web/util.js";
+import { devLabels, kexKnown, makeDev, metaOf, pair, storedWraps, trio, until } from "./helpers.js";
 
 const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
 
@@ -23,7 +23,13 @@ describe("H2: only authorized issuers revoke / rotate", () => {
 		const { a, b, c } = await trio(hub, { b: { canRotate: () => true } as any });
 		await until(() => c.mesh.peers.includes(b.id) && b.mesh.peers.includes(c.id));
 		const keyBefore = a.vault.meshKey!;
-		await b.mesh.revoke(a.id); // malicious client: rotates locally and sends wraps to C
+		await expect(b.mesh.revoke(a.id)).rejects.toThrow(/not authorized/); // nobody signs a revocation of the owner
+		// a malicious client signs a rotation of its own and hands it to the mesh: refused everywhere
+		const base = { t: "rot" as const, v: 2 as const, inst: a.mesh.root!.mid, epoch: 1, from: b.id, to: [c.id], revoked: [a.id], cut: [], revs: [], n: "x" };
+		const wraps = { [c.id]: b64uEncode(randomBytes(1148)) };
+		const wh = await wrapsHash(wraps);
+		const sig = b64uEncode(await b.vault.sign(rotationSigBytes(await rotationId({ ...base, wh }))));
+		expect((await b.mesh.security!.add({ ...base, wh, wraps, sig })).status).toBe("rejected");
 		await settle();
 		expect(c.mesh.epoch).toBe(0);
 		expect(c.vault.meshKey).toEqual(keyBefore);
@@ -46,7 +52,7 @@ describe("H2: only authorized issuers revoke / rotate", () => {
 		await pair(adm1, m);
 		await until(() => adm1.mesh.devices().length === 4 && adm1.mesh.role(adm2.id) === "admin");
 		// the revoker wraps the new key only for devices whose ECDH key it already verified
-		await until(() => [a, adm1, adm2, m].every((x) => [a, adm1, adm2].every((y) => metaOf(x).has(`ecdh/${y.id}`))));
+		await until(() => [a, adm1, adm2, m].every((x) => [a, adm1, adm2].every((y) => kexKnown(x, y.id))));
 		await expect(adm1.mesh.revoke(a.id)).rejects.toThrow(/not authorized/);
 		await expect(adm1.mesh.revoke(adm2.id)).rejects.toThrow(/not authorized/);
 		await adm1.mesh.revoke(m.id);
@@ -54,34 +60,35 @@ describe("H2: only authorized issuers revoke / rotate", () => {
 		for (const x of [a, adm1, adm2, m]) x.mesh.destroy();
 	});
 
-	it("the `revoked` field of a stored rotation is authenticated: tampering it does not cut off another device", async () => {
+	it("a stored rotation cannot be altered: a tampered copy is refused and does not cut off another device", async () => {
 		const hub = createLoopbackHub();
 		const { a, b, c } = await trio(hub);
 		const d = await makeDev("devD", hub);
 		await pair(a, d);
-		await until(() => [a, b, c, d].every((x) => [a, b, c, d].every((y) => metaOf(x).has(`ecdh/${y.id}`))));
+		await until(() => [a, b, c, d].every((x) => [a, b, c, d].every((y) => kexKnown(x, y.id))));
 		await until(() => b.mesh.devices().length === 4 && d.mesh.devices().length === 4);
 		b.mesh.destroy(); // B offline (keeps doc + vault)
 		await a.mesh.revoke(c.id);
 		await until(() => d.mesh.epoch === 1 && storedWraps(d, 1).some((w) => w.to === b.id));
-		// an insider rewrites the `revoked` field of the stored rotation (here: naming D) to make B cut off another member
+		// an insider re-publishes the rotation with another `revoked` list (naming D), as a document and in the shared doc
 		const w = storedWraps(d, 1).find((x) => x.to === b.id)!;
-		metaOf(d).set(`rotrec:${w.id}`, { ...w.rec, revoked: [d.id] });
-		await until(() => metaOf(a).get(`rotrec:${w.id}`)?.revoked?.[0] === d.id);
+		const { id: _id, ...rec } = w.rec;
+		expect((await d.mesh.security!.add({ ...rec, revoked: [d.id] })).status).toBe("rejected");
+		metaOf(d).set(`rotrec:${w.id}`, { ...rec, revoked: [d.id] });
 		const revokedSeen: string[] = [];
 		const b2 = await makeDev("devB", hub, undefined, { doc: b.doc, vault: b.vault });
 		const rejected: string[] = [];
 		b2.mesh.on("revoked", (e) => revokedSeen.push(e.deviceId));
 		b2.mesh.on("rejected", (e) => rejected.push(e.reason));
-		// the tampered record no longer verifies, so no device serves it (SF3)...
-		await settle(1500);
+		await until(() => b2.mesh.epoch === 1, 5000);
+		await settle(500);
 		expect(revokedSeen).not.toContain(d.id);
 		expect(devLabels(b2.mesh)).toContain("devD");
 		expect(rejected).not.toContain("rotation not authorized");
-		// ...and the wrap itself is bound to the record: under the tampered record's id it does not open
+		// ...and the wrap itself is bound to the record: under the tampered record's pre-id it does not open
 		const bEcdh = await b.vault.getEcdhIdentity!();
 		const bKem = (await b.vault.getKemIdentity!()).secretKey;
-		const aPub = b64uDecode(metaOf(a).get(`ecdh/${a.id}`).pub);
+		const aPub = b64uDecode(a.mesh.security!.keyAgreement(a.id)!.ecdh);
 		const tamperedId = await rotationPreId({ ...w.rec, revoked: [d.id] });
 		await expect(unwrapMeshKey(bEcdh.privateKey, bKem, aPub, tamperedId, a.id, b.id, w.wrap)).rejects.toThrow();
 		expect((await unwrapMeshKey(bEcdh.privateKey, bKem, aPub, await rotationPreId(w.rec), a.id, b.id, w.wrap)).length).toBe(32);

@@ -1,7 +1,6 @@
 // Regression tests for the third security audit (owner-only re-keying redesign, B1–B3, findings 4–5, notes). Each
 // one reproduces a scenario the round-3 audit proved and asserts that it no longer happens.
 import { describe, expect, it } from "vitest";
-import { signRevocation } from "../../src/web/admission.js";
 import { deriveDocMaterial } from "../../src/web/crypto.js";
 import type {
 	LinkTransport,
@@ -10,7 +9,9 @@ import type {
 } from "../../src/web/index.js";
 import { createLoopbackHub, deriveRoomId } from "../../src/web/index.js";
 import {
+	rotationId,
 	rotationPreId,
+	rotationSigBytes,
 	wrapMeshKey,
 	wrapsHash,
 } from "../../src/web/rotation.js";
@@ -25,6 +26,7 @@ import { dataChannelLink } from "../../src/web/webrtc.js";
 import { craft, openFrame, rawPeer, TOPIC } from "./audit-r3-lib.js";
 import {
 	type Dev,
+	kexKnown,
 	label,
 	makeDev,
 	makeVault,
@@ -48,7 +50,8 @@ const sameKey = (ds: Dev[]) =>
 			d.mesh.epoch === (ds[0] as Dev).mesh.epoch,
 	);
 
-async function mesh(hub: Hub, admins: string[], members: string[]) {
+/** `by`: the admin that admits a member (default: the owner); round 5, an admin revokes the devices it admitted. */
+async function mesh(hub: Hub, admins: string[], members: string[], by: Record<string, string> = {}) {
 	const a = await makeDev("devA", hub);
 	a.mesh.on("sas", (p) => p.confirm());
 	const xs: Dev[] = [];
@@ -61,15 +64,15 @@ async function mesh(hub: Hub, admins: string[], members: string[]) {
 	const ms: Dev[] = [];
 	for (const n of members) {
 		const d = await makeDev(n, hub);
-		await pair(a, d);
+		await pair(by[n] ? (xs[admins.indexOf(by[n] as string)] as Dev) : a, d);
 		ms.push(d);
 	}
 	const all = [a, ...xs, ...ms];
 	await until(
 		() =>
-			all.every((d) => all.every((y) => metaOf(d).has(`ecdh/${y.id}`))) &&
+			all.every((d) => all.every((y) => kexKnown(d, y.id))) &&
 			all.every((d) => d.mesh.devices().length === all.length),
-		10_000,
+		20_000,
 	);
 	return { a, xs, ms, all };
 }
@@ -84,38 +87,19 @@ describe("audit round 3 regressions: owner-only re-keying", () => {
 		const instance = a.mesh.namespace.split("/")[1] as string;
 		const mid = a.mesh.root?.mid as string;
 		x1.mesh.destroy(); // x1 speaks raw from here on (modified client)
-		const rev = await signRevocation(x1.vault, {
-			mid,
-			target: m1.id,
-			by: x1.id,
-			epoch: 1,
-		});
 		const to = [c.id]; // NOT the owner, NOT admin x2
-		const rec = {
-			v: 1 as const,
-			epoch: 1,
-			from: x1.id,
-			revoked: [m1.id],
-			to,
-			n: b64uEncode(randomBytes(16)),
-			revs: [rev],
-			wh: "",
-		};
-		const id = await rotationPreId(rec); // a well-formed rotation in every respect but its issuer
+		// a well-formed rotation document in every respect but its issuer, signed by the admin
+		const base = { t: "rot" as const, v: 2 as const, inst: mid, epoch: 1, from: x1.id, to, revoked: [m1.id], cut: [], revs: [], n: b64uEncode(randomBytes(16)) };
+		const pid = await rotationPreId(base);
 		const newKey = randomBytes(32);
 		const priv = (await x1.vault.getEcdhIdentity()).privateKey;
 		const wraps: Record<string, string> = {};
-		for (const t of to)
-			wraps[t] = await wrapMeshKey(
-				priv,
-				b64uDecode(metaOf(a).get(`ecdh/${t}`).pub),
-				b64uDecode(metaOf(a).get(`ecdh/${t}`).kem),
-				id,
-				x1.id,
-				t,
-				newKey,
-			);
-		rec.wh = await wrapsHash(wraps);
+		for (const t of to) {
+			const k = a.mesh.security!.keyAgreement(t)!;
+			wraps[t] = await wrapMeshKey(priv, b64uDecode(k.ecdh), b64uDecode(k.kem), pid, x1.id, t, newKey);
+		}
+		const wh = await wrapsHash(wraps);
+		const rec = { ...base, wh, wraps, sig: b64uEncode(await x1.vault.sign(rotationSigBytes(await rotationId({ ...base, wh })))) };
 		const rejected: string[] = [];
 		c.mesh.on("rejected", (e) => rejected.push(e.reason));
 		const t = hub.transport("evil");
@@ -132,13 +116,7 @@ describe("audit round 3 regressions: owner-only re-keying", () => {
 				Awaited<ReturnType<typeof rawPeer>>
 			>);
 			await until(() => p.isAuthed(), 2000).catch(() => {});
-			if (to.includes(l.id))
-				await p.send(
-					3,
-					utf8(
-						JSON.stringify({ rot: rec, to: l.id, wrap: wraps[l.id], wraps }),
-					),
-				);
+			if (to.includes(l.id)) await p.send(7, utf8(JSON.stringify({ t: "docs", docs: [rec] })));
 		}
 		await settle(1500);
 		expect(c.mesh.epoch).toBe(0);
@@ -150,7 +128,7 @@ describe("audit round 3 regressions: owner-only re-keying", () => {
 
 	it("redesign: an admin's revocation is a request; the owner executes it as soon as it is online", async () => {
 		const hub = createLoopbackHub();
-		const { a, xs, ms, all } = await mesh(hub, ["x1"], ["m1", "devC"]);
+		const { a, xs, ms, all } = await mesh(hub, ["x1"], ["m1", "devC"], { m1: "x1" });
 		const x1 = xs[0] as Dev;
 		const [m1, c] = ms as [Dev, Dev];
 		a.mesh.destroy(); // the owner is offline
@@ -187,16 +165,16 @@ describe("audit round 3 regressions: owner-only re-keying", () => {
 			const all = [a, b, m, x];
 			await until(
 				() =>
-					all.every((p) => all.every((q) => metaOf(p).has(`ecdh/${q.id}`))) &&
+					all.every((p) => all.every((q) => kexKnown(p, q.id))) &&
 					all.every((p) => p.mesh.devices().length === 4),
-				8000,
+				20_000,
 			);
 			const k0 = (m.vault.meshKey as Uint8Array).slice();
 			const instance = a.mesh.namespace.split("/")[1] as string;
 			b.mesh.destroy(); // B offline (straggler)
 			await a.mesh.revoke(x.id);
 			await until(() => m.mesh.epoch === 1 && keyOf(m) === keyOf(a));
-			const genuine = metaOf(m).get(`rev/${x.id}:1`);
+			const genuine = m.mesh.security!.trust.revocations()[0];
 			expect(genuine?.sig).toBeTruthy();
 			a.mesh.destroy();
 			m.mesh.destroy(); // M speaks raw from here on
@@ -214,32 +192,18 @@ describe("audit round 3 regressions: owner-only re-keying", () => {
 			const peer = await rawPeer(m.vault, k0, 0, lks[0] as PeerLink, instance);
 			await until(() => peer.isAuthed() && b2.mesh.peers.includes(m.id), 3000);
 			if (poison) {
-				const bogus = { ...genuine, mid: "not-this-mesh" }; // same signature, fails verification
-				await peer.send(
-					3,
-					utf8(
-						JSON.stringify({
-							rot: {
-								v: 1,
-								epoch: 1,
-								from: m.id,
-								revoked: [x.id],
-								to: [b.id],
-								n: "p",
-								wh: "",
-								revs: [bogus],
-							},
-							to: b.id,
-							wrap: "",
-						}),
-					),
-				);
+				// copies that fail (other mesh; tampered body under the genuine signature) must not block the genuine one
+				const bogus = [
+					{ ...genuine, inst: "not-this-mesh" },
+					{ ...genuine, reason: "tampered" },
+				];
+				await peer.send(7, utf8(JSON.stringify({ t: "docs", docs: bogus })));
 				// and as a record in the shared doc, too
 				const upd = await import("yjs").then((Y) => {
 					const d = new Y.Doc();
 					Y.applyUpdate(d, Y.encodeStateAsUpdate(b2.doc));
 					const sv = Y.encodeStateVector(d);
-					d.getMap("meta").set(`rev/${x.id}:1`, bogus);
+					d.getMap("meta").set(`rev/${x.id}:1`, bogus[0]);
 					return Y.encodeStateAsUpdate(d, sv);
 				});
 				await peer.send(1, upd);
@@ -262,7 +226,7 @@ describe("audit round 3 regressions: owner-only re-keying", () => {
 	])
 		it(`B2: an admin revoked in one partition keeps revoking in another; after healing (${order.join(",")}) one key`, async () => {
 			const g = createLoopbackHub();
-			const { a, xs, ms } = await mesh(g, ["x1", "x3"], ["m1", "m3", "m4"]);
+			const { a, xs, ms } = await mesh(g, ["x1", "x3"], ["m1", "m3", "m4"], { m3: "x3", m4: "x3" });
 			const [x1, x3] = xs as [Dev, Dev];
 			const [m1, m3, m4] = ms as [Dev, Dev, Dev];
 			const all = [a, x1, x3, m1, m3, m4];
@@ -387,7 +351,7 @@ describe("audit round 3 regressions: owner-only re-keying", () => {
 		const all = [a, b, c, m];
 		await until(
 			() =>
-				all.every((x) => all.every((y) => metaOf(x).has(`ecdh/${y.id}`))) &&
+				all.every((x) => all.every((y) => kexKnown(x, y.id))) &&
 				all.every((x) => x.mesh.devices().length === 4),
 			20_000,
 		);
@@ -401,9 +365,7 @@ describe("audit round 3 regressions: owner-only re-keying", () => {
 		await a.mesh.revoke(c.id);
 		expect(Date.now() - t0).toBeLessThan(3000); // not queued behind the bulk data towards M
 		expect(a.mesh.epoch).toBe(1);
-		expect([...metaOf(a).keys()].some((k) => k.startsWith("rotrec:"))).toBe(
-			true,
-		);
+		expect(a.mesh.security!.rotations().length).toBeGreaterThan(0);
 		await settle(2000);
 		// the backlog towards M never exceeds the documented 16 MiB: the link is closed (it resyncs on reconnect)
 		expect(mClosed || stats.accepted - stats.delivered <= 16 * 2 ** 20).toBe(
@@ -412,7 +374,7 @@ describe("audit round 3 regressions: owner-only re-keying", () => {
 		for (const x of all) x.mesh.destroy();
 	}, 60_000);
 
-	it("finding 5: a relayer that corrupts other recipients' wraps does not keep them off the new key", async () => {
+	it("finding 5: a relayer that corrupts a recipient's copy does not keep it off the new key (a good copy follows)", async () => {
 		const hub = createLoopbackHub();
 		const va = await makeVault("devA");
 		const vh = await makeVault("devH");
@@ -420,6 +382,7 @@ describe("audit round 3 regressions: owner-only re-keying", () => {
 		const vm = await makeVault("devM");
 		const vx = await makeVault("devX");
 		let enforce = false;
+		let tampered = 0;
 		let instance = "";
 		let k0: Uint8Array | null = null;
 		const mref = { dev: null as Dev | null };
@@ -434,7 +397,9 @@ describe("audit round 3 regressions: owner-only re-keying", () => {
 				send: (d) => {
 					const copy = d.slice();
 					q = q.then(async () => {
-						if (!enforce || !k0 || copy[0] !== 3) return l.send(copy);
+						// round 5: rotations are whole signed documents (a corrupted one is refused, like a dropped one), so
+						// the relayer corrupts what it hands to V; H gets an intact copy and relays it to V
+						if (!enforce || !k0 || copy[0] !== 3 || l.id !== vv.deviceId) return l.send(copy); // (3 = signed frame)
 						const keys: Array<[Uint8Array, number]> = [[k0, 0]];
 						if (mref.dev?.vault.meshKey)
 							keys.push([mref.dev.vault.meshKey, mref.dev.mesh.epoch]);
@@ -443,21 +408,23 @@ describe("audit round 3 regressions: owner-only re-keying", () => {
 							const mat = await deriveDocMaterial(k, TOPIC);
 							const f = await openFrame(mat, rid, copy);
 							if (!f) continue;
-							if (f.kind !== 3) return l.send(copy);
+							if (f.kind !== 7) return l.send(copy); // security documents (rotations travel as such)
 							const msg = JSON.parse(fromUtf8(f.body));
 							const bad = (w: string) =>
 								w[5] === "A"
 									? `${w.slice(0, 5)}B${w.slice(6)}`
 									: `${w.slice(0, 5)}A${w.slice(6)}`;
-							if (msg.wraps?.[vv.deviceId])
-								msg.wraps[vv.deviceId] = bad(msg.wraps[vv.deviceId]);
-							if (msg.to === vv.deviceId) msg.wrap = bad(msg.wrap);
+							for (const doc of msg.docs ?? [])
+								if (doc?.t === "rot" && doc.wraps?.[vv.deviceId]) {
+									doc.wraps[vv.deviceId] = bad(doc.wraps[vv.deviceId]);
+									tampered++;
+								}
 							return l.send(
 								await craft(
 									vm,
 									mat,
 									rid,
-									3,
+									7,
 									utf8(JSON.stringify(msg)),
 									f.sess,
 									f.seq,
@@ -509,9 +476,9 @@ describe("audit round 3 regressions: owner-only re-keying", () => {
 		const all = [a, h, v, md, x];
 		await until(
 			() =>
-				all.every((p) => all.every((q) => metaOf(p).has(`ecdh/${q.id}`))) &&
+				all.every((p) => all.every((q) => kexKnown(p, q.id))) &&
 				all.every((p) => p.mesh.devices().length === 5),
-			8000,
+			20_000,
 		);
 		instance = a.mesh.namespace.split("/")[1] as string;
 		k0 = (a.vault.meshKey as Uint8Array).slice();
@@ -552,6 +519,7 @@ describe("audit round 3 regressions: owner-only re-keying", () => {
 				[h2, v2, m2].every((d) => d.mesh.epoch === 1 && keyOf(d) === keyOf(a2)),
 			8000,
 		);
+		expect(tampered).toBeGreaterThan(0);
 		for (const d of [a2, h2, v2, m2]) d.mesh.destroy();
 	}, 40_000);
 

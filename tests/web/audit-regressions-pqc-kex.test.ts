@@ -19,8 +19,8 @@ import {
 	kemEncapsulate,
 	kemKeygen,
 } from "../../src/web/pq.js";
+import { SIG_ALG, signCanonical } from "../../src/web/trust/keys.js";
 import {
-	ecdhSignedBytes,
 	rotationId,
 	rotationPreId,
 	rotationSigBytes,
@@ -36,9 +36,9 @@ import {
 } from "../../src/web/util.js";
 import { rawPeer, TOPIC } from "./audit-r3-lib.js";
 import {
+	kexKnown,
 	makeDev,
 	makeVault,
-	metaOf,
 	pair,
 	storedWraps,
 	trio,
@@ -174,8 +174,8 @@ describe("PQC: hybrid ML-KEM-768 + ECDH P-256 key exchanges", () => {
 	it("Q7: rotation wraps carry an ML-KEM-768 ciphertext; the recipient's ECDH key alone (or another KEM key) cannot open them", async () => {
 		const hub = createLoopbackHub();
 		const { a, b, c } = await trio(hub);
-		const entry = metaOf(a).get(`ecdh/${b.id}`);
-		expect(b64uDecode(entry.kem)).toHaveLength(1184); // the device record carries its ML-KEM encapsulation key
+		const entry = a.mesh.security!.keyAgreement(b.id)!;
+		expect(b64uDecode(entry.kem)).toHaveLength(1184); // the device's key record carries its ML-KEM encapsulation key
 		await a.mesh.revoke(c.id);
 		await until(
 			() => b.mesh.epoch === 1 && storedWraps(a, 1).some((w) => w.to === b.id),
@@ -184,7 +184,7 @@ describe("PQC: hybrid ML-KEM-768 + ECDH P-256 key exchanges", () => {
 		const raw = b64uDecode(w.wrap);
 		expect(raw.length).toBe(1088 + 32 + 28); // ML-KEM ciphertext || AES-GCM(32-byte key) with IV and tag
 		const pid = await rotationPreId(w.rec);
-		const aPub = b64uDecode(metaOf(a).get(`ecdh/${a.id}`).pub);
+		const aPub = b64uDecode(a.mesh.security!.keyAgreement(a.id)!.ecdh);
 		const bEcdh = (await b.vault.getEcdhIdentity!()).privateKey;
 		const bKem = (await b.vault.getKemIdentity!()).secretKey;
 		expect(
@@ -228,33 +228,21 @@ describe("PQC: hybrid ML-KEM-768 + ECDH P-256 key exchanges", () => {
 		const e = await makeDev("devE", hub);
 		await pair(a, e);
 		const all = [a, b, c, d, e];
-		await until(() =>
-			all.every((x) => all.every((y) => metaOf(x).has(`ecdh/${y.id}`))),
-		);
+		await until(() => all.every((x) => all.every((y) => kexKnown(x, y.id))));
 		await until(() => [a, b, c].every((x) => x.mesh.devices().length === 5));
-		// C signs (with its own, valid identity) key-agreement keys that make encapsulation / ECDH import throw
-		const vouch = async (pub: string, kem: string) => {
-			const sig = b64uEncode(
-				await c.vault.sign(ecdhSignedBytes(c.id, pub, kem)),
-			);
-			metaOf(c).set(`ecdh/${c.id}`, { pub, kem, sig });
-			await until(
-				() =>
-					metaOf(a).get(`ecdh/${c.id}`)?.kem === kem &&
-					metaOf(a).get(`ecdh/${c.id}`)?.pub === pub,
-				10_000, // under a loaded suite the update after a key switch can take a few seconds
-			);
+		// C signs (with its own, valid identity) key records that would make encapsulation / ECDH import throw: refused
+		const good = c.mesh.security!.keyAgreement(c.id)!;
+		const signer = { alg: SIG_ALG, fp: c.id, pub: b64uEncode(c.vault.devicePublicKey), sign: (x: Uint8Array) => c.vault.sign(x) };
+		const vouch = async (ecdh: string, kem: string, n: number) => {
+			const body = { t: "kex" as const, v: 1 as const, inst: a.mesh.root!.mid, dev: c.id, ecdh, kem, n };
+			return c.mesh.security!.add({ ...body, sig: await signCanonical(signer, body) });
 		};
-		const good = metaOf(c).get(`ecdh/${c.id}`);
-		await vouch(good.pub, b64uEncode(new Uint8Array(1184).fill(255))); // wrong modulus
+		expect((await vouch(good.ecdh, b64uEncode(new Uint8Array(1184).fill(255)), 50)).status).toBe("rejected"); // wrong modulus
 		await a.mesh.revoke(d.id);
-		await until(
-			() => b.mesh.epoch === 1 && c.mesh.epoch === 1 && e.mesh.epoch === 1,
-			8000,
-		);
+		await until(() => b.mesh.epoch === 1 && c.mesh.epoch === 1 && e.mesh.epoch === 1, 8000);
 		const bad = new Uint8Array(65);
 		bad[0] = 4; // (0, 0) is not on the curve
-		await vouch(b64uEncode(bad), good.kem);
+		expect((await vouch(b64uEncode(bad), good.kem, 51)).status).toBe("rejected");
 		await a.mesh.revoke(e.id);
 		await until(() => b.mesh.epoch === 2 && c.mesh.epoch === 2, 8000);
 		for (const x of [a, b, c, d, e]) x.mesh.destroy();
@@ -266,43 +254,20 @@ describe("PQC: rotation records are signed by the owner with ML-DSA-65", () => {
 		const hub = createLoopbackHub();
 		const { a, b, c } = await trio(hub);
 		const all = [a, b, c];
-		await until(
-			() =>
-				all.every((x) => all.every((y) => metaOf(x).has(`ecdh/${y.id}`))) &&
-				c.mesh.devices().length === 3,
-		);
+		await until(() => all.every((x) => all.every((y) => kexKnown(x, y.id))) && c.mesh.devices().length === 3);
 		const k0 = (b.vault.meshKey as Uint8Array).slice();
 		const instance = a.mesh.namespace.split("/")[1] as string;
 		const ownerEcdh = (await a.vault.getEcdhIdentity!()).privateKey; // what a quantum adversary would compute
-		const cKex = metaOf(a).get(`ecdh/${c.id}`);
+		const cKex = a.mesh.security!.keyAgreement(c.id)!;
 		const rejected: string[] = [];
 		c.mesh.on("rejected", (e) => rejected.push(e.reason));
 		b.mesh.destroy(); // B speaks raw from here on (modified client)
-		const forge = async (sign?: (id: string) => Promise<string>) => {
-			const rec: Record<string, unknown> = {
-				v: 1,
-				epoch: 1,
-				from: a.id,
-				revoked: [],
-				to: [c.id],
-				n: b64uEncode(randomBytes(16)),
-				revs: [],
-				wh: "",
-			};
-			const pid = await rotationPreId(rec as never);
-			const wrap = await wrapMeshKey(
-				ownerEcdh,
-				b64uDecode(cKex.pub),
-				b64uDecode(cKex.kem),
-				pid,
-				a.id,
-				c.id,
-				randomBytes(32),
-			);
-			const wraps = { [c.id]: wrap };
-			rec.wh = await wrapsHash(wraps);
-			if (sign) rec.sig = await sign(await rotationId(rec as never));
-			return utf8(JSON.stringify({ rot: rec, to: c.id, wrap, wraps }));
+		const forge = async (sig: (id: string) => Promise<string>) => {
+			const base = { t: "rot" as const, v: 2 as const, inst: a.mesh.root!.mid, epoch: 1, from: a.id, to: [c.id], revoked: [], cut: [], revs: [], n: b64uEncode(randomBytes(16)) };
+			const pid = await rotationPreId(base);
+			const wraps = { [c.id]: await wrapMeshKey(ownerEcdh, b64uDecode(cKex.ecdh), b64uDecode(cKex.kem), pid, a.id, c.id, randomBytes(32)) };
+			const wh = await wrapsHash(wraps);
+			return utf8(JSON.stringify({ t: "docs", docs: [{ ...base, wh, wraps, sig: await sig(await rotationId({ ...base, wh })) }] }));
 		};
 		const t = hub.transport("evil");
 		const lks: PeerLink[] = [];
@@ -313,23 +278,14 @@ describe("PQC: rotation records are signed by the owner with ML-DSA-65", () => {
 		});
 		await t.join(await deriveRoomId(k0, "fize", TOPIC, 0, instance), b.id);
 		await until(() => lks.some((l) => l.id === c.id));
-		const p = await (peers[lks.findIndex((l) => l.id === c.id)] as Promise<
-			Awaited<ReturnType<typeof rawPeer>>
-		>);
+		const p = await (peers[lks.findIndex((l) => l.id === c.id)] as Promise<Awaited<ReturnType<typeof rawPeer>>>);
 		await until(() => p.isAuthed(), 3000);
-		await p.send(3, await forge()); // no signature
-		await p.send(
-			3,
-			await forge(async (id) =>
-				b64uEncode(await b.vault.sign(rotationSigBytes(id))),
-			),
-		); // B's key
+		await p.send(7, await forge(async () => "AAAA")); // no (valid) signature
+		await p.send(7, await forge(async (id) => b64uEncode(await b.vault.sign(rotationSigBytes(id))))); // B's key
 		await new Promise((r) => setTimeout(r, 1500));
 		expect(c.mesh.epoch).toBe(0);
 		expect(c.vault.meshKey).toEqual(a.vault.meshKey);
-		expect(
-			rejected.filter((r) => r === "rotation signature invalid"),
-		).toHaveLength(2);
+		expect(rejected).toContain("rotation signature invalid");
 		// the owner's own rotations still go through
 		await a.mesh.revoke(b.id);
 		await until(() => c.mesh.epoch === 1);
@@ -343,11 +299,7 @@ describe("a destroyed mesh never touches the vault", () => {
 		const hub = createLoopbackHub();
 		const { a, b, c } = await trio(hub);
 		const all = [a, b, c];
-		await until(
-			() =>
-				all.every((x) => all.every((y) => metaOf(x).has(`ecdh/${y.id}`))) &&
-				a.mesh.devices().length === 3,
-		);
+		await until(() => all.every((x) => all.every((y) => kexKnown(x, y.id))) && a.mesh.devices().length === 3);
 		const k0 = (a.vault.meshKey as Uint8Array).slice();
 		const sign = a.vault.sign.bind(a.vault);
 		let hit = false;

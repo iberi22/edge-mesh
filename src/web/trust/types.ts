@@ -71,6 +71,11 @@ export interface GrantBody {
 	parent?: string;
 	/** ms, informational; makes re-issued grants distinct */
 	issuedAt: number;
+	/**
+	 * web/provider: the mesh key epoch the issuer handed over with this grant when pairing the subject (absent when no
+	 * key was handed over, e.g. a re-anchored grant). Lets the owner see who still needs the current key.
+	 */
+	epoch?: number;
 }
 
 export interface Grant extends GrantBody {

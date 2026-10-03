@@ -30,6 +30,11 @@ export function isPublicKey(pub: unknown): pub is string {
 	return decodeLen(pub, PUBLIC_KEY_BYTES) !== null;
 }
 
+/** R5-B3: a base64url ML-DSA-65 signature in its one canonical encoding (exactly 3309 bytes). */
+export function isSignature(sig: unknown): sig is string {
+	return decodeLen(sig, SIGNATURE_BYTES) !== null;
+}
+
 /** Stable key id: base64url(SHA-256(canonicalJson({ alg: "ML-DSA-65", pub }))). */
 export function keyFingerprint(pub: string): Promise<string> {
 	return sha256B64u(canonicalBytes({ alg: SIG_ALG, pub }));

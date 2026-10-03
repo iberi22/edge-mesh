@@ -1,4 +1,4 @@
-import { type Admission, idMatchesPub, type TrustRoot } from "./admission.js";
+import { idMatchesPub, type TrustRoot } from "./admission.js";
 import { hkdf, importAesKey, openUpdate, sealUpdate } from "./crypto.js";
 import { hybridSecret, identityVerify, kemDecapsulate, kemEncapsulate, kemKeygen } from "./pq.js";
 import { hmac } from "./rooms.js";
@@ -36,10 +36,14 @@ export interface GrantBody {
 	hostProof?: { pub: string; sig: string };
 	/** Trust anchor the guest pins (the mesh owner), sent over the SAS-authenticated session. */
 	root?: TrustRoot;
-	/** The guest's own admission followed by its issuer's chain up to (excluding) the root. */
-	admissions?: Admission[];
-	/** The rotation that produced `meshKey` (B4: concurrent rotations are resolved by its id). */
-	rot?: unknown;
+	/**
+	 * Security documents for the guest (round 5): its own grant, the issuer's grant chain up to (excluding) the root, the
+	 * key-agreement records of the host and the owner, and the rotation that produced `meshKey` when known. Everything
+	 * else arrives over the trust channel once the guest is in.
+	 */
+	docs?: unknown[];
+	/** id of the rotation that produced `meshKey` (B4: same-epoch rotations are resolved by id) */
+	rotId?: string;
 	/** Application data attached by the host for this guest (MeshOptions pairHost({ extra })). */
 	extra?: unknown;
 }

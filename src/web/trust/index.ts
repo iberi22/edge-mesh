@@ -21,6 +21,7 @@ export {
 	createSigner,
 	generateSigner,
 	isPublicKey,
+	isSignature,
 	keyFingerprint,
 	PUBLIC_KEY_BYTES,
 	SIG_ALG,

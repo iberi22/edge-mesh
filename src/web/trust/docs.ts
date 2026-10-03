@@ -2,6 +2,7 @@
 import { contentId } from "./canonical.js";
 import {
 	isPublicKey,
+	isSignature,
 	keyFingerprint,
 	SIG_ALG,
 	type Signer,
@@ -30,6 +31,8 @@ export interface GrantInput {
 	expiresAt?: number;
 	seqCutoff?: number;
 	issuedAt?: number;
+	/** mesh key epoch handed over with the grant (web/provider pairing) */
+	epoch?: number;
 }
 
 export interface IssueContext {
@@ -87,6 +90,7 @@ export async function issueGrant(
 		issuer: issuer.fp,
 		parent: parentId(ctx.parent),
 		issuedAt: input.issuedAt ?? now,
+		epoch: input.epoch,
 	};
 	const clean = JSON.parse(JSON.stringify(body)) as GrantBody; // drop undefined members for a stable wire shape
 	return {
@@ -166,7 +170,7 @@ export function checkGrantShape(
 	if (x.v !== 1 || x.alg !== SIG_ALG) return "unsupported version/alg";
 	if (
 		!isStr(x.id) ||
-		!isStr(x.sig, 4500) ||
+		!isSignature(x.sig) ||
 		!isStr(x.inst) ||
 		!isStr(x.issuer) ||
 		!isStr(x.role, 128)
@@ -185,7 +189,8 @@ export function checkGrantShape(
 		return "bad subject";
 	if (!isNat(x.delegate) || !isNat(x.notBefore) || !isNat(x.issuedAt))
 		return "bad numbers";
-	if (!isOptNat(x.expiresAt) || !isOptNat(x.seqCutoff)) return "bad numbers";
+	if (!isOptNat(x.expiresAt) || !isOptNat(x.seqCutoff) || !isOptNat(x.epoch))
+		return "bad numbers";
 	if (!isObj(x.permissions)) return "bad permissions";
 	for (const [mod, lvl] of Object.entries(x.permissions)) {
 		if (!schema.modules.includes(mod)) return `unknown module "${mod}"`;
@@ -199,7 +204,7 @@ export function checkRevocationShape(x: unknown): string | null {
 	if (x.v !== 1 || x.alg !== SIG_ALG) return "unsupported version/alg";
 	if (
 		!isStr(x.id) ||
-		!isStr(x.sig, 4500) ||
+		!isSignature(x.sig) ||
 		!isStr(x.inst) ||
 		!isStr(x.issuer) ||
 		!isStr(x.target)

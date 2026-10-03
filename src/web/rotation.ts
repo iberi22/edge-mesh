@@ -1,4 +1,4 @@
-import { isDeviceId, isEpoch, type Revocation } from "./admission.js";
+import { isDeviceId, isEpoch } from "./admission.js";
 import { importAesKey, openUpdate, sealUpdate } from "./crypto.js";
 import { hybridSecret, kemDecapsulate, kemEncapsulate, ML_KEM_CIPHERTEXT_BYTES } from "./pq.js";
 import { b64uDecode, b64uEncode, bs, concat, utf8 } from "./util.js";
@@ -40,74 +40,72 @@ export interface KemIdentity {
 }
 
 /**
- * Bytes the device identity key (ML-DSA-65) signs to vouch for its key-agreement keys: the P-256 ECDH key and the
- * ML-KEM-768 encapsulation key, both base64url, published together as `ecdh/<deviceId> = { pub, kem, sig }`.
+ * One key rotation of the mesh, as a self-verifying security document (round 5): issued and signed by the owner only,
+ * identical for every device, carrying every recipient's wrap. `to` lists the devices that get the new key, `revoked`
+ * the devices it cuts off, `cut` the web/trust grant ids it executes (authoritative: a device whose grant is cut is out
+ * even where the revocation documents never arrived), `revs` the ids of the revocation documents behind it.
+ * `rotationId` commits to all of it, including the whole wrap set (`wh`), and the owner signs that id (ML-DSA-65).
+ * Two rotations for the same epoch (two devices running the owner identity) are resolved deterministically by id
+ * (see provider: highest epoch, then lowest id, wins).
  */
-export const ecdhSignedBytes = (deviceId: string, pubB64: string, kemB64: string) =>
-	utf8(JSON.stringify(["swal-kex/v2", deviceId, pubB64, kemB64]));
-
-/**
- * Public part of one key rotation, identical for every recipient. Only the owner (the mesh root) issues rotations.
- * `to` lists the devices that received a wrap of the new key, `revoked` the devices it cuts off (empty for a follow-up
- * that only adds members a previous rotation missed), `revs` the signed revocations that justify it. Two rotations for
- * the same epoch (two devices running the owner identity) are resolved deterministically by `rotationId` (see
- * provider: highest epoch, then lowest id, wins).
- */
-export interface RotRecord {
-	v: 1;
+export interface RotDoc {
+	t: "rot";
+	v: 2;
+	/** mesh id */
+	inst: string;
 	epoch: number;
+	/** the owner (mesh root) device id */
 	from: string;
-	revoked: string[];
 	to: string[];
+	revoked: string[];
+	cut: string[];
+	revs: string[];
 	/** 16 random bytes (base64url): two rotations never share an id */
 	n: string;
-	/** finding 5: base64url SHA-256 of the full wrap set (`wrapsHash`): relayers and receivers check a map against it */
+	/** base64url SHA-256 of the full wrap set (`wrapsHash`) */
 	wh: string;
-	revs: Revocation[];
-	/**
-	 * ML-DSA-65 signature of the owner identity over `rotationSigBytes(rotationId)` (base64url). The id commits to the
-	 * record and the wrap set, so the whole rotation is authenticated post-quantum, not only by the ECDH half of the
-	 * wraps. Optional in the shape only: a rotation without a valid signature is rejected by every device.
-	 */
-	sig?: string;
+	/** recipient device id -> its hybrid wrap of the new mesh key */
+	wraps: Record<string, string>;
+	/** ML-DSA-65 by the owner over `rotationSigBytes(rotationId)`, canonical base64url */
+	sig: string;
 }
 
 /** Bytes the owner signs (ML-DSA-65) for a rotation: its id, domain-separated. */
 export const rotationSigBytes = (rotId: string) => utf8(JSON.stringify(["swal-rot-sig/v1", rotId]));
 
-/** Receivers drop a rotation whose `to`, `revoked` or `revs` list is longer (R4-S3: issuers respect it too). */
+/** Receivers refuse a rotation whose `to` or `revoked` list is longer (R4-S3: the owner respects it too). */
 export const MAX_ROT_MEMBERS = 1024;
-const isIdList = (x: unknown): x is string[] =>
-	Array.isArray(x) && x.length <= MAX_ROT_MEMBERS && x.every((i) => isDeviceId(i));
+/** Grant ids / revocation document ids a rotation may carry. */
+export const MAX_ROT_REFS = 4096;
+/** A hybrid wrap is base64url(ML-KEM-768 ciphertext 1088 B || AES-GCM(32 B) 60 B) = 1531 characters. */
+export const MAX_WRAP_CHARS = 1600;
+const DOC_ID_RE = /^[A-Za-z0-9_-]{43}$/;
+const isIdList = (x: unknown, max: number, ok: (i: unknown) => boolean): x is string[] =>
+	Array.isArray(x) && x.length <= max && x.every(ok) && new Set(x).size === x.length;
 
-export function isRotRecord(x: unknown): x is RotRecord {
-	const r = x as RotRecord;
-	return (
-		typeof r === "object" &&
-		r !== null &&
-		r.v === 1 &&
-		isEpoch(r.epoch) &&
-		r.epoch >= 1 &&
-		isDeviceId(r.from) &&
-		isIdList(r.revoked) &&
-
-		isIdList(r.to) &&
-		typeof r.n === "string" &&
-		r.n.length <= 64 &&
-		typeof r.wh === "string" &&
-		r.wh.length <= 64 &&
-		Array.isArray(r.revs) &&
-		r.revs.length <= MAX_ROT_MEMBERS &&
-		(r.sig === undefined || (typeof r.sig === "string" && r.sig.length <= 4500))
-	);
+export function isRotDoc(x: unknown): x is RotDoc {
+	const r = x as RotDoc;
+	if (typeof r !== "object" || r === null || r.t !== "rot" || r.v !== 2) return false;
+	if (typeof r.inst !== "string" || r.inst.length > 128 || !isEpoch(r.epoch) || r.epoch < 1 || !isDeviceId(r.from)) return false;
+	if (!isIdList(r.to, MAX_ROT_MEMBERS, isDeviceId) || !isIdList(r.revoked, MAX_ROT_MEMBERS, isDeviceId)) return false;
+	const isRef = (i: unknown) => typeof i === "string" && DOC_ID_RE.test(i);
+	if (!isIdList(r.cut, MAX_ROT_REFS, isRef) || !isIdList(r.revs, MAX_ROT_REFS, isRef)) return false;
+	if (typeof r.n !== "string" || r.n.length > 64 || typeof r.wh !== "string" || r.wh.length > 64) return false;
+	if (typeof r.sig !== "string" || r.sig.length > 4500) return false;
+	const w = r.wraps;
+	if (typeof w !== "object" || w === null || Array.isArray(w)) return false;
+	const keys = Object.keys(w);
+	return keys.length === r.to.length && keys.every((k) => r.to.includes(k) && typeof w[k] === "string" && (w[k] as string).length <= MAX_WRAP_CHARS);
 }
 
-/** rotId = base64url(SHA-256(["swal-rot/v1", epoch, from, sorted revoked, sorted to, n])). `revs` are signed on their own. */
 const sha = async (s: string) => b64uEncode(new Uint8Array(await crypto.subtle.digest("SHA-256", bs(utf8(s)))));
+const sorted = (a: readonly string[]) => [...a].sort();
 
 /** Pre-id: hash of the rotation WITHOUT its wrap set; the wraps are bound to it (they cannot be bound to the final id). */
-export function rotationPreId(r: Omit<RotRecord, "revs" | "wh"> & { revs?: unknown; wh?: unknown }): Promise<string> {
-	return sha(JSON.stringify(["swal-rot/v2", r.epoch, r.from, [...r.revoked].sort(), [...r.to].sort(), r.n]));
+export function rotationPreId(r: Pick<RotDoc, "inst" | "epoch" | "from" | "to" | "revoked" | "cut" | "revs" | "n">): Promise<string> {
+	return sha(
+		JSON.stringify(["swal-rot/v3", r.inst, r.epoch, r.from, sorted(r.to), sorted(r.revoked), sorted(r.cut), sorted(r.revs), r.n]),
+	);
 }
 
 /** Hash of a wrap set: SHA-256 over the canonical JSON of its [deviceId, wrap] pairs sorted by deviceId. */
@@ -115,9 +113,9 @@ export function wrapsHash(wraps: Readonly<Record<string, string>>): Promise<stri
 	return sha(JSON.stringify(Object.entries(wraps).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))));
 }
 
-/** rotId = SHA-256(["swal-rot/v2id", preId, wh]): commits to the whole record AND to every recipient's wrap. */
-export async function rotationId(r: Omit<RotRecord, "revs"> & { revs?: unknown }): Promise<string> {
-	return sha(JSON.stringify(["swal-rot/v2id", await rotationPreId(r), r.wh]));
+/** rotId = SHA-256(["swal-rot/v3id", preId, wh]): commits to the whole record AND to every recipient's wrap. */
+export async function rotationId(r: Omit<RotDoc, "t" | "v" | "sig" | "wraps"> & { wraps?: unknown }): Promise<string> {
+	return sha(JSON.stringify(["swal-rot/v3id", await rotationPreId(r), r.wh]));
 }
 
 /** v4 binds the whole rotation (epoch, issuer, targets, recipients, nonce) through its pre-id; hybrid key. */

@@ -3,18 +3,17 @@
 
 import { ml_dsa65 } from "@noble/post-quantum/ml-dsa.js";
 import { describe, expect, it, vi } from "vitest";
-import {
-	idMatchesPub,
-	signAdmission,
-	signRevocation,
-} from "../../src/web/admission.js";
+import { idMatchesPub } from "../../src/web/admission.js";
 import { deriveDocMaterial } from "../../src/web/crypto.js";
 import {
 	createLoopbackHub,
 	deriveRoomId,
 	type PeerLink,
 } from "../../src/web/index.js";
-import { deviceIdOf, kemKeygen } from "../../src/web/pq.js";
+import { kemKeygen } from "../../src/web/pq.js";
+import { vaultSigner } from "../../src/web/secstate.js";
+import { issueRevocation } from "../../src/web/trust/docs.js";
+import { SIG_ALG, signCanonical } from "../../src/web/trust/keys.js";
 import { craft, openFrame, TOPIC } from "./audit-r3-lib.js";
 
 // every identity verification the mesh does (all devices of this process), to count the work an attacker causes
@@ -43,6 +42,7 @@ import { isPublicKey } from "../../src/web/trust/keys.js";
 import { b64uDecode, b64uEncode, randomBytes } from "../../src/web/util.js";
 import {
 	type Dev,
+	kexKnown,
 	makeDev,
 	makeVault,
 	metaOf,
@@ -56,8 +56,11 @@ import { world } from "./trust-fixtures.js";
 const settle = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const keyOf = (d: Dev) => b64uEncode(d.vault.meshKey as Uint8Array);
 
-/** Owner `o`, admin `adm` and the given members, all connected and with every key-agreement key known. */
-async function mesh(labels: string[]) {
+/**
+ * Owner `o`, admin `adm` and the given members, all connected and with every key-agreement key known. Members in
+ * `byAdmin` are admitted by the admin (round 5: an admin revokes the devices it admitted).
+ */
+async function mesh(labels: string[], byAdmin: string[] = []) {
 	const g = createLoopbackHub();
 	const a = await makeDev("o", g);
 	a.mesh.on("sas", (p) => p.confirm());
@@ -67,14 +70,14 @@ async function mesh(labels: string[]) {
 	const ms: Dev[] = [];
 	for (const l of labels) {
 		const d = await makeDev(l, g);
-		await pair(a, d);
+		await pair(byAdmin.includes(l) ? x : a, d);
 		ms.push(d);
 	}
 	const all = [a, x, ...ms];
 	await until(
 		() =>
 			all.every((d) => d.mesh.devices().length === all.length) &&
-			all.every((d) => all.every((y) => metaOf(d).has(`ecdh/${y.id}`))),
+			all.every((d) => all.every((y) => kexKnown(d, y.id))),
 		20_000,
 	);
 	return { g, a, x, ms, all };
@@ -89,26 +92,21 @@ describe("audit round 4 regressions", () => {
 		const k1 = keyOf(a);
 		expect(keyOf(m)).not.toBe(k1);
 		const mid = (a.mesh.root as { mid: string }).mid;
+		// round 5: the admin's flood can only be documents it signs (the shared doc counts for nothing): 513 revocations
+		// of grants that do not exist, under its own grant. None is stored, none touches the owner's executed cut.
+		const xGrant = a.mesh.security!.trust.grantsOf(x.id)[0]!;
 		const flood = [];
 		for (let i = 0; i < 513; i++)
 			flood.push(
-				await signRevocation(x.vault, {
-					mid,
-					target: b64uEncode(randomBytes(32)),
-					by: x.id,
-					epoch: 2,
-				}),
+				await issueRevocation(vaultSigner(x.vault, b64uEncode(x.vault.devicePublicKey)), { target: b64uEncode(randomBytes(32)), lastSeq: 0 }, { inst: mid, parent: xGrant }),
 			);
+		const outs = await x.mesh.security!.addMany(flood);
+		expect(outs.filter((o) => o.status === "accepted")).toHaveLength(0);
+		// and the pre-round-5 move: the same flood in the shared doc
 		x.doc.transact(() => {
-			for (const r of flood) metaOf(x).set(`rev/${r.target}:${r.epoch}`, r);
+			for (const r of flood) metaOf(x).set(`rev/${r.target}:2`, r);
 		});
-		await until(
-			() =>
-				metaOf(a).has(`rev/${(flood[512] as { target: string }).target}:2`) &&
-				metaOf(b).size > 513,
-			20_000,
-		);
-		await settle(8000); // ~2 ms per signature on every device, then the trust recomputation
+		await settle(3000);
 		for (const d of [a, b, x]) {
 			expect(d.mesh.devices().some((y) => y.deviceId === m.id)).toBe(false);
 			expect(d.mesh.peers).not.toContain(m.id);
@@ -119,20 +117,19 @@ describe("audit round 4 regressions", () => {
 		await settle(1500);
 		expect(keyOf(m)).not.toBe(keyOf(a));
 		expect(storedWraps(a).some((w) => w.to === m.id)).toBe(false);
-		// the owner did not execute the admin's flood as one huge rotation either (at most its per-issuer cap)
-		for (const w of storedWraps(a))
-			expect(w.rec.revoked.length).toBeLessThanOrEqual(64);
+		// the owner did not execute any of the admin's flood either
+		for (const w of storedWraps(a)) expect(w.rec.revoked.length).toBeLessThanOrEqual(1);
 		for (const d of all) d.mesh.destroy();
 	}, 120_000);
 
 	it("R4-B2: a member offline while 17 requests were published adopts the owner's rotation that executes them all", async () => {
 		const { g, a, x, ms } = await mesh(["b", "straggler"]);
 		const [b, s] = ms as [Dev, Dev];
-		// 17 old tablets, admitted then put away (offline)
+		// 17 old tablets the admin admitted, then put away (offline)
 		const olds: Dev[] = [];
 		for (let i = 0; i < 17; i++) {
 			const d = await makeDev(`old${i}`, g);
-			await pair(a, d);
+			await pair(x, d);
 			d.mesh.destroy();
 			olds.push(d);
 		}
@@ -162,10 +159,7 @@ describe("audit round 4 regressions", () => {
 			10_000,
 		);
 		for (const d of olds) await x2.mesh.revoke(d.id);
-		await until(
-			() => olds.every((d) => metaOf(b2).has(`rev/${d.id}:1`)),
-			20_000,
-		);
+		await until(() => b2.mesh.security!.trust.revocations().length >= 17, 20_000);
 		expect(x2.mesh.rekeyPending).toBe(true);
 		// the owner comes back and executes all 17
 		const a2 = await makeDev("o", g2, undefined, {
@@ -175,6 +169,7 @@ describe("audit round 4 regressions", () => {
 		await until(
 			() =>
 				a2.mesh.epoch >= 1 &&
+				!a2.mesh.rekeyPending &&
 				x2.mesh.epoch === a2.mesh.epoch &&
 				b2.mesh.epoch === a2.mesh.epoch,
 			30_000,
@@ -213,40 +208,14 @@ describe("audit round 4 regressions", () => {
 		const [b] = ms as [Dev];
 		const root = a.mesh.root as { mid: string };
 		// 1025 devices the owner admitted (keys only: they never come online), then revoked in one batch
-		const fakes: string[] = [];
-		const adms: unknown[] = [];
-		const revs: unknown[] = [];
-		for (let i = 0; i < 1025; i++) {
-			const pub = ml_dsa65.keygen().publicKey;
-			const id = await deviceIdOf(pub);
-			fakes.push(id);
-			adms.push(
-				await signAdmission(a.vault, {
-					mid: root.mid,
-					deviceId: id,
-					pub: b64uEncode(pub),
-					name: `t${i}`,
-					role: "member",
-					by: a.id,
-					epoch: 0,
-					at: 0,
-				}),
-			);
-			revs.push(
-				await signRevocation(a.vault, {
-					mid: root.mid,
-					target: id,
-					by: a.id,
-					epoch: 1,
-				}),
-			);
-		}
-		a.doc.transact(() => {
-			for (const [i, id] of fakes.entries()) {
-				metaOf(a).set(`adm/${id}`, adms[i]);
-				metaOf(a).set(`rev/${id}:1`, revs[i]);
-			}
-		});
+		const so = vaultSigner(a.vault, b64uEncode(a.vault.devicePublicKey));
+		const grants = [];
+		for (let i = 0; i < 1025; i++)
+			grants.push(await a.mesh.security!.issueGrant(b64uEncode(ml_dsa65.keygen().publicKey), { role: "member", name: `t${i}` }));
+		await a.mesh.security!.addMany(grants);
+		const revs = [];
+		for (const g of grants) revs.push(await issueRevocation(so, { target: (g as { id: string }).id, lastSeq: 0 }, { inst: root.mid }));
+		await a.mesh.security!.addMany(revs);
 		await until(
 			() =>
 				a.mesh.epoch >= 2 &&
@@ -320,33 +289,33 @@ describe("audit round 4 regressions", () => {
 		const { a, ms, all } = await mesh(["m1", "m2"]);
 		const [m1] = ms as [Dev, Dev];
 		await settle(500);
-		const kex = () =>
-			verified.data.filter(
-				(d) => new TextDecoder().decode(d.subarray(0, 13)) === '["swal-kex/v2',
-			).length;
-		const before = kex();
-		// a member overwrites every other device's key-agreement record with a well-formed but forged signature
-		m1.doc.transact(() => {
-			for (const d of all) {
-				if (d === m1) continue;
-				const e = metaOf(m1).get(`ecdh/${d.id}`);
-				// another (valid) ML-KEM key, so the entry differs from the pinned one and must be checked
-				metaOf(m1).set(`ecdh/${d.id}`, {
-					...e,
-					kem: b64uEncode(kemKeygen().publicKey),
-					sig: b64uEncode(randomBytes(3309)),
-				});
-			}
-		});
-		// ...then keeps writing to meta (each write used to re-run the whole trust pass, re-verifying every forged entry)
+		// a member forges key records of every other device (well-formed, signed by a key of its own): each is refused,
+		// and the same forged record handed again is refused without a new check (known bad, by its whole hash)
+		const sec = m1.mesh.security!;
+		const fake = await makeVault("forger");
+		const signer = { alg: SIG_ALG, fp: fake.deviceId, pub: b64uEncode(fake.devicePublicKey), sign: (d: Uint8Array) => fake.sign(d) };
+		const forged = [];
+		for (const d of all) {
+			if (d === m1) continue;
+			const k = sec.keyAgreement(d.id)!;
+			const body = { t: "kex" as const, v: 1 as const, inst: a.mesh.root!.mid, dev: d.id, ecdh: k.ecdh, kem: b64uEncode(kemKeygen().publicKey), n: 7 };
+			forged.push({ ...body, sig: await signCanonical(signer, body) });
+		}
+		expect((await sec.addMany(forged)).every((o) => o.status === "rejected")).toBe(true);
+		const again = await sec.addMany(forged);
+		expect(again.every((o) => o.status === "rejected" && o.reason === "known bad")).toBe(true);
+		// ...and writes to the shared doc cost nothing at all (the security state is not there)
+		const snap = () => JSON.stringify(all.map((d) => [d.mesh.devices().length, keyOf(d), d.mesh.epoch]));
+		const before = snap();
 		for (let i = 0; i < 30; i++) {
+			metaOf(m1).set(`ecdh/${a.id}`, { junk: i });
 			metaOf(m1).set(`junk/${i}`, i);
 			await settle(20);
 		}
 		await until(() => metaOf(a).get("junk/29") === 29, 10_000);
-		await settle(1500);
-		const forged = all.length - 1;
-		expect(kex() - before).toBeLessThanOrEqual(forged * all.length);
+		await settle(1000);
+		expect(snap()).toBe(before);
+		for (const d of all) expect(d.mesh.security!.keyAgreement(m1.id)).not.toBeNull();
 		for (const d of all) d.mesh.destroy();
 	}, 60_000);
 

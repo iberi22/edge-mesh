@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import type { MeshOptions } from "../../src/web/index.js";
 import { createLoopbackHub } from "../../src/web/index.js";
 import { b64uEncode } from "../../src/web/util.js";
-import { type Dev, label, makeDev, metaOf, pair, until } from "./helpers.js";
+import { type Dev, kexKnown, label, makeDev, pair, until } from "./helpers.js";
 
 type Hub = ReturnType<typeof createLoopbackHub>;
 const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
@@ -50,16 +50,20 @@ describe.skipIf(process.env.FUZZ_SEEDS === "")(
 					await d.mesh.pairJoin(o.payload, { confirmSas: () => true });
 					admins.push(d);
 				}
+				// round 5 (web/trust): m1..m3 are admitted by x1..x3 (an admin revokes the devices it admitted), m4 by the owner
 				const members: Dev[] = [];
+				const admittedBy = new Map<string, string>();
 				for (let i = 1; i <= 4; i++) {
 					const d = await makeDev(`m${i}`, g);
-					await pair(a, d);
+					const host = i <= N_ADMINS ? (admins[i - 1] as Dev) : a;
+					await pair(host, d);
+					admittedBy.set(d.id, host.id);
 					members.push(d);
 				}
 				const all = [a, ...admins, ...members];
 				await until(
 					() =>
-						all.every((d) => all.every((y) => metaOf(d).has(`ecdh/${y.id}`))) &&
+						all.every((d) => all.every((y) => kexKnown(d, y.id))) &&
 						all.every((d) => d.mesh.devices().length === all.length),
 					10_000,
 				);
@@ -92,7 +96,7 @@ describe.skipIf(process.env.FUZZ_SEEDS === "")(
 								t.id !== rv.id &&
 								t.id !== a.id &&
 								!doneRevs.has(t.id) &&
-								(rv.id === a.id || members.some((m) => m.id === t.id)) &&
+								(rv.id === a.id || admittedBy.get(t.id) === rv.id) &&
 								me.mesh.devices().some((x) => x.deviceId === t.id),
 						);
 						if (!cands.length || me.mesh.role() === null) continue;

@@ -1,11 +1,15 @@
 import * as Y from "yjs";
 import { describe, expect, it } from "vitest";
 import { createLoopbackHub, createMesh } from "../../src/web/index.js";
-import { ecdhSignedBytes, rotationPreId, unwrapMeshKey } from "../../src/web/rotation.js";
+import { rotationPreId, unwrapMeshKey } from "../../src/web/rotation.js";
+import { SIG_ALG, signCanonical } from "../../src/web/trust/keys.js";
 import { b64uDecode, b64uEncode } from "../../src/web/util.js";
 import { type Dev, devLabels, idOf, makeDev, makeVault, metaOf, pair, storedWraps, trio, until } from "./helpers.js";
 
-/** What an insider writes into the shared `meta` map to pose as another device (`id`) with keys it controls. */
+/**
+ * What an insider does to pose as another device (`id`) with keys it controls: a key-agreement record signed by a key
+ * of its own (as a security document), and the pre-round-5 slots in the shared doc.
+ */
 async function forgeSlot(insider: Dev, claimed?: string) {
 	const fake = await makeVault(claimed ? `forged-${claimed}` : "fake");
 	const id = claimed ?? fake.deviceId; // self-registration under its own (valid) id, or a claim on someone else's
@@ -13,20 +17,25 @@ async function forgeSlot(insider: Dev, claimed?: string) {
 	const kemId = await fake.getKemIdentity!();
 	const pub = b64uEncode(ecdh.publicKey);
 	const kem = b64uEncode(kemId.publicKey);
-	const sig = b64uEncode(await fake.sign(ecdhSignedBytes(id, pub, kem)));
+	const body = { t: "kex" as const, v: 1 as const, inst: insider.mesh.root!.mid, dev: id, ecdh: pub, kem, n: 99 };
+	const signer = { alg: SIG_ALG, fp: fake.deviceId, pub: b64uEncode(fake.devicePublicKey), sign: (d: Uint8Array) => fake.sign(d) };
+	const out = await insider.mesh.security!.add({ ...body, sig: await signCanonical(signer, body) });
 	insider.doc.transact(() => {
 		metaOf(insider).set(`dev/${id}`, { deviceId: id, pub: b64uEncode(fake.devicePublicKey), name: id, addedAt: Date.now() });
-		metaOf(insider).set(`ecdh/${id}`, { pub, kem, sig });
+		metaOf(insider).set(`ecdh/${id}`, { pub, kem, sig: "x" });
 	});
-	return { fake, ecdh, kemId };
+	return { fake, ecdh, kemId, out };
 }
+const kexOf = (d: Dev, id: string) => d.mesh.security!.keyAgreement(id);
 
 describe("H1: only admitted devices are trusted (rotation wraps, ECDH keys, device list)", () => {
 	it("a device self-registered by an insider gets no wrap and cannot fetch the rotated key through the retired room", async () => {
 		const hub = createLoopbackHub();
 		const { a, b, c } = await trio(hub);
-		const { fake } = await forgeSlot(c);
+		const { fake, out } = await forgeSlot(c);
+		expect(out.status).not.toBe("accepted"); // a device without a grant has no usable key record
 		await until(() => metaOf(a).has(`ecdh/${fake.deviceId}`) && metaOf(b).has(`ecdh/${fake.deviceId}`));
+		expect(kexOf(a, fake.deviceId)).toBeNull();
 		expect(devLabels(a.mesh)).not.toContain("fake");
 
 		const oldKey = a.vault.meshKey!;
@@ -53,11 +62,13 @@ describe("H1: only admitted devices are trusted (rotation wraps, ECDH keys, devi
 	it("an insider overwriting a member's identity/ECDH slot gets no usable wrap, and the real member still follows", async () => {
 		const hub = createLoopbackHub();
 		const { a, b, c } = await trio(hub);
-		const realBEcdh = metaOf(a).get(`ecdh/${b.id}`).pub;
-		const { ecdh, kemId } = await forgeSlot(c, b.id);
-		await until(() => metaOf(a).get(`ecdh/${b.id}`).pub !== realBEcdh);
+		const realB = kexOf(a, b.id);
+		const { ecdh, kemId, out } = await forgeSlot(c, b.id);
+		expect(out.status).toBe("rejected"); // not signed by B's identity key
+		await until(() => metaOf(a).get(`ecdh/${b.id}`)?.sig === "x");
+		expect(kexOf(a, b.id)).toEqual(realB);
 		await a.mesh.revoke(c.id);
-		const aPub = b64uDecode(metaOf(a).get(`ecdh/${a.id}`).pub);
+		const aPub = b64uDecode(kexOf(a, a.id)!.ecdh);
 		for (const w of storedWraps(a, 1).filter((x) => x.to === b.id)) {
 			await expect(unwrapMeshKey(ecdh.privateKey, kemId.secretKey, aPub, await rotationPreId(w.rec), a.id, b.id, w.wrap)).rejects.toThrow();
 		}
@@ -72,10 +83,9 @@ describe("H1: only admitted devices are trusted (rotation wraps, ECDH keys, devi
 		let veto = false;
 		const { a, b, c } = await trio(hub, { a: { authorizeDevice: (id: string) => !(veto && id === idOf("devB")) } });
 		veto = true; // e.g. its grant expired
-		metaOf(a).set("touch", 1); // any change re-evaluates trust
+		await a.mesh.revoke(c.id); // any trust pass re-evaluates the hook
 		await until(() => !a.mesh.devices().some((d) => d.deviceId === b.id));
-		expect(devLabels(a.mesh)).toEqual(["devA", "devC"]);
-		await a.mesh.revoke(c.id);
+		expect(devLabels(a.mesh)).toEqual(["devA"]);
 		expect(storedWraps(a, 1).map((w) => w.to)).not.toContain(b.id);
 		// and the host does not admit a device its policy rejects
 		const d = await makeDev("devB2", hub);
@@ -106,8 +116,9 @@ describe("H1: only admitted devices are trusted (rotation wraps, ECDH keys, devi
 		expect(e.mesh.role()).toBe("member");
 		expect(e.mesh.root?.deviceId).toBe(a.id);
 		await until(() => [a, b, c].every((x) => x.mesh.devices().some((dv) => dv.deviceId === e.id && dv.role === "member" && dv.admittedBy === d.id)));
-		// an admission forged by a member is ignored everywhere
+		// a member cannot sign grants; one written into the shared doc is ignored everywhere
 		const ghost = await makeVault("ghost");
+		await expect(b.mesh.security!.issueGrant(b64uEncode(ghost.devicePublicKey), { role: "admin" })).rejects.toThrow(/cannot admit/);
 		metaOf(b).set(`adm/${ghost.deviceId}`, { v: 1, mid: a.mesh.root!.mid, deviceId: ghost.deviceId, pub: b64uEncode(ghost.devicePublicKey), name: "g", role: "admin", by: b.id, at: Date.now(), sig: b64uEncode(await b.vault.sign(new Uint8Array(1))) });
 		await new Promise((r) => setTimeout(r, 50));
 		for (const x of [a, b, c, d, e]) expect(devLabels(x.mesh)).not.toContain("ghost");

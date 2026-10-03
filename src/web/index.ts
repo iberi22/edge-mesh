@@ -1,7 +1,21 @@
 export { createMesh } from "./provider.js";
-export type { Mesh, MeshChannel, MeshEvent, MeshOptions, MeshStatus, PairHostOptions, PairJoinResult, PairOffer } from "./provider.js";
-export { canIssue, canRevokeRole, verifyChain } from "./admission.js";
-export type { Admission, Role, TrustRoot } from "./admission.js";
+export type {
+	Mesh,
+	MeshChannel,
+	MeshEvent,
+	MeshOptions,
+	MeshSecurity,
+	MeshStatus,
+	PairHostOptions,
+	PairJoinResult,
+	PairOffer,
+} from "./provider.js";
+export { canIssue, idMatchesPub, isDeviceId } from "./admission.js";
+export type { Role, TrustRoot } from "./admission.js";
+export { MESH_MODULE, MESH_SCHEMA, MAX_MEMBERS_PER_ADMIN, SecurityState } from "./secstate.js";
+export type { KexDoc, SecDoc } from "./secstate.js";
+export { MAX_ROT_MEMBERS, isRotDoc } from "./rotation.js";
+export type { RotDoc } from "./rotation.js";
 export {
 	IDENTITY_ALG,
 	KEM_ALG,

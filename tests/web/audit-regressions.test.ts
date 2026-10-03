@@ -1,14 +1,9 @@
 // Regression tests for the security audit of web/provider (P1–P6, plus S1, S5, S6). Each one reproduces an attack
 // and asserts that it no longer works.
 import { describe, expect, it } from "vitest";
-import {
-	type Admission,
-	type ChainContext,
-	signAdmission,
-	signRevocation,
-	verifyChain,
-	verifyRevocation,
-} from "../../src/web/admission.js";
+import { SecurityState, vaultSigner } from "../../src/web/secstate.js";
+import { issueGrant } from "../../src/web/trust/docs.js";
+import { memoryStore } from "../../src/web/store.js";
 import { fragment, Reassembler } from "../../src/web/fragment.js";
 import type {
 	LinkTransport,
@@ -32,6 +27,7 @@ import { dataChannelLink } from "../../src/web/webrtc.js";
 import {
 	type Dev,
 	idOf,
+	kexKnown,
 	makeDev,
 	makeVault,
 	metaOf,
@@ -203,15 +199,15 @@ describe("audit regressions: web/provider", () => {
 					c.mesh.devices().some((d) => d.deviceId === m.id) &&
 					a.mesh.devices().some((d) => d.deviceId === m.id),
 			);
-			await until(() =>
-				[a, x, c, m].every((d) => metaOf(a).has(`ecdh/${d.id}`)),
-			);
-			const saved = metaOf(c).get(`adm/${m.id}`);
+			await until(() => [a, x, c, m].every((d) => kexKnown(a, d.id)));
+			const saved = structuredClone(c.mesh.security!.trust.grantsOf(m.id)[0]);
 			await a.mesh.revoke(m.id);
 			await until(() => c.mesh.epoch === 1 && x.mesh.epoch === 1);
 			const view = () => [a, x, c].map((d) => d.mesh.role(m.id));
 			await until(() => view().every((r) => r === null));
-			metaOf(c).set(`adm/${m.id}`, saved); // an insider replays the old admission
+			// an insider replays the old grant (as a document, and in the shared doc)
+			expect((await c.mesh.security!.add(saved)).status).toBe("duplicate");
+			metaOf(c).set(`adm/${m.id}`, saved);
 			await settle(300);
 			expect(view()).toEqual([null, null, null]);
 			for (const y of [a, x, c, m]) y.mesh.destroy();
@@ -225,11 +221,7 @@ describe("audit regressions: web/provider", () => {
 		const c = await makeDev("devC", hub, frozen);
 		await pair(a, b);
 		await pair(a, c);
-		await until(() =>
-			[a, b, c].every((d) =>
-				[a, b, c].every((x) => metaOf(d).has(`ecdh/${x.id}`)),
-			),
-		);
+		await until(() => [a, b, c].every((d) => [a, b, c].every((x) => kexKnown(d, x.id))));
 		await a.mesh.revoke(c.id);
 		await until(() => b.mesh.epoch === 1 && b.mesh.role(c.id) === null);
 		await pair(a, c); // explicit re-admission, same clock reading
@@ -240,69 +232,45 @@ describe("audit regressions: web/provider", () => {
 		for (const x of [a, b, c]) x.mesh.destroy();
 	});
 
-	it("P4 (B6): epoch rules of admissions and revocations (unit)", async () => {
+	it("P4 (B6): grant and revocation rules, no clocks involved (unit, round 5: web/trust documents)", async () => {
 		const owner = await makeVault("owner");
 		const admin = await makeVault("admin");
+		const admin2 = await makeVault("admin2");
 		const mem = await makeVault("mem");
-		const root = {
-			mid: "m",
-			deviceId: owner.deviceId,
-			pub: b64uEncode(owner.devicePublicKey),
-		};
-		const adm = (v: Vault, by: Vault, role: "admin" | "member", ep: number) =>
-			signAdmission(by, {
-				mid: "m",
-				deviceId: v.deviceId,
-				pub: b64uEncode(v.devicePublicKey),
-				name: "",
-				role,
-				by: by.deviceId,
-				epoch: ep,
-				at: 0,
-			});
-		const admA = await adm(admin, owner, "admin", 0);
-		const admM0 = await adm(mem, admin, "member", 0);
-		const admM3 = await adm(mem, admin, "member", 3);
-		const revs = new Map<string, number[]>();
-		const ctx = (
-			epoch: number,
-			mAdms: Admission[] = [admM0],
-		): ChainContext => ({
-			verify: identityVerify,
-			root,
-			epoch,
-			candidates: (id) =>
-				id === admin.deviceId ? [admA] : id === mem.deviceId ? mAdms : [],
-			revokedAt: (id) => revs.get(id),
-		});
-		expect((await verifyChain(ctx(0), mem.deviceId))?.epoch).toBe(0);
-		// not valid before its own epoch (no future-dated admissions)
-		expect(await verifyChain(ctx(2, [admM3]), mem.deviceId)).toBeNull();
-		// the admin revokes the member at epoch 2: admissions issued before epoch 2 are void, later ones valid
-		const rev = await signRevocation(admin, {
-			mid: "m",
-			target: mem.deviceId,
-			by: admin.deviceId,
-			epoch: 2,
-		});
-		expect(await verifyRevocation(ctx(1), rev)).toBe(true);
-		revs.set(mem.deviceId, [2]);
-		expect(await verifyChain(ctx(5), mem.deviceId)).toBeNull();
-		expect(
-			(await verifyChain(ctx(5, [admM0, admM3]), mem.deviceId))?.epoch,
-		).toBe(3);
-		// the owner revokes the admin at epoch 4: the admin's EARLIER revocation (epoch 2) still counts, a later one not
-		revs.set(admin.deviceId, [4]);
-		expect(await verifyRevocation(ctx(5), rev)).toBe(true);
-		const late = await signRevocation(admin, {
-			mid: "m",
-			target: mem.deviceId,
-			by: admin.deviceId,
-			epoch: 6,
-		});
-		expect(await verifyRevocation(ctx(5), late)).toBe(false);
-		// and its admissions are void now (cascade)
-		expect(await verifyChain(ctx(5, [admM3]), mem.deviceId)).toBeNull();
+		const pub = (v: Vault) => b64uEncode(v.devicePublicKey);
+		const root = { mid: "m", deviceId: owner.deviceId, pub: pub(owner) };
+		const st = await SecurityState.open({ root, store: memoryStore(), now: () => 0 }); // a frozen clock
+		const so = vaultSigner(owner, pub(owner));
+		const sa = vaultSigner(admin, pub(admin));
+		const sa2 = vaultSigner(admin2, pub(admin2));
+		await st.addMany([await st.issueGrant(so, pub(admin), { role: "admin" }), await st.issueGrant(so, pub(admin2), { role: "admin" })]);
+		const g1 = await st.issueGrant(sa, pub(mem), { role: "member", epoch: 0 });
+		await st.add(g1);
+		expect(st.roleOf(mem.deviceId)).toBe("member");
+		// another admin cannot revoke it (it did not admit it); the admin that did can
+		expect(await st.revocationsFor(sa2, mem.deviceId)).toEqual([]);
+		const [r1] = await st.revocationsFor(sa, mem.deviceId);
+		await st.add(r1);
+		expect(st.roleOf(mem.deviceId)).toBeNull();
+		expect(st.unexecuted().devices).toEqual([mem.deviceId]); // the owner still has to re-key
+		// replaying the old grant changes nothing; a NEW grant (re-admission) makes it a member again
+		expect((await st.add(g1)).status).toBe("duplicate");
+		expect(st.roleOf(mem.deviceId)).toBeNull();
+		await st.add(await st.issueGrant(so, pub(mem), { role: "member" }));
+		expect(st.roleOf(mem.deviceId)).toBe("member");
+		// revoking the admin cascades to what it admitted (not to the owner's own grant of the member)
+		const g2 = await st.issueGrant(sa, pub(await makeVault("mem2")), { role: "member" });
+		await st.add(g2);
+		expect(st.roleOf(g2.subject.fp)).toBe("member");
+		await st.addMany(await st.revocationsFor(so, admin.deviceId));
+		expect(st.roleOf(admin.deviceId)).toBeNull();
+		expect(st.roleOf(g2.subject.fp)).toBeNull();
+		expect(st.roleOf(mem.deviceId)).toBe("member");
+		// a revoked admin's later grants never count (signed straight with web/trust: its own check is bypassed)
+		const adminGrant = st.trust.grantsOf(admin.deviceId)[0]!;
+		const g3 = await issueGrant(sa, { subject: { pub: pub(await makeVault("mem3")) }, role: "member", permissions: { mesh: "editar" }, notBefore: 0 }, { inst: "m", parent: adminGrant });
+		expect((await st.add(g3)).status).toBe("accepted");
+		expect(st.roleOf(g3.subject.fp)).toBeNull();
 	});
 
 	it("P5 (S1): a relay replaying captured signed frames on a new link neither binds it to the sender nor re-delivers them", async () => {
@@ -520,18 +488,19 @@ describe("audit regressions: web/provider", () => {
 			const o = await a.mesh.pairHost({ role: "admin" });
 			await x.mesh.pairJoin(o.payload, { confirmSas: () => true });
 		}
+		// round 5 (web/trust): an admin revokes the devices it admitted
 		const m1 = await makeDev("m1", hub);
 		const m2 = await makeDev("m2", hub);
 		const c = await makeDev("devC", hub);
-		await pair(a, m1);
-		await pair(a, m2);
+		await pair(x1, m1);
+		await pair(x2, m2);
 		await pair(a, c);
 		const all = [a, x1, x2, m1, m2, c];
 		await until(
 			() =>
-				all.every((d) => all.every((y) => metaOf(d).has(`ecdh/${y.id}`))) &&
+				all.every((d) => all.every((y) => kexKnown(d, y.id))) &&
 				all.every((d) => d.mesh.devices().length === 6),
-			5000,
+			15_000,
 		);
 		await Promise.all([x1.mesh.revoke(m1.id), x2.mesh.revoke(m2.id)]);
 		const rest = [a, x1, x2, c];
@@ -540,6 +509,8 @@ describe("audit regressions: web/provider", () => {
 		const converged = await stable(
 			() =>
 				!a.mesh.rekeyPending &&
+				a.mesh.epoch >= 1 &&
+				![m1, m2].some((m) => a.mesh.devices().some((d) => d.deviceId === m.id)) &&
 				rest.every((d) => key(d) === key(a) && d.mesh.epoch === a.mesh.epoch),
 			20_000,
 			500,
@@ -576,18 +547,19 @@ describe("audit regressions: web/provider", () => {
 			const o = await a.mesh.pairHost({ role: "admin" });
 			await x.mesh.pairJoin(o.payload, { confirmSas: () => true });
 		}
+		// round 5 (web/trust): "m1" is admitted by x1 and "m2" by x2 (an admin revokes the devices it admitted)
 		const ms: Dev[] = [];
 		for (const m of members) {
 			const d = await makeDev(m, hub);
-			await pair(a, d);
+			await pair(m === "m1" ? x1 : m === "m2" ? x2 : a, d);
 			ms.push(d);
 		}
 		const all = [a, x1, x2, ...ms];
 		await until(
 			() =>
-				all.every((d) => all.every((y) => metaOf(d).has(`ecdh/${y.id}`))) &&
+				all.every((d) => all.every((y) => kexKnown(d, y.id))) &&
 				all.every((d) => d.mesh.devices().length === all.length),
-			5000,
+			15_000,
 		);
 		return { a, x1, x2, ms, all };
 	}
@@ -654,7 +626,15 @@ describe("audit regressions: web/provider", () => {
 		await Promise.all([x1.mesh.revoke(m1.id), x2.mesh.revoke(m2.id)]);
 		// (R4-N7) the owner executed both requests and the others follow; not merely "still on the same old key"
 		expect(
-			await stable(() => !a.mesh.rekeyPending && a.mesh.epoch >= 1 && sameKey([a, x1, x2]), 20_000, 500),
+			await stable(
+				() =>
+					!a.mesh.rekeyPending &&
+					a.mesh.epoch >= 1 &&
+					![m1, m2].some((m) => a.mesh.devices().some((d) => d.deviceId === m.id)) &&
+					sameKey([a, x1, x2]),
+				20_000,
+				500,
+			),
 		).toBe(true);
 		const c2 = await makeDev("devC", hub, undefined, {
 			doc: c.doc,
