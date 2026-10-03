@@ -175,7 +175,7 @@ interface LinkRec {
 	/** link on a retired epoch room: only used to hand pairwise wraps to peers that missed the rotation */
 	legacy?: Legacy;
 	/** signed frames from a sender whose admission has not reached us yet (bounded; replayed on trust changes) */
-	held?: { frames: Uint8Array[]; bytes: number; since: number };
+	held?: { frames: Array<{ d: Uint8Array; t: number }>; bytes: number };
 }
 
 const HOLD_MAX_FRAMES = 64;
@@ -227,6 +227,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 	let admCache: Record<string, Admission> = {}; // verified admissions: survive tampering with the shared doc
 	let ecdhOk: Record<string, string> = {}; // `${deviceId}|${identityPub}` -> verified ECDH pub
 	let trusted = new Map<string, Device>(); // admitted devices other than this one
+	let admittedAt = new Map<string, number>(); // `at` of each trusted device's VERIFIED admission
 	let selfAdm: Admission | null = null;
 	const legacy = new Map<string, Legacy>(); // retired data rid -> its epoch material
 	let ecdhId: EcdhIdentity | null = null;
@@ -287,8 +288,11 @@ export function createMesh(opts: MeshOptions): Mesh {
 	let trustChain: Promise<void> = Promise.resolve();
 	const refreshTrust = () => (trustChain = trustChain.then(computeTrust).catch(err));
 	const persistRevoked = () => store.set("revoked", Object.fromEntries(revokedIds));
-	/** A device is cut off if revoked and not re-admitted afterwards. */
-	const isRevoked = (id: string) => revokedIds.has(id) && !trusted.has(id);
+	/** A device is cut off if revoked and not re-admitted (newer admission) afterwards. */
+	const isRevoked = (id: string) => {
+		const at = revokedIds.get(id);
+		return at !== undefined && !(trusted.has(id) && (admittedAt.get(id) ?? -1) > at);
+	};
 	async function computeTrust() {
 		// 1) signed revocations replicated in the doc (only valid ones count; the local map only ever grows)
 		if (root) {
@@ -315,6 +319,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const memo = new Map<string, Promise<Admission | null>>();
 		const ctx = root ? chainCtx(root) : null;
 		const next = new Map<string, Device>();
+		const nextAt = new Map<string, number>();
 		const nextCache: Record<string, Admission> = {};
 		for (const id of ids) {
 			const adm = ctx ? await verifyChain(ctx, id, memo) : null;
@@ -323,6 +328,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 			const pub = adm?.pub ?? (opts.authorizeDevice && typeof dev?.pub === "string" ? dev.pub : undefined);
 			if (!pub) continue;
 			if (opts.authorizeDevice ? !(await opts.authorizeDevice(id, b64uDecode(pub))) : !adm) continue;
+			if (adm) nextAt.set(id, adm.at);
 			next.set(id, {
 				deviceId: id,
 				pub,
@@ -334,6 +340,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		selfAdm = ctx && root?.deviceId !== vault.deviceId ? await verifyChain(ctx, vault.deviceId, memo) : null;
 		if (selfAdm?.sig) nextCache[vault.deviceId] = selfAdm;
 		trusted = next;
+		admittedAt = nextAt;
 		if (JSON.stringify(nextCache) !== JSON.stringify(admCache)) {
 			admCache = nextCache;
 			await store.set("adm", admCache);
@@ -499,11 +506,14 @@ export function createMesh(opts: MeshOptions): Mesh {
 	}
 
 	const reject = (reason: string, from?: string) => emit("rejected", { reason, from });
+	const heldAt = new WeakMap<Uint8Array, number>(); // first time a frame was held (kept across replays)
 	function hold(rec: LinkRec, data: Uint8Array) {
-		const h = (rec.held ??= { frames: [], bytes: 0, since: now() });
-		h.frames.push(data);
+		const h = (rec.held ??= { frames: [], bytes: 0 });
+		const t = heldAt.get(data) ?? now();
+		heldAt.set(data, t);
+		h.frames.push({ d: data, t });
 		h.bytes += data.length;
-		while (h.frames.length > HOLD_MAX_FRAMES || h.bytes > HOLD_MAX_BYTES) h.bytes -= h.frames.shift()!.length;
+		while (h.frames.length > HOLD_MAX_FRAMES || h.bytes > HOLD_MAX_BYTES) h.bytes -= h.frames.shift()!.d.length;
 	}
 	/** Re-run held frames once the trust state changed (a pending admission may have arrived). */
 	function replayHeld() {
@@ -511,8 +521,10 @@ export function createMesh(opts: MeshOptions): Mesh {
 			const h = rec.held;
 			if (!h || rec.closing) continue;
 			rec.held = undefined;
-			if (now() - h.since > HOLD_MS) continue;
-			for (const f of h.frames) rec.chain = rec.chain.then(() => onData(rec, f)).catch(err);
+			for (const f of h.frames) {
+				if (now() - f.t > HOLD_MS) continue;
+				rec.chain = rec.chain.then(() => onData(rec, f.d)).catch(err);
+			}
 		}
 	}
 
@@ -812,6 +824,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 	function forget(deviceId: string, at = now()) {
 		revokedIds.set(deviceId, Math.max(at, revokedIds.get(deviceId) ?? at));
 		trusted.delete(deviceId);
+		admittedAt.delete(deviceId);
 		delete admCache[deviceId];
 		void Promise.all([store.set("adm", admCache), persistRevoked()]).catch(err);
 	}
@@ -929,6 +942,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 				await persistRevoked();
 				admCache[guest.deviceId] = adm;
 				trusted.set(guest.deviceId, dev);
+				admittedAt.set(guest.deviceId, adm.at);
 				doc.transact(() => {
 					meta.delete(REV_PREFIX + guest.deviceId);
 					meta.set(ADM_PREFIX + guest.deviceId, adm);
