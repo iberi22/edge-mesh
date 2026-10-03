@@ -250,3 +250,12 @@ for every finding: `tests/web/audit-regressions.test.ts` and `tests/web/audit-re
 - `meta.epoch` is gone (the epoch is device-local).
 - `web/trust`: `Revocation.upTo` keyed by grant id, new `lastId` / `upToIds`, self-revocation rejected.
   `web/oplog`: pending reason `anchor`, `headIds()`, pending caps, `serve`/`attachOpLogSync` limits.
+
+### Round 2 (2026-10-03)
+
+- `K_AUTH` body is `nonce | epoch(u32) | challengerId`; QR signature over a canonical JSON array; epochs bounded to
+  `2^31 - 1` with at most 8 epochs skipped per rotation; `old:` meta entries are gone (retired keys live in the local
+  store, key `retired`).
+- `PeerLink.drain()` (optional) and `dataChannelLink(id, dc, { now, stallMs })`; `MeshOptions.resume`.
+- Regression tests: `tests/web/audit-regressions-r2.test.ts` (BL1, BL3, SF1–SF5, notes) and the BL2 cases in
+  `tests/web/audit-regressions-oplog.test.ts`.
