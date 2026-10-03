@@ -95,6 +95,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a repeated `K_HELLO` is answered and returned (capped at 8 per link).
 - **SF5 unverified `old:` entries made devices join unbounded rooms**: retired keys are only those a device retired
   itself, kept in its local store (16 most recent); `old:` entries in the shared doc are no longer written or read.
+- Notes: `MeshOptions.resume: false` makes the documented move to another mesh work while the old one is reachable
+  (R6); `ensureRoot` always draws a fresh `mid`; `K_AUTH` also names the challenger; per-mesh caches (revocation
+  records, candidates, current rotation, negative cache, replay windows) are reset on a mesh switch; re-pairing from a
+  host at an older epoch is refused; the signed QR bytes are a canonical JSON array; the local epoch is known before
+  the network starts.
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,

@@ -43,8 +43,9 @@ export interface GrantBody {
 	extra?: unknown;
 }
 
+/** Canonical (JSON array) encoding of the signed QR fields: no separator ambiguity between them. */
 const signedBytes = (p: Omit<PairPayload, "sig">) =>
-	utf8(["swal-pair/v3", p.mid, p.root, p.appId, p.topic, p.hostPub, p.dpk, p.pairSecret, p.exp].join("|"));
+	utf8(JSON.stringify(["swal-pair/v3", p.mid, p.root, p.appId, p.topic, p.hostPub, p.dpk, p.pairSecret, p.exp]));
 
 export function encodePairPayload(p: PairPayload): string {
 	return b64uEncode(utf8(JSON.stringify([p.v, p.mid, p.appId, p.topic, p.hostPub, p.dpk, p.sig, p.pairSecret, p.exp, p.root])));

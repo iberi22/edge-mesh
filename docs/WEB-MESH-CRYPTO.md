@@ -17,8 +17,8 @@
   sender's **admission** (see below). Subkeys alone give nonce separation, not sender authentication (every member
   can derive every sender key); the signature is what authenticates the sender.
 - **Link handshake (S1).** On every new data link each side sends `K_HELLO` with a fresh 16-byte nonce; the peer
-  answers `K_AUTH = nonce | epoch(u32)` in a signed frame (so the answer is bound to the room, the epoch, the sender
-  and this link's challenge). Until a valid `K_AUTH` arrives the link carries nothing else: no data is sent to it
+  answers `K_AUTH = nonce | epoch(u32) | challengerId` in a signed frame (so the answer is bound to the room, the
+  epoch, the sender, the challenger and this link's challenge). Until a valid `K_AUTH` arrives the link carries nothing else: no data is sent to it
   and every other frame from it is dropped. The link is then bound to that sender and to the sender session (`sess`)
   of its `K_AUTH`. A frame captured on one link and replayed on another (even the whole handshake) authenticates
   nothing (`rejected: "bad link authentication"`). Handshake frames from a peer not yet admitted here are held like
@@ -61,9 +61,11 @@ The shared `meta` map is writable by every member, so nothing in it is trusted b
   guest claiming its own or the root's identity, or an id already admitted under another key.
 - Changing meshes: `pairJoin` into a mesh with another `mid` is refused unless the local doc is **fresh** (no shared
   content; only this device's own `dev/` and `ecdh/` entries), because the doc of the old mesh would otherwise be
-  merged into (and served to) the new one. To move a device, create a new `Mesh` with a new `Y.Doc` (same vault and
-  store are fine); while such a move is in progress the device goes offline from the old mesh (and resumes it if the
-  pairing fails). On success all trust state of the old mesh (admissions, ECDH pins, revocations, retired rooms,
+  merged into (and served to) the new one. To move a device, create a new `Mesh` with a new `Y.Doc` **and
+  `resume: false`** (same vault and store are fine), then `pairJoin`: without `resume: false` the new instance rejoins
+  the pinned mesh as soon as it starts and its doc fills with that mesh's data. While a move is in progress the device
+  stays offline from the old mesh (and resumes it if the pairing fails). Re-pairing within the same mesh from a host
+  at an older epoch than this device is refused (it would hand back an older key). On success all trust state of the old mesh (admissions, ECDH pins, revocations, retired rooms,
   sender keys) is dropped before the new key is installed, and nothing is sent until the network restarts.
 - Pairing grant: besides the mesh key it carries the root and the guest's admission chain; the guest checks that
   the chain is valid and that its issuer's key is the host key that signed the QR payload. `pairHost({ role,
@@ -72,8 +74,9 @@ The shared `meta` map is writable by every member, so nothing in it is trusted b
 
 ## Pairing SAS
 
-- QR payload v3 (signed by the host identity key): `[3, mid, appId, topic, hostEphemeral, hostIdentityKey, sig,
-  pairSecret, exp, root]`, where `root` is the owner's deviceId (= fingerprint of its key). The guest requires the
+- QR payload v3 (signed by the host identity key over the canonical JSON array of the other fields): `[3, mid, appId,
+  topic, hostEphemeral, hostIdentityKey, sig, pairSecret, exp, root]`, where `root` is the owner's deviceId
+  (= fingerprint of its key). A new owner always draws a fresh `mid` (never one found in the shared doc). The guest requires the
   grant's root to be exactly that one and its `mid` to be the QR's (S6).
 - **Root pinning (TOFU, S6).** The first root a device accepts for a `mid` stays pinned: pairing with a QR or a grant
   that names another root for the same `mid` is refused, so a host that copies an existing mesh id cannot re-root a

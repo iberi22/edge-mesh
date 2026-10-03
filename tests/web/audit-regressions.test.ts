@@ -1,7 +1,6 @@
 // Regression tests for the security audit of web/provider (P1–P6, plus S1, S5, S6). Each one reproduces an attack
 // and asserts that it no longer works.
 import { describe, expect, it } from "vitest";
-import * as Y from "yjs";
 import {
 	type Admission,
 	type ChainContext,
@@ -847,10 +846,14 @@ describe("audit regressions: web/provider", () => {
 		a.doc.getMap("secret").set("x-recipe", "mesh X private data");
 		await until(() => b.doc.getMap("secret").get("x-recipe") !== undefined);
 		const mid = a.mesh.root?.mid as string;
-		// the attacker owns a mesh whose id it copied from mesh X (its key, its root)
-		const eDoc = new Y.Doc();
-		eDoc.getMap("meta").set("mid", mid);
-		const e = await makeDev("evilE", hub, undefined, { doc: eDoc });
+		// the attacker (a modified client) owns a mesh whose id it copied from mesh X: its key, its root
+		const eVault = await makeVault("evilE");
+		eVault.kv.set("root", {
+			mid,
+			deviceId: eVault.deviceId,
+			pub: b64uEncode(eVault.devicePublicKey),
+		});
+		const e = await makeDev("evilE", hub, undefined, { vault: eVault });
 		await expect(pair(e, b)).rejects.toThrow(/pinned to another owner/);
 		expect(b.mesh.root?.deviceId).toBe(a.id);
 		await settle(300);

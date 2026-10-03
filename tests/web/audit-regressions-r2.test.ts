@@ -27,9 +27,6 @@ import {
 	until,
 } from "./helpers.js";
 
-/** A finding whose fix has not landed yet: the attack still works, so the inverted test is expected to fail. */
-const open = it.fails;
-
 const TOPIC = "fize/data/r1";
 const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
 const keyOf = (d: Dev) => b64uEncode(d.vault.meshKey as Uint8Array);
@@ -610,43 +607,66 @@ describe("audit round 2 regressions: web/provider", () => {
 			for (const x of [a2, b2, c]) x.mesh.destroy();
 		}, 20_000);
 
-	open(
-		"R6 (note): moving to another mesh with a fresh Y.Doc and resume:false works while the old mesh is reachable",
-		async () => {
-			const hub = createLoopbackHub();
-			const a = await makeDev("devA", hub);
-			const b = await makeDev("devB", hub);
-			await pair(a, b);
-			a.doc.getMap("secret").set("x", "old mesh data");
-			await until(() => b.doc.getMap("secret").get("x") !== undefined);
-			const e = await makeDev("devE", hub);
-			b.mesh.destroy();
-			const b2 = await makeDev("devB", hub, undefined, {
-				vault: b.vault,
-				resume: false,
-			} as Partial<MeshOptions>);
-			await settle(300);
-			expect(b2.doc.getMap("secret").get("x")).toBeUndefined();
-			await pair(e, b2);
-			expect(b2.mesh.root?.deviceId).toBe(e.id);
-			await settle(300);
-			expect(e.doc.getMap("secret").get("x")).toBeUndefined();
-			for (const x of [a, b2, e]) x.mesh.destroy();
-		},
-		20_000,
-	);
+	it("R6 (note): moving to another mesh with a fresh Y.Doc and resume:false works while the old mesh is reachable", async () => {
+		const hub = createLoopbackHub();
+		const a = await makeDev("devA", hub);
+		const b = await makeDev("devB", hub);
+		await pair(a, b);
+		a.doc.getMap("secret").set("x", "old mesh data");
+		await until(() => b.doc.getMap("secret").get("x") !== undefined);
+		const e = await makeDev("devE", hub);
+		b.mesh.destroy();
+		const b2 = await makeDev("devB", hub, undefined, {
+			vault: b.vault,
+			resume: false,
+		} as Partial<MeshOptions>);
+		await settle(300);
+		expect(b2.doc.getMap("secret").get("x")).toBeUndefined();
+		await pair(e, b2);
+		expect(b2.mesh.root?.deviceId).toBe(e.id);
+		await settle(300);
+		expect(e.doc.getMap("secret").get("x")).toBeUndefined();
+		for (const x of [a, b2, e]) x.mesh.destroy();
+	}, 20_000);
 
-	open(
-		"note: a new owner never takes its mesh id from the shared doc",
-		async () => {
-			const hub = createLoopbackHub();
-			const doc = new Y.Doc();
-			doc.getMap("meta").set("mid", "copied-mesh-id");
-			const a = await makeDev("devA", hub, undefined, { doc });
-			const offer = await a.mesh.pairHost();
-			expect(a.mesh.root?.mid).not.toBe("copied-mesh-id");
-			offer.cancel();
-			a.mesh.destroy();
-		},
-	);
+	it("note: a new owner never takes its mesh id from the shared doc", async () => {
+		const hub = createLoopbackHub();
+		const doc = new Y.Doc();
+		doc.getMap("meta").set("mid", "copied-mesh-id");
+		const a = await makeDev("devA", hub, undefined, { doc });
+		const offer = await a.mesh.pairHost();
+		expect(a.mesh.root?.mid).not.toBe("copied-mesh-id");
+		offer.cancel();
+		a.mesh.destroy();
+	});
+
+	it("note: a device never re-pairs from a host that lags behind it (older epoch and key)", async () => {
+		const hub = createLoopbackHub();
+		const { a, xs, ms, all } = await mesh(hub, ["x1"], ["devB", "devC"]);
+		const x1 = xs[0] as Dev;
+		const [b, c] = ms as [Dev, Dev];
+		x1.mesh.destroy(); // the admin is offline while the owner rotates
+		await a.mesh.revoke(c.id);
+		await until(() => b.mesh.epoch === 1);
+		// the admin comes back on a network where nobody can bring it up to date, and B meets it there
+		const other = createLoopbackHub();
+		const x2 = await makeDev("x1", other, undefined, {
+			doc: x1.doc,
+			vault: x1.vault,
+		});
+		b.mesh.destroy();
+		// (resume:false: B does not bring the admin up to date through its retired room before the pairing)
+		const b2 = await makeDev("devB", other, undefined, {
+			doc: b.doc,
+			vault: b.vault,
+			resume: false,
+		} as Partial<MeshOptions>);
+		expect(x2.mesh.epoch).toBe(0);
+		expect(b2.mesh.epoch).toBe(1);
+		await expect(pair(x2, b2)).rejects.toThrow(/epoch/);
+		expect(b2.mesh.epoch).toBe(1);
+		expect(keyOf(b2)).toBe(keyOf(a));
+		for (const d of [...all.filter((d) => d !== x1 && d !== b), x2, b2])
+			d.mesh.destroy();
+	}, 20_000);
 });

@@ -102,6 +102,12 @@ export interface MeshOptions {
 	maxFrameBytes?: number;
 	/** Largest reassembled message accepted from a peer. Default 64 MiB. */
 	maxMessageBytes?: number;
+	/**
+	 * Rejoin the pinned mesh on start (default true). Pass `false` with a fresh `Y.Doc` to move this device to another
+	 * mesh with `pairJoin` while the old one may still be reachable: otherwise the new instance resumes the old mesh
+	 * and its doc fills with the old mesh's data, which `pairJoin` then refuses to carry over.
+	 */
+	resume?: boolean;
 }
 
 export interface PairHostOptions {
@@ -280,6 +286,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 	let dataRid = "";
 	let instanceId = opts.instance ?? "";
 	let epoch = 0;
+	const localNum = (x: unknown) => (isEpoch(x) ? x : 0); // SF1: an out-of-range local value is ignored
 	let status: MeshStatus = "off";
 	const links = new Set<LinkRec>();
 	// per-sender AES-GCM keys, cached PER KEY MATERIAL (never by epoch number: two meshes, or two concurrent
@@ -486,7 +493,9 @@ export function createMesh(opts: MeshOptions): Mesh {
 		}
 		await publishEcdh();
 		await refreshTrust();
-		if (root && trusted.size > 0 && !destroyed) await start(); // already paired: resume
+		epoch = Math.max(localNum(await vault.getEpoch?.()), localNum(await store.get("epoch")), epoch); // known before start
+		// already paired: resume (unless the app is about to move this device to another mesh, see `resume`)
+		if (opts.resume !== false && root && trusted.size > 0 && !destroyed) await start();
 	})();
 	ready.catch(err);
 
@@ -537,7 +546,6 @@ export function createMesh(opts: MeshOptions): Mesh {
 		}
 		return key;
 	}
-	const localNum = (x: unknown) => (isEpoch(x) ? x : 0); // SF1: an out-of-range local value is ignored
 	async function persistEpoch(n: number) {
 		await vault.setEpoch?.(n);
 		await store.set("epoch", n);
@@ -768,7 +776,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 			if (kind === K_HELLO) {
 				if (retired || body.length !== NONCE_BYTES) return;
 				rec.hellosIn = (rec.hellosIn ?? 0) + 1;
-				if ((rec.answers ?? 0) < HANDSHAKE_MAX) await answerHello(rec, body);
+				if ((rec.answers ?? 0) < HANDSHAKE_MAX) await answerHello(rec, body, sender);
 				// SF4: a repeated challenge means our earlier messages may have been lost (e.g. held and expired while
 				// the peer was not yet admitted here): challenge again too
 				if (rec.hellosIn > 1 && !rec.authed) resendHello(rec);
@@ -778,9 +786,10 @@ export function createMesh(opts: MeshOptions): Mesh {
 				if (retired || rec.authed || !rec.nonce) return;
 				const ep = rec.legacy ? rec.legacy.epoch : epoch;
 				const okAuth =
-					body.length === NONCE_BYTES + 4 &&
+					body.length > NONCE_BYTES + 4 &&
 					equalBytes(body.subarray(0, NONCE_BYTES), rec.nonce) &&
-					new DataView(body.buffer, body.byteOffset + NONCE_BYTES, 4).getUint32(0, false) === ep;
+					new DataView(body.buffer, body.byteOffset + NONCE_BYTES, 4).getUint32(0, false) === ep &&
+					fromUtf8(body.subarray(NONCE_BYTES + 4)) === vault.deviceId;
 				if (!okAuth) return reject("bad link authentication", sender);
 				rec.deviceId = sender;
 				rec.authed = true;
@@ -1076,10 +1085,11 @@ export function createMesh(opts: MeshOptions): Mesh {
 		rec.hellosOut = (rec.hellosOut ?? 0) + 1;
 		sendFrame(rec, K_HELLO, rec.nonce).catch(err);
 	}
-	async function answerHello(rec: LinkRec, peerNonce: Uint8Array) {
+	async function answerHello(rec: LinkRec, peerNonce: Uint8Array, peer: string) {
 		rec.answers = (rec.answers ?? 0) + 1;
 		rec.authSent = true;
-		await sendFrame(rec, K_AUTH, concat(peerNonce, u32(rec.legacy ? rec.legacy.epoch : epoch)));
+		// bound to the challenger too: the answer is for THIS peer's challenge on THIS link
+		await sendFrame(rec, K_AUTH, concat(peerNonce, u32(rec.legacy ? rec.legacy.epoch : epoch), utf8(peer)));
 		maybeStart(rec);
 	}
 	function maybeStart(rec: LinkRec) {
@@ -1356,7 +1366,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 	/** First pairing of a fresh mesh: this device becomes its owner (the pinned trust root). */
 	async function ensureRoot(): Promise<TrustRoot> {
 		if (root) return root;
-		const mid = typeof meta.get("mid") === "string" ? (meta.get("mid") as string) : b64uEncode(randomBytes(16));
+		// a NEW mesh id, never one read from the shared doc (anybody could have copied another mesh's id there)
+		const mid = b64uEncode(randomBytes(16));
 		meta.set("mid", mid);
 		root = { mid, deviceId: vault.deviceId, pub: b64uEncode(vault.devicePublicKey) };
 		await store.set("root", root);
@@ -1540,6 +1551,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 				throw new Error(ROOT_MISMATCH_ERR);
 			const switching = root?.mid !== g.root.mid;
 			if (switching && root && !docIsFresh()) throw new Error(MOVE_MESH_ERR);
+			// same mesh: never step back to an older epoch (and its older key) because the host lags behind us
+			if (!switching && root && g.epoch < epoch) throw new Error(`pairing refused: the host is at epoch ${g.epoch}, this device at ${epoch}`);
 			// leave the current network BEFORE touching keys or the doc: nothing of one mesh may reach the other
 			if (running) stopNetwork();
 			if (switching) {
@@ -1550,6 +1563,12 @@ export function createMesh(opts: MeshOptions): Mesh {
 				admittedAt = new Map();
 				selfAdm = null;
 				legacy.clear();
+				revRecs.clear();
+				badRevs.clear();
+				evidenceSeen.clear();
+				replay.clear();
+				cands.clear();
+				curRot = null;
 				await store.set(RETIRED_KEY, []);
 				await store.set("ecdh", ecdhOk);
 				await persistRevoked();
