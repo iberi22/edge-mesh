@@ -237,6 +237,32 @@ const MAX_SETTLED_RECORDS = 256;
 const EXECUTED_KEY = "revexecuted";
 /** A hybrid wrap is base64url(ML-KEM-768 ciphertext 1088 B || AES-GCM(32 B) 60 B) = 1531 characters. */
 const MAX_WRAP_CHARS = 1600;
+/** R4-S2: bounded caches drop their least recently used entry instead of being cleared all at once. */
+class Lru<K, V> {
+	private m = new Map<K, V>();
+	constructor(private readonly cap: number) {}
+	get(k: K): V | undefined {
+		const v = this.m.get(k);
+		if (v !== undefined) {
+			this.m.delete(k);
+			this.m.set(k, v);
+		}
+		return v;
+	}
+	has(k: K): boolean {
+		return this.get(k) !== undefined;
+	}
+	set(k: K, v: V): void {
+		this.m.delete(k);
+		this.m.set(k, v);
+		if (this.m.size > this.cap) this.m.delete(this.m.keys().next().value as K);
+	}
+	clear(): void {
+		this.m.clear();
+	}
+}
+const sha256Tag = async (s: string) =>
+	b64uEncode(new Uint8Array(await crypto.subtle.digest("SHA-256", bs(utf8(s)))));
 const KEX_KEY = "kex"; // device-local store: verified key-agreement keys (the pre-PQC "ecdh" entry is ignored)
 const ECDH_PREFIX = "ecdh/"; // ecdh/<deviceId> = { pub, kem, sig }: P-256 + ML-KEM-768 keys, sig by the ML-DSA identity
 const ROTREC_PREFIX = "rotrec:"; // rotrec:<rotId> = RotRecord (public part of a rotation, same for every recipient)
@@ -445,13 +471,12 @@ export function createMesh(opts: MeshOptions): Mesh {
 		return ir !== null && canRevokeRole(ir, tr);
 	};
 	// signature checks of trust records (admissions, revocations) are memoized: they are re-evaluated often
-	const sigMemo = new Map<string, Promise<boolean>>();
+	const sigMemo = new Lru<string, Promise<boolean>>(8192);
 	// ML-DSA-65 verification (AGENTS.md §2) is ~2 ms: memoize it for the chain checks, which repeat
 	const memoVerify = (pub: Uint8Array, data: Uint8Array, sig: Uint8Array): Promise<boolean> => {
 		const k = `${b64uEncode(pub)}|${b64uEncode(sig)}|${b64uEncode(data)}`;
 		let p = sigMemo.get(k);
 		if (!p) {
-			if (sigMemo.size >= 8192) sigMemo.clear();
 			p = Promise.resolve(identityVerify(pub, data, sig));
 			sigMemo.set(k, p);
 		}
@@ -471,7 +496,21 @@ export function createMesh(opts: MeshOptions): Mesh {
 		revokedAt: (id: string) => revokedIds.get(id),
 	});
 	let trustChain: Promise<void> = Promise.resolve();
-	const refreshTrust = () => (trustChain = trustChain.then(computeTrust).catch(err));
+	/**
+	 * R4-S2: one trust pass at most waits behind the running one. Every meta transaction asks for a pass; those that
+	 * arrive while one is queued share it (it starts after them, so it sees their writes).
+	 */
+	let trustQueued: Promise<void> | null = null;
+	const refreshTrust = (): Promise<void> => {
+		if (trustQueued) return trustQueued;
+		const run = trustChain.then(() => {
+			trustQueued = null;
+			return computeTrust();
+		});
+		trustQueued = run.catch(err);
+		trustChain = trustQueued;
+		return trustQueued;
+	};
 	const persistRevoked = async () => {
 		await store.set(REVRECORDS_KEY, [...revStore.values()]);
 		await store.set(EXECUTED_KEY, Object.fromEntries(executed));
@@ -480,7 +519,9 @@ export function createMesh(opts: MeshOptions): Mesh {
 	const recHash = async (r: Revocation) =>
 		b64uEncode(new Uint8Array(await crypto.subtle.digest("SHA-256", bs(utf8(JSON.stringify([r.v, r.mid, r.target, r.by, r.epoch, r.sig]))))));
 	/** Records that can never count (malformed for this mesh, or a bad signature by a known issuer), by RECORD hash (B1). */
-	const badRevs = new Set<string>();
+	const badRevs = new Lru<string, true>(4096);
+	/** R4-S2: `ecdh/` entries that failed verification, by the hash of the whole entry */
+	const badKex = new Lru<string, true>(1024);
 	/**
 	 * Keep a signed revocation record if its issuer is the root or a verified admission and the signature verifies.
 	 * Whether it COUNTS is decided by recomputeRevoked (issuer valid as of the epoch before, role ladder).
@@ -491,8 +532,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const h = await recHash(r);
 		if (revStore.has(h) || badRevs.has(h) || overCap.has(h)) return false;
 		const bad = () => {
-			if (badRevs.size >= 4096) badRevs.clear();
-			badRevs.add(h);
+			badRevs.set(h, true);
 			return false;
 		};
 		if (r.mid !== root.mid || r.target === root.deviceId || r.by === r.target || !isDeviceId(r.target)) return bad();
@@ -745,20 +785,27 @@ export function createMesh(opts: MeshOptions): Mesh {
 			typeof e.sig === "string" &&
 			(e.pub !== cur?.pub || e.kem !== cur?.kem)
 		) {
-			try {
-				const kem = b64uDecode(e.kem);
-				if (
-					kem.length === ML_KEM_PUBLIC_KEY_BYTES &&
-					(await isEcdhPublicKey(b64uDecode(e.pub))) &&
-					identityVerify(b64uDecode(idPub), ecdhSignedBytes(deviceId, e.pub, e.kem), b64uDecode(e.sig))
-				) {
+			// R4-S2: an entry that already failed the check is not checked again (by the hash of all of it)
+			const tag = await sha256Tag(`${slot}|${e.pub}|${e.kem}|${e.sig}`);
+			let ok = false;
+			if (!badKex.has(tag)) {
+				try {
+					const kem = b64uDecode(e.kem);
+					ok =
+						kem.length === ML_KEM_PUBLIC_KEY_BYTES &&
+						(await isEcdhPublicKey(b64uDecode(e.pub))) &&
+						identityVerify(b64uDecode(idPub), ecdhSignedBytes(deviceId, e.pub, e.kem), b64uDecode(e.sig));
 					// FIPS 203 input check (modulus) once, here, like the P-256 point check above: a member must not be able
 					// to break the owner's re-keying by vouching for a malformed key (wrapping would throw on it)
-					kemEncapsulate(kem);
+					if (ok) kemEncapsulate(kem);
+				} catch {
+					ok = false;
+				}
+				if (ok) {
 					ecdhOk = { ...ecdhOk, [slot]: { pub: e.pub, kem: e.kem } };
 					await store.set(KEX_KEY, ecdhOk);
-				}
-			} catch {}
+				} else badKex.set(tag, true);
+			}
 		}
 		const k = ecdhOk[slot];
 		return k ? { pub: b64uDecode(k.pub), kem: b64uDecode(k.kem) } : null;
@@ -1232,7 +1279,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		return r.from !== root?.deviceId;
 	}
 	/** The owner's ML-DSA-65 signature over the rotation id (memoized: relays repeat the same record). */
-	const rotSigOk = new Map<string, boolean>();
+	const rotSigOk = new Lru<string, boolean>(1024);
 	function rotationSigned(r: RotRecord, id: string): boolean {
 		if (!root || r.from !== root.deviceId || typeof r.sig !== "string") return false;
 		const k = `${id}|${r.sig}`;
@@ -1243,7 +1290,6 @@ export function createMesh(opts: MeshOptions): Mesh {
 			} catch {
 				ok = false;
 			}
-			if (rotSigOk.size >= 1024) rotSigOk.clear();
 			rotSigOk.set(k, ok);
 		}
 		return ok;
@@ -2046,6 +2092,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 				legacy.clear();
 				revRecs.clear();
 				badRevs.clear();
+				badKex.clear();
 				revStore.clear();
 				localCuts.clear();
 				executed.clear();

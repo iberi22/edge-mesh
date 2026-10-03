@@ -10,7 +10,7 @@ import {
 	deriveRoomId,
 	type PeerLink,
 } from "../../src/web/index.js";
-import { deviceIdOf } from "../../src/web/pq.js";
+import { deviceIdOf, kemKeygen } from "../../src/web/pq.js";
 import { craft, openFrame, TOPIC } from "./audit-r3-lib.js";
 
 // every identity verification the mesh does (all devices of this process), to count the work an attacker causes
@@ -305,5 +305,39 @@ describe("audit round 4 regressions", () => {
 		expect(closed).toBe(true);
 		for (const d of all) d.mesh.destroy();
 		t.close();
+	}, 60_000);
+
+	it("R4-S2: tampered ecdh/ entries plus a stream of meta writes cost a bounded number of signature checks", async () => {
+		const { a, ms, all } = await mesh(["m1", "m2"]);
+		const [m1] = ms as [Dev, Dev];
+		await settle(500);
+		const kex = () =>
+			verified.data.filter(
+				(d) => new TextDecoder().decode(d.subarray(0, 13)) === '["swal-kex/v2',
+			).length;
+		const before = kex();
+		// a member overwrites every other device's key-agreement record with a well-formed but forged signature
+		m1.doc.transact(() => {
+			for (const d of all) {
+				if (d === m1) continue;
+				const e = metaOf(m1).get(`ecdh/${d.id}`);
+				// another (valid) ML-KEM key, so the entry differs from the pinned one and must be checked
+				metaOf(m1).set(`ecdh/${d.id}`, {
+					...e,
+					kem: b64uEncode(kemKeygen().publicKey),
+					sig: b64uEncode(randomBytes(3309)),
+				});
+			}
+		});
+		// ...then keeps writing to meta (each write used to re-run the whole trust pass, re-verifying every forged entry)
+		for (let i = 0; i < 30; i++) {
+			metaOf(m1).set(`junk/${i}`, i);
+			await settle(20);
+		}
+		await until(() => metaOf(a).get("junk/29") === 29, 10_000);
+		await settle(1500);
+		const forged = all.length - 1;
+		expect(kex() - before).toBeLessThanOrEqual(forged * all.length);
+		for (const d of all) d.mesh.destroy();
 	}, 60_000);
 });

@@ -149,6 +149,10 @@ drains its queue before closing.
   frames that arrive before the peer's `K_AUTH` are kept sealed and unverified (32 frames / 1 MiB) and verified once,
   when they are run after it. On an authenticated link the session and replay window are checked before the
   signature. Frames from a revoked sender are dropped before any signature check, in every room.
+- Writes to the shared `meta` map cannot force repeated signature checks (round 4, R4-S2): trust passes are
+  coalesced (at most one waits behind the running one), an `ecdh/` entry that failed verification is remembered by
+  the hash of the whole entry and not checked again, and the caches of verified/failed signatures (trust records,
+  revocations, rotation signatures) drop their least recently used entries instead of being cleared at once.
 
 ## Channels
 
