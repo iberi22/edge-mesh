@@ -128,8 +128,8 @@ async function revokedCannotLearn(a: Dev, c: Dev, inbox: Uint8Array[], oldKey: U
 	expect(wraps).not.toContain("rot:1:devC");
 	for (const k of wraps) {
 		const w = metaOf(a).get(k);
-		await expect(unwrapMeshKey(cEcdh.privateKey, aPub, 1, w.from, "devC", b64uDecode(w.wrap))).rejects.toThrow();
-		await expect(unwrapMeshKey(cEcdh.privateKey, aPub, 1, w.from, k.split(":")[2], b64uDecode(w.wrap))).rejects.toThrow();
+		await expect(unwrapMeshKey(cEcdh.privateKey, aPub, 1, w.from, "devC", b64uDecode(w.wrap), "devC")).rejects.toThrow();
+		await expect(unwrapMeshKey(cEcdh.privateKey, aPub, 1, w.from, k.split(":")[2], b64uDecode(w.wrap), "devC")).rejects.toThrow();
 	}
 }
 

@@ -18,7 +18,9 @@ export async function generateEcdhIdentity(): Promise<EcdhIdentity> {
 /** Bytes the device identity key signs to vouch for its ECDH public key. */
 export const ecdhSignedBytes = (deviceId: string, pubB64: string) => utf8(`swal-ecdh/v1|${deviceId}|${pubB64}`);
 
-const rotateInfo = (epoch: number, from: string, to: string) => `swal-rotate/v1|${epoch}|${from}|${to}`;
+/** v2 also binds `revoked`: a relayed wrap cannot be re-labelled to revoke a different device. */
+const rotateInfo = (epoch: number, from: string, to: string, revoked: string) =>
+	`swal-rotate/v2|${epoch}|${from}|${to}|${revoked}`;
 
 async function pairKey(priv: CryptoKey, peerPub: Uint8Array, info: string): Promise<CryptoKey> {
 	const pub = await crypto.subtle.importKey("raw", bs(peerPub), ECDH, false, []);
@@ -26,7 +28,7 @@ async function pairKey(priv: CryptoKey, peerPub: Uint8Array, info: string): Prom
 	return importAesKey(await hkdf(shared, info));
 }
 
-/** Wrap the new mesh key for ONE device: ECDH(from priv, to pub) -> HKDF(swal-rotate/v1|epoch|from|to) -> AES-GCM. */
+/** Wrap the new mesh key for ONE device: ECDH(from priv, to pub) -> HKDF(swal-rotate/v2|epoch|from|to|revoked) -> AES-GCM. */
 export async function wrapMeshKey(
 	priv: CryptoKey,
 	toPub: Uint8Array,
@@ -34,8 +36,9 @@ export async function wrapMeshKey(
 	from: string,
 	to: string,
 	newKey: Uint8Array,
+	revoked = "",
 ): Promise<string> {
-	const info = rotateInfo(epoch, from, to);
+	const info = rotateInfo(epoch, from, to, revoked);
 	return b64uEncode(await sealUpdate(await pairKey(priv, toPub, info), newKey, info));
 }
 
@@ -46,7 +49,8 @@ export async function unwrapMeshKey(
 	from: string,
 	to: string,
 	wrap: Uint8Array,
+	revoked = "",
 ): Promise<Uint8Array> {
-	const info = rotateInfo(epoch, from, to);
+	const info = rotateInfo(epoch, from, to, revoked);
 	return openUpdate(await pairKey(priv, fromPub, info), wrap, info);
 }

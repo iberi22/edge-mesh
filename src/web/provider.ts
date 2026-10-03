@@ -1,6 +1,6 @@
 import * as Y from "yjs";
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate, removeAwarenessStates } from "y-protocols/awareness";
-import { type Admission, type Role, type TrustRoot, canIssue, signAdmission, verifyChain } from "./admission.js";
+import { type Admission, type Role, type TrustRoot, canIssue, canRevokeRole, signAdmission, verifyChain } from "./admission.js";
 import { deriveDocMaterial, deriveSenderKey, hkdf, importAesKey, openUpdate, sealUpdate } from "./crypto.js";
 import { type EcdhIdentity, ecdhSignedBytes, generateEcdhIdentity, unwrapMeshKey, wrapMeshKey } from "./rotation.js";
 import {
@@ -20,7 +20,7 @@ import { b64uDecode, b64uEncode, concat, fromUtf8, randomBytes, utf8 } from "./u
 import { connectViaSignaling } from "./webrtc.js";
 
 export type MeshStatus = "off" | "connecting" | "online";
-export type MeshEvent = "status" | "peers" | "devices" | "sas" | "paired" | "revoked" | "error";
+export type MeshEvent = "status" | "peers" | "devices" | "sas" | "paired" | "revoked" | "rejected" | "error";
 
 export interface MeshOptions {
 	appId: string;
@@ -45,6 +45,11 @@ export interface MeshOptions {
 	 * Only devices it accepts receive rotation wraps, have their ECDH key used and appear in `devices()`.
 	 */
 	authorizeDevice?: (deviceId: string, devicePub: Uint8Array) => boolean | Promise<boolean>;
+	/**
+	 * May `issuer` revoke `target` (which rotates the mesh key for everybody)? Checked before a local revoke() and
+	 * for every incoming rotation. Default: built-in roles (owner > admin > member; nobody revokes the owner).
+	 */
+	canRotate?: (issuer: string, target: string) => boolean | Promise<boolean>;
 }
 
 export interface PairHostOptions {
@@ -194,6 +199,14 @@ export function createMesh(opts: MeshOptions): Mesh {
 		};
 	};
 	const devices = (): Device[] => [selfDevice(), ...trusted.values()].sort((a, b) => a.addedAt - b.addedAt);
+	const roleOf = (id: string): Role | null => (id === vault.deviceId ? selfRole() : (trusted.get(id)?.role ?? null));
+	/** H2: rotation/revocation only from an authorized issuer. A target that is not admitted counts as a member. */
+	const canRotate = async (issuer: string, target: string): Promise<boolean> => {
+		if (opts.canRotate) return Boolean(await opts.canRotate(issuer, target));
+		const ir = roleOf(issuer);
+		const tr = target === root?.deviceId ? "owner" : (roleOf(target) ?? "member");
+		return ir !== null && canRevokeRole(ir, tr);
+	};
 	const chainCtx = (r: TrustRoot) => ({
 		vault,
 		root: r,
@@ -417,12 +430,18 @@ export function createMesh(opts: MeshOptions): Mesh {
 			return;
 		}
 		if (r.to !== vault.deviceId || r.epoch !== epoch + 1 || revokedIds.has(r.from) || r.from === r.revoked) return;
+		if (typeof r.revoked !== "string" || r.revoked === vault.deviceId) return;
 		const fromPub = await peerEcdhPub(r.from);
 		if (!fromPub) return;
+		if (!(await canRotate(r.from, r.revoked))) {
+			emit("rejected", { reason: "rotation not authorized", from: r.from, revoked: r.revoked, epoch: r.epoch });
+			return;
+		}
 		let newKey: Uint8Array;
 		try {
-			newKey = await unwrapMeshKey((await ecdhIdentity()).privateKey, fromPub, r.epoch, r.from, r.to, b64uDecode(r.wrap));
+			newKey = await unwrapMeshKey((await ecdhIdentity()).privateKey, fromPub, r.epoch, r.from, r.to, b64uDecode(r.wrap), r.revoked);
 		} catch {
+			emit("rejected", { reason: "rotation wrap does not authenticate", from: r.from, revoked: r.revoked, epoch: r.epoch });
 			return;
 		}
 		if (r.epoch !== epoch + 1) return; // raced with another adoption
@@ -595,6 +614,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		if (deviceId === vault.deviceId) throw new Error("cannot revoke the current device");
 		await refreshTrust();
 		if (!meta.has(DEV + deviceId) && !trusted.has(deviceId)) throw new Error("unknown device");
+		if (!(await canRotate(vault.deviceId, deviceId))) throw new Error(`not authorized to revoke ${deviceId}`);
 		if (!running) await start();
 		// cut the revoked device off SYNCHRONOUSLY: its link must not be reachable by anything below
 		forget(deviceId);
@@ -610,7 +630,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 				err(new Error(`no verified ECDH key for ${d.deviceId}: it must be re-paired after the rotation`));
 				continue;
 			}
-			const wrap = await wrapMeshKey(priv, pub, newEpoch, vault.deviceId, d.deviceId, newKey);
+			const wrap = await wrapMeshKey(priv, pub, newEpoch, vault.deviceId, d.deviceId, newKey, deviceId);
 			wraps.set(d.deviceId, { epoch: newEpoch, from: vault.deviceId, to: d.deviceId, wrap, revoked: deviceId });
 		}
 		// 1) hand each connected remaining peer ITS OWN wrap, 2) switch, 3) publish the removal + wraps under the NEW key

@@ -56,7 +56,7 @@ describe("H1: only admitted devices are trusted (rotation wraps, ECDH keys, devi
 		const w = metaOf(a).get("rot:1:devB");
 		const aPub = b64uDecode(metaOf(a).get("ecdh/devA").pub);
 		if (w) {
-			await expect(unwrapMeshKey(ecdh.privateKey, aPub, 1, "devA", "devB", b64uDecode(w.wrap))).rejects.toThrow();
+			await expect(unwrapMeshKey(ecdh.privateKey, aPub, 1, "devA", "devB", b64uDecode(w.wrap), "devC")).rejects.toThrow();
 		}
 		// B keeps its real key pinned: it adopts the new epoch (wrap made for its REAL ECDH key)
 		await until(() => b.mesh.epoch === 1);
