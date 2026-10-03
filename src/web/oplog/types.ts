@@ -76,7 +76,8 @@ export interface QuarantineEntry {
 	at: number;
 }
 
-export type PendingReason = "unknown-author" | "gap" | "future";
+/** anchor: an op of a revoked author at or below its revocation's `lastSeq`, waiting until its chain reaches `lastId` */
+export type PendingReason = "unknown-author" | "gap" | "future" | "anchor";
 
 export type IngestStatus =
 	| "applied"

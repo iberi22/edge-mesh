@@ -52,6 +52,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **S2 revoked admin re-granted old ops** (`web/trust`): a revocation's cascade cut-offs `upTo` are keyed by grant id;
   a descendant grant unknown at revocation time (e.g. minted later, even backdated, by the revoked issuer) is cut at
   seq 0.
+- **S3 revoked device forked its own history** (`web/trust` + `web/oplog`): revocations carry `lastId` (and `upToIds`
+  for cascaded grants), filled by `prepareRevocation(target, await log.headIds())`. Ops of the subject at or below
+  `lastSeq` wait as pending until their chain reaches that op; other branches are rejected as forgeries
+  (`broken-chain`) instead of producing equivocation evidence that would cut the legit history. A replica that had
+  already stored a forged branch stops accepting it once the anchored revocation arrives.
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,
@@ -75,6 +80,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed (breaking)
 - `wrapMeshKey(priv, toPub, rotId, from, to, key)` / `unwrapMeshKey(priv, fromPub, rotId, from, to, wrap)` (v3);
   meta layout of stored wraps is `rotrec:<rotId>` + `rot:<rotId>:<deviceId>` and `old:<rid> = {e, k}`.
+- `web/oplog`: new pending reason `anchor`; `OpLog.headIds()`. `web/trust`: `Revocation.lastId` / `upToIds`,
+  `TrustStore.anchorsOf(fp)`.
 - `web/trust`: `Revocation.upTo` is keyed by grant id (was device fp); `prepareRevocation` fills it that way.
 - `Admission` gains `epoch` (v2) and `Revocation` drops `at` (v2); `ChainContext` gains `epoch` and `revokedAt`
   returns the list of revocation epochs. Admissions/revocations of the previous version are ignored: re-pair.

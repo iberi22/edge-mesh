@@ -136,46 +136,45 @@ describe("audit regressions: web/trust + web/oplog", () => {
 		expect(n.trust.cutOf(g2.id)).toBe(0);
 	});
 
-	open(
-		"A3 (S3): a revoked device cannot fork its history <= lastSeq; the real history is still accepted",
-		async () => {
-			const w = await world();
-			const author = await ready(w, w.waiter);
-			const real = [];
-			for (let i = 0; i < 3; i++)
-				real.push(await author.log.append(op(`real${i}`)));
-			const rev = await w.revoke(w.root, {
-				target: w.g.waiter.id,
-				lastSeq: 3,
-				lastId: real[2]!.id,
-			} as never);
-			// replica X knows the revocation but never saw the waiter's real ops
-			const x = await ready(w);
-			await x.trust.add(rev);
-			// the revoked waiter re-signs an alternative history seq 1..3 (fresh store, same key)
-			const t = await w.trust();
-			await t.addMany(w.docs); // its own view WITHOUT the revocation, so append() signs
-			const fork = await w.log(w.waiter, t, { store: new MemoryOpStore() });
-			const alt = [];
-			for (let i = 0; i < 3; i++)
-				alt.push(await fork.append(op(`FAKE${i}`, { payload: { table: 99 } })));
-			const res = await x.log.ingestMany(alt.map((s) => s.op));
-			expect(res.map((r) => r.status)).not.toContain("applied");
-			expect([1, 2, 3].map((s) => x.log.isAccepted(w.waiter.fp, s))).toEqual([
-				false,
-				false,
-				false,
-			]);
-			// when X later learns the real ops, they are accepted (no equivocation cut of the legit history)
-			await x.log.ingestMany(real.map((s) => s.op));
-			expect(x.log.equivocations()).toEqual([]);
-			expect([1, 2, 3].map((s) => x.log.isAccepted(w.waiter.fp, s))).toEqual([
-				true,
-				true,
-				true,
-			]);
-		},
-	);
+	it("A3 (S3): a revoked device cannot fork its history <= lastSeq; the real history is still accepted", async () => {
+		const w = await world();
+		const author = await ready(w, w.waiter);
+		const real = [];
+		for (let i = 0; i < 3; i++)
+			real.push(await author.log.append(op(`real${i}`)));
+		// the revoker anchors the history it had seen (prepareRevocation + OpLog.headIds)
+		const input = author.trust.prepareRevocation(
+			w.g.waiter.id,
+			await author.log.headIds(),
+		);
+		expect(input.lastId).toBe(real[2]?.id);
+		const rev = await w.revoke(w.root, input);
+		// replica X knows the revocation but never saw the waiter's real ops
+		const x = await ready(w);
+		await x.trust.add(rev);
+		// the revoked waiter re-signs an alternative history seq 1..3 (fresh store, same key)
+		const t = await w.trust();
+		await t.addMany(w.docs); // its own view WITHOUT the revocation, so append() signs
+		const fork = await w.log(w.waiter, t, { store: new MemoryOpStore() });
+		const alt = [];
+		for (let i = 0; i < 3; i++)
+			alt.push(await fork.append(op(`FAKE${i}`, { payload: { table: 99 } })));
+		const res = await x.log.ingestMany(alt.map((s) => s.op));
+		expect(res.map((r) => r.status)).not.toContain("applied");
+		expect([1, 2, 3].map((s) => x.log.isAccepted(w.waiter.fp, s))).toEqual([
+			false,
+			false,
+			false,
+		]);
+		// when X later learns the real ops, they are accepted (no equivocation cut of the legit history)
+		await x.log.ingestMany(real.map((s) => s.op));
+		expect(x.log.equivocations()).toEqual([]);
+		expect([1, 2, 3].map((s) => x.log.isAccepted(w.waiter.fp, s))).toEqual([
+			true,
+			true,
+			true,
+		]);
+	});
 
 	open(
 		"A4 (S4): unknown-author junk cannot evict legit pending ops",
@@ -207,6 +206,76 @@ describe("audit regressions: web/trust + web/oplog", () => {
 			await until(() => log.isAccepted(w.waiter.fp, 1));
 		},
 	);
+
+	it("A3 (S3): a replica holding the real history keeps it when the revoked key later forks it (no equivocation cut)", async () => {
+		const w = await world();
+		const author = await ready(w, w.waiter);
+		const real = [];
+		for (let i = 0; i < 3; i++)
+			real.push(await author.log.append(op(`real${i}`)));
+		const x = await ready(w);
+		await x.log.ingestMany(real.map((s) => s.op));
+		await x.trust.add(
+			await w.revoke(
+				w.root,
+				author.trust.prepareRevocation(
+					w.g.waiter.id,
+					await author.log.headIds(),
+				),
+			),
+		);
+		const t = await w.trust();
+		await t.addMany(w.docs);
+		const fork = await w.log(w.waiter, t, { store: new MemoryOpStore() });
+		const alt = [];
+		for (let i = 0; i < 4; i++) alt.push(await fork.append(op(`FAKE${i}`)));
+		const res = await x.log.ingestMany(alt.map((s) => s.op));
+		expect(res.slice(0, 3).map((r) => r.status)).toEqual([
+			"quarantined",
+			"quarantined",
+			"quarantined",
+		]);
+		expect(x.log.equivocations()).toEqual([]);
+		expect([1, 2, 3].map((s) => x.log.isAccepted(w.waiter.fp, s))).toEqual([
+			true,
+			true,
+			true,
+		]);
+		expect(x.log.isAccepted(w.waiter.fp, 4)).toBe(false); // beyond lastSeq: revoked anyway
+	});
+
+	it("A3 (S3): a replica that stored a forged branch before the anchored revocation stops accepting it", async () => {
+		const w = await world();
+		const author = await ready(w, w.waiter);
+		const real = [];
+		for (let i = 0; i < 2; i++)
+			real.push(await author.log.append(op(`real${i}`)));
+		const t = await w.trust();
+		await t.addMany(w.docs);
+		const fork = await w.log(w.waiter, t, { store: new MemoryOpStore() });
+		const alt = [];
+		for (let i = 0; i < 2; i++) alt.push(await fork.append(op(`FAKE${i}`)));
+		const y = await ready(w);
+		await y.log.ingestMany(alt.map((s) => s.op));
+		expect([1, 2].map((s) => y.log.isAccepted(w.waiter.fp, s))).toEqual([
+			true,
+			true,
+		]);
+		await y.trust.add(
+			await w.revoke(
+				w.root,
+				author.trust.prepareRevocation(
+					w.g.waiter.id,
+					await author.log.headIds(),
+				),
+			),
+		);
+		await y.log.reevaluate();
+		expect([1, 2].map((s) => y.log.isAccepted(w.waiter.fp, s))).toEqual([
+			false,
+			false,
+		]);
+	});
 });
 
 const until = async (cond: () => boolean, ms = 2000) => {

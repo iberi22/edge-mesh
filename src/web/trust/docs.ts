@@ -97,7 +97,9 @@ export async function issueGrant(
 export interface RevocationInput {
 	target: string;
 	lastSeq: number;
+	lastId?: string;
 	upTo?: Record<string, number>;
+	upToIds?: Record<string, string>;
 	reason?: string;
 	issuedAt?: number;
 }
@@ -114,7 +116,9 @@ export async function issueRevocation(
 		inst: ctx.inst,
 		target: input.target,
 		lastSeq: input.lastSeq,
+		lastId: input.lastId,
 		upTo: input.upTo ? { ...input.upTo } : undefined,
+		upToIds: input.upToIds ? { ...input.upToIds } : undefined,
 		reason: input.reason,
 		issuer: issuer.fp,
 		parent: parentId(ctx.parent),
@@ -192,9 +196,15 @@ export function checkRevocationShape(x: unknown): string | null {
 	if (!isOptStr(x.parent) || !isOptStr(x.reason, 1024))
 		return "bad parent/reason";
 	if (!isNat(x.lastSeq) || !isNat(x.issuedAt)) return "bad numbers";
+	if (!isOptStr(x.lastId, 128)) return "bad lastId";
 	if (x.upTo !== undefined) {
 		if (!isObj(x.upTo)) return "bad upTo";
 		for (const v of Object.values(x.upTo)) if (!isNat(v)) return "bad upTo";
+	}
+	if (x.upToIds !== undefined) {
+		if (!isObj(x.upToIds)) return "bad upToIds";
+		for (const v of Object.values(x.upToIds))
+			if (!isStr(v, 128)) return "bad upToIds";
 	}
 	return null;
 }

@@ -87,12 +87,20 @@ export interface RevocationBody {
 	/** ops of the target's subject with seq > lastSeq are no longer authorized by the target grant */
 	lastSeq: number;
 	/**
+	 * S3: id of the subject's op at `lastSeq` (the revoker's head). Receivers then accept the subject's ops <= lastSeq
+	 * only if their hash chain ends at this op: a revoked key cannot fork its own history to replicas that had not seen
+	 * it. Omitted = no anchor (weaker; `prepareRevocation` fills it when given op ids).
+	 */
+	lastId?: string;
+	/**
 	 * Cut-offs of the cascaded (descendant) grants, by GRANT ID (S2): only grants that existed when the revocation was
 	 * signed can keep history. A descendant grant missing here (e.g. one the revoked issuer mints afterwards, even
 	 * backdated, for a subject listed before) is cut at 0. Fill it with `TrustStore.prepareRevocation` from your log
 	 * heads.
 	 */
 	upTo?: Readonly<Record<string, number>>;
+	/** S3: anchor op id at `upTo[grantId]` for each cascaded grant's subject (same role as `lastId`) */
+	upToIds?: Readonly<Record<string, string>>;
 	reason?: string;
 	issuer: string;
 	/** issuer's grant id; absent iff issued by the root */

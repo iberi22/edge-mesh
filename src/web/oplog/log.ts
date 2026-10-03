@@ -14,7 +14,7 @@ import {
 	signCanonical,
 	verifyCanonical,
 } from "../trust/keys.js";
-import type { TrustStore } from "../trust/store.js";
+import type { Anchor, TrustStore } from "../trust/store.js";
 import { compareHlc, createHlc, type HlcClock, hlcWall, isHlc } from "./hlc.js";
 import {
 	MemoryOpStore,
@@ -143,8 +143,10 @@ export class OpLog {
 	private readonly equiv = new Map<string, { forkSeq: number }>();
 	private readonly pendingOps = new Map<
 		string,
-		{ op: Op; reason: PendingReason }
+		{ op: Op; reason: PendingReason; id?: string }
 	>(); // key author:seq:sig
+	/** S3: author -> highest anchored seq whose STORED op is not the anchored one (its history <= that seq is void) */
+	private offAnchor = new Map<string, number>();
 	private readonly listeners = new Map<
 		keyof OpLogEvents,
 		Set<(e: never) => void>
@@ -171,6 +173,7 @@ export class OpLog {
 	/** Rebuild in-memory indexes from the stores (no events). */
 	async load(): Promise<void> {
 		await this.serial(async () => {
+			await this.refreshAnchors();
 			for (const q of await this.quarantine.list()) {
 				if (q.kind === "evidence" && q.author && q.forkSeq !== undefined) {
 					const cur = this.equiv.get(q.author);
@@ -239,6 +242,13 @@ export class OpLog {
 				ok: false,
 				reason: "equivocation",
 				detail: `fork at seq ${eq.forkSeq}`,
+			};
+		const off = this.offAnchor.get(op.author);
+		if (off !== undefined && op.seq <= off)
+			return {
+				ok: false,
+				reason: "unauthorized",
+				detail: "not on the revocation anchor chain",
 			};
 		const v = this.validateFn?.(op) ?? true;
 		if (v !== true) return { ok: false, reason: "invalid", detail: v };
@@ -389,18 +399,85 @@ export class OpLog {
 		});
 	}
 
-	private park(op: Op, reason: PendingReason): IngestResult {
+	private park(op: Op, reason: PendingReason, id?: string): IngestResult {
 		const k = `${op.author}:${op.seq}:${op.sig}`;
 		if (!this.pendingOps.has(k)) {
 			if (this.pendingOps.size >= this.maxPending)
 				return { status: "quarantined", reason: "pending-overflow" };
-			this.pendingOps.set(k, { op, reason });
+			this.pendingOps.set(k, { op, reason, id });
 			this.emit("pending", { op, reason });
 		}
 		return { status: "pending", reason };
 	}
 
-	private async ingestOne(x: unknown, drain = true): Promise<IngestResult> {
+	/** Highest anchor of `author` covering `seq` (S3), if any. */
+	private anchorFor(author: string, seq: number): Anchor | undefined {
+		return this.trust.anchorsOf(author).find((a) => a.seq >= seq);
+	}
+
+	/**
+	 * S3: ops of a revoked author at or below an anchor wait as pending until a chain from our stored head up to the
+	 * anchored op is complete (walked backwards from the anchor id through `prev`); then exactly that chain is
+	 * ingested and every other pending op of the author at or below the anchor is rejected as a forgery.
+	 */
+	private async resolveAnchor(author: string, anchor: Anchor): Promise<void> {
+		const head = await this.store.head(author);
+		const headSeq = head?.op.seq ?? 0;
+		if (headSeq >= anchor.seq) return;
+		const mine = [...this.pendingOps.entries()].filter(
+			([, p]) => p.op.author === author && p.op.seq <= anchor.seq,
+		);
+		const chain: [string, Op][] = [];
+		let want: string | null = anchor.id;
+		for (let s = anchor.seq; s > headSeq; s--) {
+			const hit = mine.find(([, p]) => p.op.seq === s && p.id === want);
+			if (!hit) return; // incomplete: keep waiting
+			chain.unshift([hit[0], hit[1].op]);
+			want = hit[1].op.prev;
+		}
+		if ((head?.id ?? null) !== want) return; // does not continue what we store
+		for (const [k, o] of chain) {
+			this.pendingOps.delete(k);
+			await this.ingestOne(o, false, true);
+		}
+		for (const [k, p] of mine) {
+			if (!this.pendingOps.has(k)) continue;
+			this.pendingOps.delete(k);
+			await this.rejectOp(
+				"broken-chain",
+				p.op,
+				"not on the revocation anchor chain",
+				p.id,
+			);
+		}
+	}
+
+	/** Is our stored op of `author` at `seq` on an anchored chain (an anchor >= seq whose op we store)? */
+	private async storedAnchored(author: string, seq: number): Promise<boolean> {
+		for (const a of this.trust.anchorsOf(author))
+			if (a.seq >= seq && (await this.store.get(author, a.seq))?.id === a.id)
+				return true;
+		return false;
+	}
+
+	/** Recompute which authors' STORED history contradicts an anchor (sync verdicts read the result). */
+	private async refreshAnchors(): Promise<void> {
+		const next = new Map<string, number>();
+		for (const author of Object.keys(await this.store.heads())) {
+			for (const a of this.trust.anchorsOf(author)) {
+				const stored = await this.store.get(author, a.seq);
+				if (stored && stored.id !== a.id)
+					next.set(author, Math.max(next.get(author) ?? 0, a.seq));
+			}
+		}
+		this.offAnchor = next;
+	}
+
+	private async ingestOne(
+		x: unknown,
+		drain = true,
+		anchored = false,
+	): Promise<IngestResult> {
 		const bad = opShape(x);
 		if (bad) return this.rejectOp("malformed", x, bad);
 		const op = x as Op;
@@ -417,13 +494,65 @@ export class OpLog {
 		if (!(await verifyCanonical(jwk, body, op.sig)))
 			return this.rejectOp("bad-signature", op, undefined, id);
 
-		if (existing) return this.equivocate(op.author, op.seq, existing.op, op);
+		const anchor = anchored ? undefined : this.anchorFor(op.author, op.seq);
+		if (existing) {
+			// S3: our stored chain IS the anchored one: a different op at that seq is a forgery by the revoked key, not
+			// evidence against the legit history (no equivocation cut)
+			if (await this.storedAnchored(op.author, op.seq))
+				return this.rejectOp(
+					"broken-chain",
+					op,
+					"not on the revocation anchor chain",
+					id,
+				);
+			return this.equivocate(op.author, op.seq, existing.op, op);
+		}
 		const head = await this.store.head(op.author);
 		const headSeq = head?.op.seq ?? 0;
 		if (op.seq <= headSeq) return { status: "stale", id }; // below a pruned base
+		if (anchor) {
+			if (op.seq === anchor.seq && id !== anchor.id)
+				return this.rejectOp(
+					"broken-chain",
+					op,
+					"not the op the revocation anchored",
+					id,
+				);
+			const r = this.park(op, "anchor", id);
+			if (r.status === "pending") await this.resolveAnchor(op.author, anchor);
+			if ((await this.store.get(op.author, op.seq))?.id === id) {
+				if (drain) await this.drain(op.author);
+				const v = this.verdictOf(op.author, op.seq);
+				return !v || v.ok
+					? { status: "applied", id, stored: true }
+					: {
+							status: "quarantined",
+							id,
+							stored: true,
+							reason: v.reason,
+							detail: v.detail,
+						};
+			}
+			return this.pendingOps.has(`${op.author}:${op.seq}:${op.sig}`)
+				? r
+				: {
+						status: "quarantined",
+						id,
+						reason: "broken-chain",
+						detail: "not on the revocation anchor chain",
+					};
+		}
 		if (op.seq > headSeq + 1) return this.park(op, "gap");
-		if (head && op.prev !== head.id)
+		if (head && op.prev !== head.id) {
+			if (await this.storedAnchored(op.author, headSeq))
+				return this.rejectOp(
+					"broken-chain",
+					op,
+					"not on the revocation anchor chain",
+					id,
+				);
 			return this.equivocate(op.author, headSeq, head.op, op);
+		}
 		if (head && compareHlc(op.hlc, head.op.hlc) <= 0)
 			return this.rejectOp("hlc-regression", op, undefined, id);
 		if (hlcWall(op.hlc) > this.now() + this.maxSkewMs)
@@ -511,6 +640,7 @@ export class OpLog {
 	/** Recompute every verdict (trust changed) and retry pending ops. Called automatically on trust changes. */
 	reevaluate(): Promise<void> {
 		return this.serial(async () => {
+			await this.refreshAnchors();
 			for (const s of await this.store.all())
 				await this.setVerdict(s, this.verdict(s), false);
 			await this.drain();
@@ -550,6 +680,16 @@ export class OpLog {
 
 	heads(): Promise<Record<string, number>> {
 		return this.store.heads();
+	}
+
+	/** Head seq AND op id per author: pass it to `TrustStore.prepareRevocation` to anchor a revocation (S3). */
+	async headIds(): Promise<Record<string, { seq: number; id: string }>> {
+		const out: Record<string, { seq: number; id: string }> = {};
+		for (const author of Object.keys(await this.store.heads())) {
+			const h = await this.store.head(author);
+			if (h) out[author] = { seq: h.op.seq, id: h.id };
+		}
+		return out;
 	}
 
 	pending(): { author: string; seq: number; reason: PendingReason }[] {

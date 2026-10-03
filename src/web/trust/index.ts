@@ -29,7 +29,7 @@ export {
 	verifyBytes,
 	verifyCanonical,
 } from "./keys.js";
-export type { TrustStoreOptions } from "./store.js";
+export type { Anchor, TrustStoreOptions } from "./store.js";
 export { createTrustStore, TrustStore } from "./store.js";
 export type {
 	AddResult,

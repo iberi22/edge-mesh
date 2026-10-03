@@ -63,6 +63,13 @@ interface Derived {
 	chain: Map<string, Grant[]>; // [grant, parent, ..., root-issued]
 	revsByTarget: Map<string, Revocation[]>; // effective revocations only
 	cut: Map<string, number>;
+	anchors: Map<string, Anchor[]>; // subject fp -> { seq, id } its ops <= seq must chain to (S3)
+}
+
+/** "The op of this subject at `seq` is `id`" (from an effective revocation): its earlier ops must chain to it. */
+export interface Anchor {
+	seq: number;
+	id: string;
 }
 
 const MAX_REJECTED = 10_000;
@@ -316,11 +323,22 @@ export class TrustStore {
 			list ? list.push(r) : revsByTarget.set(r.target, [r]);
 		}
 		const cut = new Map<string, number>();
+		const anchors = new Map<string, Anchor[]>();
+		const addAnchor = (fp: string, seq: number, id: string | undefined) => {
+			if (id === undefined || seq < 1) return;
+			const list = anchors.get(fp) ?? [];
+			if (!list.some((a) => a.seq === seq && a.id === id))
+				list.push({ seq, id });
+			anchors.set(fp, list);
+		};
 		for (const g of this.grants.values()) {
 			let c = g.seqCutoff ?? Number.POSITIVE_INFINITY;
 			const links = chain.get(g.id) ?? [g];
 			links.forEach((link, i) => {
 				for (const r of revsByTarget.get(link.id) ?? []) {
+					if (i === 0) addAnchor(g.subject.fp, r.lastSeq, r.lastId);
+					else if (r.upTo?.[g.id] !== undefined)
+						addAnchor(g.subject.fp, r.upTo[g.id] as number, r.upToIds?.[g.id]);
 					// S2: cascaded cut-offs are keyed by grant id; a grant unknown to the revocation gets 0
 					const s =
 						i === 0
@@ -332,7 +350,7 @@ export class TrustStore {
 			});
 			cut.set(g.id, c);
 		}
-		this.derived = { byFp, chain, revsByTarget, cut };
+		this.derived = { byFp, chain, revsByTarget, cut, anchors };
 		return this.derived;
 	}
 
@@ -413,6 +431,11 @@ export class TrustStore {
 		return this.grants.get(id);
 	}
 
+	/** S3: anchors of a subject (from effective revocations), highest seq first. */
+	anchorsOf(fp: string): Anchor[] {
+		return [...(this.d().anchors.get(fp) ?? [])].sort((a, b) => b.seq - a.seq);
+	}
+
 	/** Effective seq cut-off of a grant (Infinity = not revoked). */
 	cutOf(grantId: string): number {
 		return this.d().cut.get(grantId) ?? Number.POSITIVE_INFINITY;
@@ -445,22 +468,38 @@ export class TrustStore {
 
 	/**
 	 * Build the revocation input for `targetId` with cut-offs taken from the revoker's log heads
-	 * (`heads[fp]` = last seq the revoker has seen from that device), including every cascaded grant (by grant id).
+	 * (`heads[fp]` = last seq the revoker has seen from that device, or `{ seq, id }` from `OpLog.headIds()` to also
+	 * anchor the history, S3), including every cascaded grant (by grant id).
 	 */
 	prepareRevocation(
 		targetId: string,
-		heads: Readonly<Record<string, number>>,
+		heads: Readonly<Record<string, number | { seq: number; id: string }>>,
 		reason?: string,
 	): RevocationInput {
 		const target = this.grants.get(targetId);
 		if (!target) throw new Error("unknown target grant");
+		const seqOf = (fp: string) => {
+			const h = heads[fp];
+			return typeof h === "number" ? h : (h?.seq ?? 0);
+		};
+		const idOf = (fp: string) => {
+			const h = heads[fp];
+			return typeof h === "object" && h.seq > 0 ? h.id : undefined;
+		};
 		const upTo: Record<string, number> = {};
-		for (const g of this.descendants(targetId))
-			upTo[g.id] = heads[g.subject.fp] ?? 0;
+		const upToIds: Record<string, string> = {};
+		for (const g of this.descendants(targetId)) {
+			upTo[g.id] = seqOf(g.subject.fp);
+			const id = idOf(g.subject.fp);
+			if (id) upToIds[g.id] = id;
+		}
+		const lastId = idOf(target.subject.fp);
 		return {
 			target: targetId,
-			lastSeq: heads[target.subject.fp] ?? 0,
+			lastSeq: seqOf(target.subject.fp),
+			...(lastId ? { lastId } : {}),
 			upTo,
+			...(Object.keys(upToIds).length ? { upToIds } : {}),
 			reason,
 		};
 	}

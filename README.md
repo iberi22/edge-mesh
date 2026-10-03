@@ -173,8 +173,9 @@ log.on("change", async ({ modules }) => {
   for (const m of modules) render(m, projector.project(m, await log.accepted(m)));
 });
 
-// Revoking a device: cut by what this device has already seen from it (and from devices it added).
-await trust.add(await issueRevocation(rootSigner, trust.prepareRevocation(grant.id, await log.heads()), { inst: trust.inst }));
+// Revoking a device: cut by what this device has already seen from it (and from devices it added). `headIds()` also
+// anchors that history (seq + op id): the revoked key cannot later fork it to replicas that had not seen it.
+await trust.add(await issueRevocation(rootSigner, trust.prepareRevocation(grant.id, await log.headIds()), { inst: trust.inst }));
 ```
 
 Transport contract expected by `attachOpLogSync` (wired to `web/provider.ts` in T2): `send(to | null, bytes)`,
