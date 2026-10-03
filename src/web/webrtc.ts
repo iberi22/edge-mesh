@@ -107,6 +107,22 @@ export function dataChannelLink(id: string, dc: RTCDataChannel, o: DataChannelLi
 	dc.addEventListener("error", fireClose);
 	return {
 		id,
+		sendPriority(data) {
+			if (closed || closing) return;
+			const chunks: Uint8Array[] = [];
+			for (let i = 0; i < data.length || i === 0; i += CHUNK) {
+				const chunk = data.subarray(i, i + CHUNK);
+				const framed = new Uint8Array(chunk.length + 1);
+				framed[0] = i + CHUNK < data.length ? 1 : 0;
+				framed.set(chunk, 1);
+				chunks.push(framed);
+				queued += framed.length;
+			}
+			// right after the message being sent (never inside it: the peer reassembles one message at a time)
+			const end = queue.findIndex((c) => c[0] === 0);
+			queue.splice(end < 0 ? queue.length : end + 1, 0, ...chunks);
+			flush();
+		},
 		send(data) {
 			if (closed) return;
 			if (closing) return; // draining before a graceful close: nothing new

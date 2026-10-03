@@ -123,6 +123,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   replaced same-epoch rotations stay candidates, and a peer still sending under an old key is offered the stored
   rotations it missed. Liveness fuzz (8 devices, partitions, concurrent revokers, random heal order): 96/96 seeds
   converge (the audit's 48 plus 48 more).
+- **Finding 4 slow peer stalled re-keying / unbounded backlog**: rotation and handshake frames take a priority lane
+  (`PeerLink.sendPriority`, never wait on `drain()`); bulk backlog per link is capped at 16 MiB beyond the message in
+  progress (the link is closed, the peer resyncs on reconnect). Docs now distinguish the 1 MiB drain mark from the
+  16 MiB caps.
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,

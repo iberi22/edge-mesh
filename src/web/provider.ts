@@ -184,6 +184,8 @@ const K_CHANNEL = 4; // body = nsLen(u16) | namespace | payload
 const K_HELLO = 5; // body = nonce(16): fresh challenge of this link (S1)
 const K_AUTH = 6; // body = peer's nonce(16) | epoch(u32), signed: the sender is live on THIS link (S1)
 const NONCE_BYTES = 16;
+/** finding 4: bytes of bulk data waiting for one link beyond the message in progress (then the link is closed) */
+const MAX_OUTSTANDING = 16 * 1024 * 1024;
 /** SF4: per link, at most this many challenges sent and answered */
 const HANDSHAKE_MAX = 8;
 /** frames kept per link while waiting for the peer's K_AUTH (also bounded by PRE_AUTH_MAX bytes) */
@@ -680,19 +682,44 @@ export function createMesh(opts: MeshOptions): Mesh {
 
 	// ---- link I/O: per-link ordered queue; messages above maxFrame are fragmented (H5) ----
 	const outQ = new WeakMap<PeerLink, Promise<void>>();
+	const outBytes = new WeakMap<PeerLink, number>(); // finding 4: bytes accepted for a link, not handed over yet
 	function sendBytes(link: PeerLink, bytes: Uint8Array, alive: () => boolean = () => true): Promise<void> {
+		const pending = outBytes.get(link) ?? 0;
+		// finding 4: a peer that drains far slower than we produce must not make us buffer without bound. A single
+		// message of any size (up to maxMessageBytes) may wait alone; beyond MAX_OUTSTANDING of backlog the link is
+		// closed (the peer resyncs from state vectors when it reconnects).
+		if (pending > 0 && pending + bytes.length > MAX_OUTSTANDING) {
+			err(new Error(`link ${link.id}: more than ${MAX_OUTSTANDING} bytes waiting for a slow peer: closing it`));
+			for (const r of [...links]) if (r.link === link) closeRec(r);
+			try {
+				link.close();
+			} catch {}
+			return Promise.resolve();
+		}
+		outBytes.set(link, pending + bytes.length);
 		const next = (outQ.get(link) ?? Promise.resolve())
 			.then(async () => {
-				if (!alive()) return;
-				for (const f of await fragment(bytes, maxFrame)) {
-					if (link.drain) await link.drain(); // BL3: paced by the peer instead of piling up in memory
+				try {
 					if (!alive()) return;
-					link.send(f);
+					for (const f of await fragment(bytes, maxFrame)) {
+						if (link.drain) await link.drain(); // BL3: paced by the peer instead of piling up in memory
+						if (!alive()) return;
+						link.send(f);
+					}
+				} finally {
+					outBytes.set(link, Math.max(0, (outBytes.get(link) ?? 0) - bytes.length));
 				}
 			})
 			.catch(err);
 		outQ.set(link, next);
 		return next;
+	}
+	/**
+	 * finding 4: control frames (rotations, link handshake) never wait behind bulk data nor on drain(): handed to the
+	 * link at once (`sendPriority` puts them at the next message boundary of the link's own queue when it has one).
+	 */
+	async function sendPriority(link: PeerLink, bytes: Uint8Array) {
+		for (const f of await fragment(bytes, maxFrame)) (link.sendPriority ?? link.send).call(link, f);
 	}
 
 	// ---- framing ----
@@ -742,15 +769,22 @@ export function createMesh(opts: MeshOptions): Mesh {
 	/** A rotation frame must reach peers still on the previous key or on a concurrent branch: seal it under each. */
 	async function sendRotate(rec: LinkRec, msg: RotateMsg) {
 		const body = utf8(JSON.stringify(msg));
-		if (rec.legacy) return sendFrame(rec, K_ROTATE, body);
-		await sendFrameWith(rec, K_ROTATE, body, docMat, dataRid);
+		if (rec.legacy) return sendFrameWith(rec, K_ROTATE, body, rec.legacy.material, rec.legacy.rid, true);
+		await sendFrameWith(rec, K_ROTATE, body, docMat, dataRid, true);
 		const recent = retiredKeys();
-		for (const r of recent) await sendFrameWith(rec, K_ROTATE, body, r.material, r.rid);
+		for (const r of recent) await sendFrameWith(rec, K_ROTATE, body, r.material, r.rid, true);
 		// a key this peer is known to hold, if it is neither our current one nor among the recent ones above
 		const c = rec.common;
-		if (c && c.rid !== dataRid && !recent.some((r) => r.rid === c.rid)) await sendFrameWith(rec, K_ROTATE, body, c.material, c.rid);
+		if (c && c.rid !== dataRid && !recent.some((r) => r.rid === c.rid)) await sendFrameWith(rec, K_ROTATE, body, c.material, c.rid, true);
 	}
-	async function sendFrameWith(rec: LinkRec, kind: number, body: Uint8Array, mat: Uint8Array | null, rid: string) {
+	async function sendFrameWith(
+		rec: LinkRec,
+		kind: number,
+		body: Uint8Array,
+		mat: Uint8Array | null,
+		rid: string,
+		priority = false,
+	) {
 		if (!mat || rec.closing) return;
 		const key = await senderKey(mat, vault.deviceId);
 		const id = utf8(vault.deviceId);
@@ -761,7 +795,9 @@ export function createMesh(opts: MeshOptions): Mesh {
 		} else inner = concat(new Uint8Array([kind]), body);
 		const sealed = await sealUpdate(key, inner, `${rid}|${vault.deviceId}`);
 		if (rec.closing) return;
-		await sendBytes(rec.link, concat(new Uint8Array([signFrames ? F_SDATA : F_DATA, id.length]), id, sealed), () => !rec.closing);
+		const frame = concat(new Uint8Array([signFrames ? F_SDATA : F_DATA, id.length]), id, sealed);
+		if (priority) return sendPriority(rec.link, frame);
+		await sendBytes(rec.link, frame, () => !rec.closing);
 	}
 	const established = () =>
 		[...links].filter(
@@ -1228,7 +1264,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 	function startHandshake(rec: LinkRec) {
 		rec.nonce = randomBytes(NONCE_BYTES);
 		rec.hellosOut = 1;
-		sendFrame(rec, K_HELLO, rec.nonce).catch(err);
+		const lg = rec.legacy;
+		sendFrameWith(rec, K_HELLO, rec.nonce, lg ? lg.material : docMat, lg ? lg.rid : dataRid, true).catch(err);
 	}
 	/** SF4: same challenge again, at most HANDSHAKE_MAX times per link. */
 	function resendHello(rec: LinkRec) {
@@ -1237,8 +1274,9 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const nonce = rec.nonce;
 		// under the current AND the recent retired keys: the peer may still be on (or have switched from) any of them
 		void (async () => {
-			await sendFrame(rec, K_HELLO, nonce);
-			if (!rec.legacy) for (const r of retiredKeys()) await sendFrameWith(rec, K_HELLO, nonce, r.material, r.rid);
+			const lg = rec.legacy;
+			await sendFrameWith(rec, K_HELLO, nonce, lg ? lg.material : docMat, lg ? lg.rid : dataRid, true);
+			if (!lg) for (const r of retiredKeys()) await sendFrameWith(rec, K_HELLO, nonce, r.material, r.rid, true);
 		})().catch(err);
 	}
 	async function answerHello(
@@ -1250,7 +1288,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		rec.answers = (rec.answers ?? 0) + 1;
 		rec.authSent = true;
 		// bound to the challenger and to the key the challenge came under (sealed under that same key)
-		await sendFrameWith(rec, K_AUTH, concat(peerNonce, u32(via.epoch), utf8(peer)), via.material, via.rid);
+		await sendFrameWith(rec, K_AUTH, concat(peerNonce, u32(via.epoch), utf8(peer)), via.material, via.rid, true);
 		maybeStart(rec);
 	}
 	function maybeStart(rec: LinkRec) {

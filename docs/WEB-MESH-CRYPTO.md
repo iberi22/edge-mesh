@@ -113,9 +113,17 @@ drains its queue before closing.
 - Pairing messages above **256 KiB** are dropped before being parsed. The pairing grant no longer carries a snapshot
   of the doc: it holds keys, trust chain and the current rotation record only, and the data follows by the regular
   (fragmented, authenticated) sync.
-- Backpressure (BL3): links may expose `drain()`; the mesh awaits it before handing over each frame, so even a
-  64 MiB message is paced by the peer. `dataChannelLink` closes a link only when its queue is above 16 MiB **and**
-  nothing drained for `stallMs` (15 s): a slow but healthy peer is never cut off, a stuck one is.
+- Backpressure (BL3, finding 4). Three distinct limits, per link:
+  - `drain()` (optional on a link) resolves once the link's own queue is at most **1 MiB**; the mesh awaits it before
+    handing over each bulk frame, so even a 64 MiB message is paced by the peer.
+  - The mesh keeps at most **16 MiB** of bulk backlog waiting for one link beyond the message in progress (a single
+    message of any size up to `maxMessageBytes` may wait alone); producing more for a peer that drains slower closes
+    the link, and the peer resyncs from state vectors when it reconnects.
+  - `dataChannelLink` additionally closes a link whose own queue is above 16 MiB **and** made no progress for
+    `stallMs` (15 s).
+  - Control frames (rotations, `K_HELLO` / `K_AUTH`) take a **priority lane**: they never wait behind bulk data nor on
+    `drain()`; `PeerLink.sendPriority` (implemented by `dataChannelLink`) puts them at the next message boundary of
+    the link's own queue. An owner's `revoke()` therefore re-keys at once even towards a slow member.
 
 ## Channels
 

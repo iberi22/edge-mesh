@@ -13,6 +13,7 @@ import {
 	randomBytes,
 	utf8,
 } from "../../src/web/util.js";
+import { dataChannelLink } from "../../src/web/webrtc.js";
 import { craft, openFrame, rawPeer, TOPIC } from "./audit-r3-lib.js";
 import {
 	type Dev,
@@ -308,101 +309,97 @@ describe("audit round 3 regressions: owner-only re-keying", () => {
 			for (const d of H.values()) d.mesh.destroy();
 		}, 60_000);
 
-	open(
-		"finding 4: a slow member does not stall the owner's revoke; its backlog stays bounded",
-		async () => {
-			const hub = createLoopbackHub();
-			const mv = await makeVault("devM");
-			const stats = { accepted: 0, delivered: 0 };
-			let mClosed = false;
-			const inner = hub.transport();
-			const slow = (l: PeerLink): PeerLink => {
-				const q: Uint8Array[] = [];
-				let queued = 0;
-				const waiters: Array<() => void> = [];
-				const timer = setInterval(() => {
-					let budget = 32 * 1024;
-					while (q.length && budget > 0) {
-						const f = q.shift() as Uint8Array;
-						queued -= f.length;
-						budget -= f.length;
-						stats.delivered += f.length;
-						l.send(f);
-					}
-					if (queued <= 1024 * 1024) for (const w of waiters.splice(0)) w();
-				}, 100);
-				l.onClose(() => {
+	it("finding 4: a slow member does not stall the owner's revoke; its backlog stays bounded", async () => {
+		const hub = createLoopbackHub();
+		const mv = await makeVault("devM");
+		const stats = { accepted: 0, delivered: 0 };
+		let mClosed = false;
+		const inner = hub.transport();
+		const slow = (l: PeerLink): PeerLink => {
+			const q: Uint8Array[] = [];
+			let queued = 0;
+			const waiters: Array<() => void> = [];
+			const timer = setInterval(() => {
+				let budget = 32 * 1024;
+				while (q.length && budget > 0) {
+					const f = q.shift() as Uint8Array;
+					queued -= f.length;
+					budget -= f.length;
+					stats.delivered += f.length;
+					l.send(f);
+				}
+				if (queued <= 1024 * 1024) for (const w of waiters.splice(0)) w();
+			}, 100);
+			l.onClose(() => {
+				clearInterval(timer);
+				mClosed = true;
+				for (const w of waiters.splice(0)) w();
+			});
+			return {
+				id: l.id,
+				send(d) {
+					q.push(d.slice());
+					queued += d.length;
+					stats.accepted += d.length;
+				},
+				drain: () =>
+					queued <= 1024 * 1024
+						? Promise.resolve()
+						: new Promise<void>((r) => waiters.push(r)),
+				onMessage: (cb) => l.onMessage(cb),
+				onClose: (cb) => l.onClose(cb),
+				close: () => {
 					clearInterval(timer);
-					mClosed = true;
-					for (const w of waiters.splice(0)) w();
-				});
-				return {
-					id: l.id,
-					send(d) {
-						q.push(d.slice());
-						queued += d.length;
-						stats.accepted += d.length;
-					},
-					drain: () =>
-						queued <= 1024 * 1024
-							? Promise.resolve()
-							: new Promise<void>((r) => waiters.push(r)),
-					onMessage: (cb) => l.onMessage(cb),
-					onClose: (cb) => l.onClose(cb),
-					close: () => {
-						clearInterval(timer);
-						l.close();
-					},
-				};
+					l.close();
+				},
 			};
-			const wrapped: LinkTransport = {
-				...inner,
-				join: (r, i) => inner.join(r, i),
-				leave: (r) => inner.leave(r),
-				close: () => inner.close(),
-				onLink: (cb) =>
-					inner.onLink((l, rid) =>
-						l.id === mv.deviceId && !rid.startsWith("p_")
-							? cb(slow(l), rid)
-							: cb(l, rid),
-					),
-			};
-			const a = await makeDev("devA", hub, undefined, { signaling: [wrapped] });
-			const b = await makeDev("devB", hub);
-			const c = await makeDev("devC", hub);
-			await pair(a, b);
-			await pair(a, c);
-			const m = await makeDev("devM", hub, undefined, { vault: mv });
-			await pair(a, m);
-			const all = [a, b, c, m];
-			await until(
-				() =>
-					all.every((x) => all.every((y) => metaOf(x).has(`ecdh/${y.id}`))) &&
-					all.every((x) => x.mesh.devices().length === 4),
-				20_000,
-			);
-			await until(() => a.mesh.peers.includes(m.id), 5000);
-			// the owner's app writes ~24 MiB while M drains at ~320 KiB/s
-			for (let i = 0; i < 24; i++) {
-				a.doc.getMap("more").set(`k${i}`, `${i}`.padEnd(1024 * 1024, "z"));
-				await settle(10);
-			}
-			const t0 = Date.now();
-			await a.mesh.revoke(c.id);
-			expect(Date.now() - t0).toBeLessThan(3000); // not queued behind the bulk data towards M
-			expect(a.mesh.epoch).toBe(1);
-			expect([...metaOf(a).keys()].some((k) => k.startsWith("rotrec:"))).toBe(
-				true,
-			);
-			await settle(2000);
-			// the backlog towards M never exceeds the documented 16 MiB: the link is closed (it resyncs on reconnect)
-			expect(mClosed || stats.accepted - stats.delivered <= 16 * 2 ** 20).toBe(
-				true,
-			);
-			for (const x of all) x.mesh.destroy();
-		},
-		60_000,
-	);
+		};
+		const wrapped: LinkTransport = {
+			...inner,
+			join: (r, i) => inner.join(r, i),
+			leave: (r) => inner.leave(r),
+			close: () => inner.close(),
+			onLink: (cb) =>
+				inner.onLink((l, rid) =>
+					l.id === mv.deviceId && !rid.startsWith("p_")
+						? cb(slow(l), rid)
+						: cb(l, rid),
+				),
+		};
+		const a = await makeDev("devA", hub, undefined, { signaling: [wrapped] });
+		const b = await makeDev("devB", hub);
+		const c = await makeDev("devC", hub);
+		await pair(a, b);
+		await pair(a, c);
+		const m = await makeDev("devM", hub, undefined, { vault: mv });
+		await pair(a, m);
+		const all = [a, b, c, m];
+		await until(
+			() =>
+				all.every((x) => all.every((y) => metaOf(x).has(`ecdh/${y.id}`))) &&
+				all.every((x) => x.mesh.devices().length === 4),
+			20_000,
+		);
+		await until(() => a.mesh.peers.includes(m.id), 5000);
+		// the owner's app writes ~24 MiB while M drains at ~320 KiB/s
+		for (let i = 0; i < 24; i++) {
+			a.doc.getMap("more").set(`k${i}`, `${i}`.padEnd(1024 * 1024, "z"));
+			await settle(10);
+		}
+		const t0 = Date.now();
+		await a.mesh.revoke(c.id);
+		expect(Date.now() - t0).toBeLessThan(3000); // not queued behind the bulk data towards M
+		expect(a.mesh.epoch).toBe(1);
+		expect([...metaOf(a).keys()].some((k) => k.startsWith("rotrec:"))).toBe(
+			true,
+		);
+		await settle(2000);
+		// the backlog towards M never exceeds the documented 16 MiB: the link is closed (it resyncs on reconnect)
+		expect(mClosed || stats.accepted - stats.delivered <= 16 * 2 ** 20).toBe(
+			true,
+		);
+		for (const x of all) x.mesh.destroy();
+	}, 60_000);
 
 	open(
 		"finding 5: a relayer that corrupts other recipients' wraps does not keep them off the new key",
@@ -552,4 +549,31 @@ describe("audit round 3 regressions: owner-only re-keying", () => {
 		},
 		40_000,
 	);
+
+	it("finding 4: a priority frame overtakes queued bulk messages at a message boundary, never inside one", () => {
+		const listeners: Record<string, Array<() => void>> = {};
+		const sent: Uint8Array[] = [];
+		const dc = {
+			readyState: "open",
+			bufferedAmount: 4 * 1024 * 1024, // nothing flushes for now
+			binaryType: "",
+			bufferedAmountLowThreshold: 0,
+			addEventListener: (t: string, f: () => void) => {
+				listeners[t] ??= [];
+				listeners[t].push(f);
+			},
+			send(d: Uint8Array) {
+				sent.push(new Uint8Array(d));
+			},
+			close() {},
+		};
+		const link = dataChannelLink("x", dc as unknown as RTCDataChannel);
+		link.send(new Uint8Array(40_000).fill(1)); // 3 chunks
+		link.send(new Uint8Array(40_000).fill(2)); // 3 chunks
+		link.sendPriority?.(new Uint8Array(10).fill(9));
+		dc.bufferedAmount = 0;
+		for (const f of listeners.bufferedamountlow ?? []) f();
+		const firstByte = sent.map((c) => c[1]);
+		expect(firstByte).toEqual([1, 1, 1, 9, 2, 2, 2]);
+	});
 });

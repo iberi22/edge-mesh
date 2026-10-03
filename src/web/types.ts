@@ -42,6 +42,11 @@ export interface PeerLink {
 	 * handing over each frame, so a large message is paced by the peer instead of piling up in memory.
 	 */
 	drain?(): Promise<void>;
+	/**
+	 * Optional (finding 4): send ahead of the link's own queued data, at the next message boundary. Used for control
+	 * frames (rotations, link handshake), so they never wait behind bulk data towards a slow peer.
+	 */
+	sendPriority?(data: Uint8Array): void;
 }
 
 /** Wire message of the signaling protocol (see docs/SIGNALING-PROTOCOL.md). */
