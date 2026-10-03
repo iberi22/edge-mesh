@@ -155,6 +155,8 @@ export class OpLog {
 	private unknownCount = 0;
 	private unknownBytes = 0;
 	private readonly pendingPerAuthor = new Map<string, number>();
+	/** BL2: op id -> pending key of ops parked for an anchor (backward resolution walks `prev` ids) */
+	private readonly anchorIds = new Map<string, string>();
 	private readonly maxOpBytes: number;
 	private readonly clock: HlcClock;
 	private readonly verdicts = new Map<string, OpVerdict>();
@@ -435,6 +437,8 @@ export class OpLog {
 			this.unknownCount--;
 			this.unknownBytes -= p.size;
 		}
+		if (p.reason === "anchor" && p.id && this.anchorIds.get(p.id) === k)
+			this.anchorIds.delete(p.id);
 		return p;
 	}
 
@@ -457,6 +461,7 @@ export class OpLog {
 		reason: PendingReason,
 		size: number,
 		id?: string,
+		authorCap = this.maxPendingPerAuthor,
 	): IngestResult {
 		const k = `${op.author}:${op.seq}:${op.sig}`;
 		if (this.pendingOps.has(k)) return { status: "pending", reason };
@@ -464,7 +469,7 @@ export class OpLog {
 			status: "quarantined",
 			reason: "pending-overflow",
 		};
-		if ((this.pendingPerAuthor.get(op.author) ?? 0) >= this.maxPendingPerAuthor)
+		if ((this.pendingPerAuthor.get(op.author) ?? 0) >= authorCap)
 			return overflow;
 		const unknown = reason === "unknown-author";
 		if (unknown && size > this.maxPendingUnknownBytes) return overflow;
@@ -478,6 +483,7 @@ export class OpLog {
 			if (!this.evictUnknown()) return overflow;
 		}
 		this.pendingOps.set(k, { op, reason, id, size });
+		if (reason === "anchor" && id) this.anchorIds.set(id, k);
 		this.pendingBytes += size;
 		this.pendingPerAuthor.set(
 			op.author,
@@ -505,22 +511,26 @@ export class OpLog {
 		const head = await this.store.head(author);
 		const headSeq = head?.op.seq ?? 0;
 		if (headSeq >= anchor.seq) return;
-		const mine = [...this.pendingOps.entries()].filter(
-			([, p]) => p.op.author === author && p.op.seq <= anchor.seq,
-		);
+		// BL2: walk backwards from the anchor through `prev` ids (index lookups, no scan per step)
 		const chain: [string, Op][] = [];
 		let want: string | null = anchor.id;
 		for (let s = anchor.seq; s > headSeq; s--) {
-			const hit = mine.find(([, p]) => p.op.seq === s && p.id === want);
-			if (!hit) return; // incomplete: keep waiting
-			chain.unshift([hit[0], hit[1].op]);
-			want = hit[1].op.prev;
+			const k: string | undefined =
+				want === null ? undefined : this.anchorIds.get(want);
+			const p: { op: Op } | undefined = k ? this.pendingOps.get(k) : undefined;
+			if (!k || !p || p.op.author !== author || p.op.seq !== s) return; // incomplete: keep waiting
+			chain.push([k, p.op]);
+			want = p.op.prev;
 		}
 		if ((head?.id ?? null) !== want) return; // does not continue what we store
+		chain.reverse();
 		for (const [k, o] of chain) {
 			this.takePending(k);
 			await this.ingestOne(o, false, true);
 		}
+		const mine = [...this.pendingOps.entries()].filter(
+			([, p]) => p.op.author === author && p.op.seq <= anchor.seq,
+		);
 		for (const [k, p] of mine) {
 			if (!this.pendingOps.has(k)) continue;
 			this.takePending(k);
@@ -599,8 +609,16 @@ export class OpLog {
 					"not the op the revocation anchored",
 					id,
 				);
-			const r = this.park(op, "anchor", size, id);
-			if (r.status === "pending") await this.resolveAnchor(op.author, anchor);
+			// BL2: the whole anchored span may wait (bounded by the global pending caps, not the per-author one)
+			const r = this.park(
+				op,
+				"anchor",
+				size,
+				id,
+				Math.max(this.maxPendingPerAuthor, anchor.seq - headSeq),
+			);
+			if (r.status !== "pending") return r; // overflow is reported as such, never as a broken chain
+			await this.resolveAnchor(op.author, anchor);
 			if ((await this.store.get(op.author, op.seq))?.id === id) {
 				if (drain) await this.drain(op.author);
 				const v = this.verdictOf(op.author, op.seq);

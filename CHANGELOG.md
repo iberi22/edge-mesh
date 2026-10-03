@@ -77,6 +77,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 `audit-regressions-oplog.test.ts`)
 - **BL1 partitions stayed split after healing**: on an authenticated retired-room link both sides now offer each
   other their stored rotations, so separately rotated partitions converge and re-key.
+- **BL2 anchored history beyond 1024 ops was lost** (`web/oplog`): ops parked for a revocation anchor may use the
+  whole anchored span (bounded by the global `maxPending`/`maxPendingBytes`, not the per-author cap), resolution walks
+  back from the anchor id through an index, and an overflow is reported as `pending-overflow`, never `broken-chain`.
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,

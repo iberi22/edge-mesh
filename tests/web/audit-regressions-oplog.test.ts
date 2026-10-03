@@ -440,33 +440,29 @@ describe("audit regressions: web/trust + web/oplog", () => {
 	});
 
 	for (const n of [1100, 1000])
-		(n > 1024 ? it.fails : it)(
-			`BL2: the anchored history of a revoked author with ${n} ops reaches a fresh replica`,
-			async () => {
-				const w = await world();
-				const tA = await w.trust();
-				await tA.addMany(w.docs);
-				const author = await w.log(w.waiter, tA);
-				const real = [];
-				for (let i = 0; i < n; i++) real.push(await author.append(op(`o${i}`)));
-				const rev = await w.revoke(
-					w.root,
-					tA.prepareRevocation(w.g.waiter.id, await author.headIds()),
-				);
-				const tX = await w.trust();
-				await tX.addMany(w.docs);
-				await tX.add(rev);
-				const x = await w.log(undefined, tX);
-				const res = await x.ingestMany(real.map((s) => s.op)); // in order, nothing forged
-				expect(res.some((r) => r.reason === "broken-chain")).toBe(false);
-				expect(
-					real.filter((_, i) => x.isAccepted(w.waiter.fp, i + 1)).length,
-				).toBe(n);
-			},
-			60_000,
-		);
+		it(`BL2: the anchored history of a revoked author with ${n} ops reaches a fresh replica`, async () => {
+			const w = await world();
+			const tA = await w.trust();
+			await tA.addMany(w.docs);
+			const author = await w.log(w.waiter, tA);
+			const real = [];
+			for (let i = 0; i < n; i++) real.push(await author.append(op(`o${i}`)));
+			const rev = await w.revoke(
+				w.root,
+				tA.prepareRevocation(w.g.waiter.id, await author.headIds()),
+			);
+			const tX = await w.trust();
+			await tX.addMany(w.docs);
+			await tX.add(rev);
+			const x = await w.log(undefined, tX);
+			const res = await x.ingestMany(real.map((s) => s.op)); // in order, nothing forged
+			expect(res.some((r) => r.reason === "broken-chain")).toBe(false);
+			expect(
+				real.filter((_, i) => x.isAccepted(w.waiter.fp, i + 1)).length,
+			).toBe(n);
+		}, 60_000);
 
-	it.fails("BL2: anchored history beyond the pending budget overflows as pending-overflow, never as broken-chain", async () => {
+	it("BL2: anchored history beyond the pending budget overflows as pending-overflow, never as broken-chain", async () => {
 		const w = await world();
 		const tA = await w.trust();
 		await tA.addMany(w.docs);
