@@ -140,8 +140,9 @@ export function lwwField(
 					if (p.delete === true) deletes.push(o);
 					if (p.restore === true) restores.push(o);
 				}
-				const fields: Record<string, unknown> = {};
-				const winners: Record<string, string> = {};
+				// null-prototype: field names come from payloads ("__proto__", "constructor" are plain keys here)
+				const fields: Record<string, unknown> = Object.create(null);
+				const winners: Record<string, string> = Object.create(null);
 				for (const [f, cs] of [...candidates.entries()].sort(([a], [b]) =>
 					a < b ? -1 : 1,
 				)) {
@@ -299,6 +300,14 @@ export function ledger(
 						continue;
 					}
 					const next = a.balance + amt;
+					if (!Number.isFinite(next)) {
+						a.rejected.push({
+							opId: o.id,
+							author: o.author,
+							reason: "overflow",
+						});
+						continue;
+					}
 					if (next < 0 && mode === "reject") {
 						a.rejected.push({
 							opId: o.id,

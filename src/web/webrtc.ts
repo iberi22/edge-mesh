@@ -44,6 +44,7 @@ export function dataChannelLink(id: string, dc: RTCDataChannel): PeerLink {
 	dc.addEventListener("message", (ev: MessageEvent) => {
 		if (closed) return;
 		const buf = new Uint8Array(ev.data as ArrayBuffer);
+		if (buf.length === 0) return; // not a chunk (no flag byte): ignore instead of corrupting the length
 		partsLen += buf.length - 1;
 		if (partsLen > MAX_LINK_MESSAGE) return close(true);
 		parts.push(buf.subarray(1));

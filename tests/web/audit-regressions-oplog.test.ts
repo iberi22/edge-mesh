@@ -1,6 +1,7 @@
-// Regression tests for the security audit of web/trust + web/oplog (A1–A4, S7). Each one reproduces an attack from the
+// Regression tests for the security audit of web/trust + web/oplog + web/merge (A1–A4, S7, notes). Each one reproduces an attack from the
 // audit and asserts that it no longer works.
 import { describe, expect, it } from "vitest";
+import { ledger, lwwField } from "../../src/web/merge/index.js";
 import {
 	attachOpLogSync,
 	encodeMessage,
@@ -15,6 +16,7 @@ import {
 	type Signer,
 	signCanonical,
 } from "../../src/web/trust/index.js";
+import { dataChannelLink } from "../../src/web/webrtc.js";
 import { T0, type World, world } from "./trust-fixtures.js";
 
 const op = (entityId: string, extra: Partial<OpBody> = {}) => ({
@@ -373,6 +375,68 @@ describe("audit regressions: web/trust + web/oplog", () => {
 		);
 		await new Promise((r) => setTimeout(r, 50));
 		expect(sent.length).toBeGreaterThan(other); // other peers are not affected
+	});
+
+	it("notes: lww field names like __proto__/constructor are plain keys; ledger overflow is rejected", () => {
+		const hlc = (n: number) => `${String(T0 + n).padStart(15, "0")}-00000`;
+		const mk = (id: string, seq: number, payload: unknown) => ({
+			id,
+			author: "a",
+			seq,
+			hlc: hlc(seq),
+			entityId: "e",
+			action: "x",
+			payload,
+		});
+		const set = JSON.parse(
+			'{"set":{"__proto__":{"polluted":true},"constructor":"c","name":"n"}}',
+		);
+		const ent = lwwField()
+			.project([mk("1", 1, set)])
+			.get("e");
+		expect(Object.getPrototypeOf(ent?.fields)).toBeNull();
+		expect(Object.keys(ent?.fields ?? {}).sort()).toEqual([
+			"__proto__",
+			"constructor",
+			"name",
+		]);
+		const fields = (ent as { fields: Record<string, unknown> }).fields;
+		expect(Object.getOwnPropertyDescriptor(fields, "__proto__")?.value).toEqual(
+			{ polluted: true },
+		);
+		expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+		const acc = ledger({ negative: "allow" })
+			.project([
+				mk("1", 1, { amount: Number.MAX_VALUE }),
+				mk("2", 2, { amount: Number.MAX_VALUE }),
+				mk("3", 3, { amount: -1 }),
+			])
+			.get("e");
+		expect(acc?.rejected.map((r) => r.reason)).toEqual(["overflow"]);
+		expect(Number.isFinite(acc?.balance)).toBe(true);
+	});
+
+	it("notes: an empty data-channel message does not throw nor corrupt reassembly", () => {
+		const ls: Record<string, Array<(e: unknown) => void>> = {};
+		const dc = {
+			readyState: "open",
+			bufferedAmount: 0,
+			addEventListener: (t: string, f: (e: unknown) => void) => {
+				ls[t] ??= [];
+				ls[t].push(f);
+			},
+			send() {},
+			close() {},
+		};
+		const link = dataChannelLink("x", dc as unknown as RTCDataChannel);
+		const got: number[] = [];
+		link.onMessage((d) => got.push(d.length));
+		const emit = (data: ArrayBuffer) => {
+			for (const f of ls.message ?? []) f({ data });
+		};
+		expect(() => emit(new ArrayBuffer(0))).not.toThrow();
+		emit(new Uint8Array([0, 7, 7, 7]).buffer);
+		expect(got).toEqual([3]);
 	});
 });
 

@@ -68,6 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   root (its fingerprint) and the guest checks that the grant chain ends at it.
 - **S7 catch-up amplification** (`web/oplog`): a `want` is answered with at most `maxOps` (5000) ops and
   `maxWantBytes` (4 MiB); `attachOpLogSync` rate-limits `want` and `have`-with-reply per peer (`rate`: 30 per 10 s).
+- Notes: `lwwField` builds `fields`/`winners` as null-prototype objects (`__proto__`, `constructor` are plain field
+  names); `ledger` rejects a movement whose balance would not be finite (`overflow`); an empty data-channel message
+  is ignored instead of throwing; device ids are restricted to `[A-Za-z0-9_-]{22}` (no `|`, B1) and the grant's root
+  `mid` must match the QR (B3).
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,
