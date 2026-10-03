@@ -314,6 +314,13 @@ describe("web/oplog: catch-up protocol", () => {
 				(await cook.heads())[w.owner.fp] === 1 &&
 				(await owner.heads())[w.cook.fp] === 1,
 		);
+		// relayed copies may still be in flight to the third device: wait until all three vectors agree
+		const canon = (h: Record<string, number>) =>
+			JSON.stringify(Object.entries(h).sort());
+		await until(async () => {
+			const v = (await Promise.all(logs.map((l) => l.heads()))).map(canon);
+			return v[0] === v[1] && v[1] === v[2];
+		});
 		const vv = await Promise.all(logs.map((l) => l.heads()));
 		expect(vv[0]).toEqual(vv[1]);
 		expect(vv[1]).toEqual(vv[2]);
