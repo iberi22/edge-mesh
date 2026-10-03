@@ -143,6 +143,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   canonical JSON with the ML-DSA backend. Sizes: public key 1952 B, signature 3309 B (an op is ~4.9 KB on the wire,
   well under the 32 KiB op cap; a 60 KiB catch-up frame holds ~12 ops). Node (noble 0.6.1): sign ~7.5 ms, verify
   ~2.1 ms, keygen ~2 ms.
+- **Mesh identities on ML-DSA-65** (`web/provider`, admission, pairing): device keys are ML-DSA-65 and every identity
+  or authorization signature (admissions, revocations, `K_HELLO`/`K_AUTH`, frames, pairing ack, `ecdh/<id>` records,
+  rotation records) is verified by the mesh itself with `identityVerify` (exact sizes; no ECDSA fallback).
+  `deviceId = deviceIdOf(pub)` = base64url(SHA-256(canonicalJson({alg: "ML-DSA-65", pub}))), 43 characters, equal
+  to `web/trust` `keyFingerprint`.
+- **Hybrid key exchange** (ML-KEM-768 + ECDH P-256, HKDF-SHA-256 over `ML-KEM secret ‖ ECDH secret` with the
+  transcript as salt/info; both required): the pairing session (guest ML-KEM key in `hello`, host ciphertext in
+  `ready`, both in the SAS transcript) and the rotation wraps (`ct ‖ AES-GCM`, 1148 B). Device records
+  `ecdh/<id>` carry the ML-KEM encapsulation key; malformed ML-KEM keys and P-256 points are refused on receipt.
+- **Rotations are signed by the owner** (`rot.sig`, ML-DSA-65 over the rotation id): a rotation no longer rests on
+  the ECDH half of its wraps.
+- Pairing QR v4 is unsigned (an ML-DSA key and signature do not fit a QR) and names `hostId`; the host proves that
+  identity inside the SAS-authenticated session (`GrantBody.hostProof`).
+- Cost and sizes (Node 24, noble 0.6.1): ML-KEM-768 keygen ~0.7 ms, encapsulate ~0.9 ms, decapsulate ~1.0 ms; a
+  signed small message is ~3.4 KB on the wire (was ~0.2 KB), QR 362 characters, pairing ~60 ms, revoke-to-adoption
+  ~110 ms on 3 devices; details in `docs/WEB-MESH-CRYPTO.md`. Regression tests:
+  `tests/web/audit-regressions-pqc.test.ts`, `tests/web/audit-regressions-pqc-kex.test.ts` (Q1-Q11).
+- A re-key interrupted by `destroy()` no longer writes an orphan key into the vault, and owner devices execute
+  pending re-keys when they start (found by the 96-seed liveness fuzz once rotations got slower); the fuzz now
+  requires a state that holds for 1.5 s (96/96 seeds).
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,
@@ -168,6 +188,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `generateSigner()`); `keyFingerprint`, `isPublicKey` replace `jwkFingerprint`, `publicJwk`, `isEcP256Jwk`;
   `GrantInput.subject` and `TrustStoreOptions.root` take base64url public keys; `TrustStore.keyOf` returns one.
   ES256 grants, revocations and ops are rejected.
+- PQC (all devices update together, meshes re-paired): `VaultClient.devicePublicKey` is ML-DSA-65 and `deviceId` is
+  `deviceIdOf(pub)`; `VaultClient.verify` is ignored; `VaultClient.getKemIdentity` (optional) is new; `ChainContext`
+  takes `verify` instead of `vault`; QR v4, `hello` v3, transcript v5, `pairTranscript(p, e, n, k, c)`;
+  `verifyPairPayload` removed; `wrapMeshKey(ecdhPriv, toPub, toKem, preId, from, to, key)` /
+  `unwrapMeshKey(ecdhPriv, kemSecret, fromPub, preId, from, to, wrap)` (v4); rotation records carry `sig`;
+  local store key `kex`. ECDSA identities and ES256 documents are rejected (Fize migrates separately).
 - `wrapMeshKey(priv, toPub, rotId, from, to, key)` / `unwrapMeshKey(priv, fromPub, rotId, from, to, wrap)` (v3);
   meta layout of stored wraps is `rotrec:<rotId>` + `rot:<rotId>:<deviceId>` (no `old:` entries: retired keys stay in
   the local store).

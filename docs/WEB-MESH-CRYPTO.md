@@ -55,9 +55,11 @@
 
 The shared `meta` map is writable by every member, so nothing in it is trusted by itself.
 
-- **Identity = key fingerprint.** `deviceId = fingerprint(identity public key)` = `base64url(SHA-256(pub))[0..22]`
-  (`fingerprint()` in `rooms.ts`; ids match `^[A-Za-z0-9_-]{22}$`). `createMesh` refuses a vault whose `deviceId` is
-  not the fingerprint of `devicePublicKey`; `verifyChain` ignores any admission (or pinned root) whose `deviceId` is
+- **Identity = key fingerprint.** The identity key is ML-DSA-65 (see "Post-quantum cryptography" below) and
+  `deviceId = deviceIdOf(pub)` = `base64url(SHA-256(canonicalJson({ alg: "ML-DSA-65", pub: base64url(raw key) })))`,
+  43 characters (`deviceIdOf()` in `pq.ts`; the same value as `keyFingerprint` in `web/trust`; ids match
+  `^[A-Za-z0-9_-]{43}$`). `createMesh` refuses a vault whose key is not a 1952-byte ML-DSA-65 key or whose `deviceId`
+  is not `deviceIdOf(devicePublicKey)`; `verifyChain` ignores any admission (or pinned root) whose `deviceId` is
   not the fingerprint of its `pub`; frames whose sender id is not of that form are dropped. A device id can therefore
   never be re-bound to another key, whoever signs the record.
 
@@ -73,7 +75,7 @@ The shared `meta` map is writable by every member, so nothing in it is trusted b
   entries are ignored.
 - Pairing ack (proof of possession): the guest's ack carries `{deviceId, pub, name, sig}` with `sig` = identity-key
   signature over `["swal-pair-ack/v1", transcript, deviceId, pub, name]` (the SAS transcript hash binds it to this
-  session). The host admits nobody unless `deviceId = fingerprint(pub)` and the signature verifies, and it refuses a
+  session). The host admits nobody unless `deviceId = deviceIdOf(pub)` and the signature verifies, and it refuses a
   guest claiming its own or the root's identity, or an id already admitted under another key.
 - Changing meshes: `pairJoin` into a mesh with another `mid` is refused unless the local doc is **fresh** (no shared
   content; only this device's own `dev/` and `ecdh/` entries), because the doc of the old mesh would otherwise be
@@ -83,28 +85,34 @@ The shared `meta` map is writable by every member, so nothing in it is trusted b
   stays offline from the old mesh (and resumes it if the pairing fails). Re-pairing within the same mesh from a host
   at an older epoch than this device is refused (it would hand back an older key). On success all trust state of the old mesh (admissions, ECDH pins, revocations, retired rooms,
   sender keys) is dropped before the new key is installed, and nothing is sent until the network restarts.
-- Pairing grant: besides the mesh key it carries the root and the guest's admission chain; the guest checks that
-  the chain is valid and that its issuer's key is the host key that signed the QR payload. `pairHost({ role,
+- Pairing grant: besides the mesh key it carries the root, the guest's admission chain and `hostProof = {pub, sig}`,
+  the host's ML-DSA-65 signature over `["swal-pair-host/v1", transcript, hostId, pub]`. The guest refuses the grant
+  unless `hostId` (from the QR) = `deviceIdOf(pub)`, the signature verifies, the admission was issued by `hostId` and
+  its chain is valid with the issuer key equal to `pub`. `pairHost({ role,
   extra })` lets the app attach data for the guest (e.g. a signed capability grant); `pairJoin` returns
   `{ host, extra }`.
 
 ## Pairing SAS
 
-- QR payload v3 (signed by the host identity key over the canonical JSON array of the other fields): `[3, mid, appId,
-  topic, hostEphemeral, hostIdentityKey, sig, pairSecret, exp, root]`, where `root` is the owner's deviceId
-  (= fingerprint of its key). A new owner always draws a fresh `mid` (never one found in the shared doc). The guest requires the
+- QR payload v4: `[4, mid, appId, topic, hostEphemeral, hostId, pairSecret, exp, root]` (~360 characters), where
+  `hostId` is the host's deviceId and `root` the owner's. The QR is no longer signed: an ML-DSA-65 key and signature
+  (~7 KB in base64url) do not fit a scannable QR. The QR is the out-of-band channel, and the host proves `hostId`
+  inside the SAS-authenticated session (`hostProof`, above). A new owner always draws a fresh `mid` (never one found in the shared doc). The guest requires the
   grant's root to be exactly that one and its `mid` to be the QR's (S6).
 - **Root pinning (TOFU, S6).** The first root a device accepts for a `mid` stays pinned: pairing with a QR or a grant
   that names another root for the same `mid` is refused, so a host that copies an existing mesh id cannot re-root a
   member (and pull its data).
 
-- `hello` (v2) carries the guest ephemeral key `e`, a fresh 16-byte nonce `n` and `p = HMAC(HKDF(pairSecret),
-  "hello/v2|e|n")`.
-- `transcript = SHA-256(["swal-pair-transcript/v3", appId, topic, mid, root, hostIdentityKey, hostEphemeral,
-  guestEphemeral, pairSecret, n, exp])`.
-- SAS = 6 digits = 40 bits of `HKDF(ECDH, salt = transcript, "swal-sas/v2")` mod 10^6, shown on both devices; the
-  session key is `HKDF(ECDH, salt = transcript, "swal-pair-session/v2")`. Either side rejecting aborts the pairing
-  and nothing is admitted.
+- `hello` (v3) carries the guest ephemeral P-256 key `e`, a fresh 16-byte nonce `n`, a fresh ML-KEM-768
+  encapsulation key `k` and `p = HMAC(HKDF(pairSecret), "hello/v3|e|n|k")`. The host answers `ready` with
+  `c` = ML-KEM-768 ciphertext to `k`.
+- `transcript = SHA-256(["swal-pair-transcript/v5", appId, topic, mid, root, hostId, hostEphemeral, guestEphemeral,
+  pairSecret, n, k, c, exp])`.
+- Hybrid session (both secrets required): SAS = 6 digits = 40 bits of `HKDF(ML-KEM secret ‖ ECDH secret, salt =
+  transcript, "swal-sas/v3")` mod 10^6, shown on both devices; the session key is `HKDF-SHA-256(ML-KEM secret ‖ ECDH
+  secret, salt = transcript, "swal-pair-session/v3")`. A relay that substitutes `c` (or `e`) yields another SAS.
+  Either side rejecting aborts the pairing and nothing is admitted. A `ready` without `c` is refused (no ECDH-only
+  session).
 
 ## Fragmentation
 
@@ -145,7 +153,7 @@ authenticated members; `onMessage(cb(data, from))` gets the authenticated sender
 ## Hooks for a permissions layer
 
 - `authorizeDevice(deviceId, devicePub)`: replaces the built-in admission check. The mesh already enforces
-  `deviceId = fingerprint(devicePub)`; the hook decides whether that key is a member. Gates `devices()`, rotation wraps, ECDH keys, frame acceptance, and the host
+  `deviceId = deviceIdOf(devicePub)`; the hook decides whether that key is a member. Gates `devices()`, rotation wraps, ECDH keys, frame acceptance, and the host
   refuses to admit a device it rejects.
 - `canRotate(issuer, target)`: replaces the built-in role ladder for revocations (local and received).
 - `authorizeUpdate(sender, update)`: called before applying each incoming Yjs update with the authenticated peer
@@ -165,15 +173,27 @@ The new mesh key is never sent under the old shared key (the revoked device know
    issuer is rejected before anything in it is processed (`rejected: "rotation not from the owner"`). A received
    owner rotation is accepted only if every device it cuts off has a **valid signed revocation** (see 7). With a
    custom `canRotate` hook, the hook decides who may revoke, and which targets an owner rotation may cut off.
-1. Each device has a static P-256 ECDH key (`VaultClient.getEcdhIdentity()`, persistent; an in-memory
-   fallback exists but then a reloaded device cannot unwrap older wraps). Its public key is published in
-   meta as `ecdh/<deviceId> = {pub, sig}`, signed by the device identity key and verified against the identity
-   key of its **admission** (never against the self-declared `dev/<id>`).
+1. Each device has a static P-256 ECDH key (`VaultClient.getEcdhIdentity()`) and a static ML-KEM-768 key pair
+   (`VaultClient.getKemIdentity()`), both persistent; in-memory fallbacks exist but then a reloaded device cannot
+   unwrap older wraps. The public keys are published in meta as `ecdh/<deviceId> = {pub, kem, sig}`, signed
+   (ML-DSA-65, `["swal-kex/v2", deviceId, pub, kem]`) by the device identity key and verified against the identity
+   key of its **admission** (never against the self-declared `dev/<id>`). The P-256 point and the ML-KEM key (FIPS 203
+   modulus check) are validated before they are accepted, so a member cannot break the owner's re-keying by vouching
+   for a malformed key. Verified keys are pinned in the local store (`kex`).
 2. A rotation (always by the owner) is described by a **record** identical for every recipient:
    `{epoch, from, revoked[], to[] (recipients), n (16 random bytes), revs[] (signed revocations), wh}`. The owner
    computes `preId = SHA-256(["swal-rot/v2", epoch, from, revoked, to, n])` and, **only for admitted, non-revoked
-   devices**, `wrap = AES-GCM(HKDF(ECDH(own, peer), "swal-rotate/v3|<preId>|<from>|<to>"), newMeshKey)`: any change to
-   the record (e.g. re-labelling who is revoked) makes the wrap fail. `wh` = SHA-256 of the whole wrap set (sorted
+   devices**, a **hybrid** wrap: `(ct, ss) = ML-KEM-768.Encaps(peer kem)`, `K = HKDF-SHA-256(ikm = ss ‖ ECDH(own,
+   peer), salt = SHA-256("swal-rotate-kem/v1" ‖ ct), info = "swal-rotate/v4|<preId>|<from>|<to>")`, `wrap =
+   base64url(ct ‖ AES-GCM(K, newMeshKey))` (1148 bytes, 1531 characters; frames refuse wraps above 1600). Any change
+   to the record (e.g. re-labelling who is revoked) makes the wrap fail; the ML-KEM half keeps the key confidential
+   against a quantum adversary. The owner then signs the final id with its ML-DSA-65 identity: `rot.sig` over
+   `["swal-rot-sig/v1", rotId]`. Every device rejects a rotation without a valid signature by the pinned root
+   (`rejected: "rotation signature invalid"`) before processing anything in it, serves stored rotations only if the
+   signature verifies, and checks it on the rotation carried by a pairing grant. So a rotation does not rest on the
+   ECDH half alone: whoever recovers the owner's P-256 key still cannot push a mesh key. A re-key still in flight
+   when the app destroys the mesh writes nothing to the vault, and an owner device re-checks for pending re-keys
+   (recorded revocations, interrupted rotations) every time it starts. `wh` = SHA-256 of the whole wrap set (sorted
    `[deviceId, wrap]` pairs) and the rotation id is `rotId = SHA-256(["swal-rot/v2id", preId, wh])` (finding 5): a
    wrap map travelling with a rotation is relayed only if it matches `wh`, so a relayer that corrupts other
    recipients' wraps cannot make honest relayers pass the damage on; with no valid map at hand a device relays the
@@ -263,6 +283,37 @@ can put such a record into the shared doc. It exposes no key or data, and the ow
 republishes the revocations it verified into the shared doc (`rev/<id>:<epoch>`), so all devices end up with the same
 membership view.
 
+## Post-quantum cryptography (AGENTS.md §2)
+
+| Use | Algorithm | Where |
+|-----|-----------|-------|
+| Device identity, admissions, revocations, `K_HELLO`/`K_AUTH`, frame signatures, pairing ack and host proof, `ecdh/<id>` records, rotation records (`rot.sig`, the owner's signature over the rotation id), `web/trust` grants/revocations, `web/oplog` ops | **ML-DSA-65** (FIPS 204, pure, empty context) | `pq.ts` `identitySign`/`identityVerify`, `web/trust/keys.ts` |
+| Pairing session, rotation wraps | **ML-KEM-768** (FIPS 203) **+ ECDH P-256**, HKDF-SHA-256 over `ML-KEM secret ‖ ECDH secret` with the transcript as salt/info | `pq.ts` `hybridSecret`, `pairing.ts`, `rotation.ts` |
+| Data encryption, key derivation | AES-256-GCM, HKDF-SHA-256 (unchanged) | `crypto.ts` |
+
+- Implementation: `@noble/post-quantum` 0.6.1 (pure JS) for ML-DSA/ML-KEM, WebCrypto for ECDH, HKDF and AES-GCM;
+  `src/web` stays browser-pure. Verification is done by the mesh itself (`identityVerify`, exact sizes, never throws):
+  `VaultClient.verify` is ignored, so a vault can no longer widen what is accepted. The vault signs with ML-DSA-65.
+- No fallback: an ECDSA identity key, an ES256 document, a 22-character legacy id, a `ready` without the ML-KEM
+  ciphertext or an `ecdh/` record without `kem` are rejected.
+- Hybrid rule: both secrets are required (`hybridSecret` throws if either is missing); the result stays secret if
+  either ML-KEM-768 or P-256 holds.
+- `canonicalJson` is byte-identical (Fize shares it); `signCanonical` / `verifyCanonical` use the ML-DSA backend.
+
+Sizes (bytes): ML-DSA-65 public key 1952, secret key 4032, signature 3309; ML-KEM-768 encapsulation key 1184,
+decapsulation key 2400, ciphertext 1088. On the wire (measured, loopback): a signed 10-byte channel message or a
+one-key doc update is ~3.4 KB (was ~0.2 KB with ECDSA); a frame never exceeds 64 KiB (messages above it are
+fragmented and signed once); an `adm/<id>` record ~7.2 KB, an `ecdh/<id>` record ~6.1 KB; a rotation wrap 1148 B; a
+`web/oplog` op ~4.9 KB (cap 32 KiB); the QR 362 characters; the pairing grant carries at most 16 revocations of the
+current rotation (receivers only read 16), so it stays far below the 256 KiB pairing cap.
+
+Cost (Node 24, noble 0.6.1, one core): ML-DSA-65 keygen ~2.0 ms, sign ~7.6 ms, verify ~1.9 ms; ML-KEM-768 keygen
+~0.7 ms, encapsulate ~0.9 ms, decapsulate ~1.0 ms (WebCrypto ECDSA P-256 for reference: sign ~0.09 ms, verify
+~0.13 ms). End to end on loopback: pairing ~60 ms, revoke-to-adoption on a 3-device mesh ~110 ms. Every frame is
+signed and verified, so a chatty app pays ~7.6 ms per message sent and ~1.9 ms per message received; the mesh
+memoizes the verifications it repeats (admission chains, revocations). The `tests/web` suite takes ~90 s instead of
+~10 s.
+
 ## Signaling cap
 
 `wsTransport.send` throws `signaling message too large` for frames above 16384 bytes (server limit,
@@ -284,7 +335,7 @@ see `SIGNALING-PROTOCOL.md`).
 All devices must be updated together and existing meshes re-paired (no app consumes `web/` yet). Regression tests
 for every finding: `tests/web/audit-regressions.test.ts` and `tests/web/audit-regressions-oplog.test.ts`.
 
-- Identity: `vault.deviceId` must be `fingerprint(vault.devicePublicKey)`; `createMesh` rejects other vaults.
+- Identity: `vault.deviceId` must be `fingerprint(vault.devicePublicKey)` (since the PQC migration: `deviceIdOf`, see below); `createMesh` rejects other vaults.
 - Pairing: QR payload v3 (adds the root), transcript v3, signed ack (`swal-pair-ack/v1`); the grant no longer carries
   a doc snapshot and does carry the current rotation record; pairing messages are capped at 256 KiB.
 - Trust records: `swal-adm/v2` (adds `epoch`; `at` is display-only), `swal-rev/v2` (no `at`), stored as
@@ -295,6 +346,25 @@ for every finding: `tests/web/audit-regressions.test.ts` and `tests/web/audit-re
 - `meta.epoch` is gone (the epoch is device-local).
 - `web/trust`: `Revocation.upTo` keyed by grant id, new `lastId` / `upToIds`, self-revocation rejected.
   `web/oplog`: pending reason `anchor`, `headIds()`, pending caps, `serve`/`attachOpLogSync` limits.
+
+### Post-quantum migration (2026-10-03)
+
+All devices must be updated together and every mesh re-paired: ids, keys and every signature change.
+
+- Vaults: `devicePublicKey` is a raw ML-DSA-65 key and `sign` signs with it; `deviceId = deviceIdOf(pub)` (43
+  characters); `verify` is optional and ignored; `getKemIdentity()` is new (optional, persistent ML-KEM-768 pair).
+- Pairing: QR v4 (unsigned, `hostId` instead of the host key and signature), `hello` v3 (`k`), `ready` with `c`,
+  transcript v5, SAS `swal-sas/v3`, session `swal-pair-session/v3`, `GrantBody.hostProof`; `verifyPairPayload` is
+  gone and `pairTranscript(p, e, n, k, c)` takes the KEM key and ciphertext.
+- Rotation: `wrapMeshKey(ecdhPriv, toPub, toKem, preId, from, to, key)` / `unwrapMeshKey(ecdhPriv, kemSecret,
+  fromPub, preId, from, to, wrap)` (`swal-rotate/v4`); rotation records carry the owner's `sig`
+  (`rotationSigBytes(rotId)`); `ecdh/<id>` records carry `kem`; local store key `kex` (the old `ecdh` pins are
+  ignored).
+- `ChainContext` takes `verify(pub, data, sig)` instead of `vault`.
+- `web/trust` / `web/oplog`: ML-DSA-65 only (`alg: "ML-DSA-65"`); ES256 documents are rejected. Fize migrates its
+  signed public-menu snapshots separately.
+- Regression tests: `tests/web/audit-regressions-pqc.test.ts` (Q1-Q4) and `tests/web/audit-regressions-pqc-kex.test.ts`
+  (Q5-Q11).
 
 ### Round 2 (2026-10-03)
 

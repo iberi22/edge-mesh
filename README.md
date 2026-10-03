@@ -117,8 +117,9 @@ end-to-end encrypted. Trust is explicit: the first device that hosts a pairing i
 QR pairing confirmed with a 6-digit SAS and receive a signed admission (`member` or `admin`). Frames are signed by
 the sender's device key, revocation rotates the key for admitted devices only, and large messages are fragmented.
 Hooks (`authorizeDevice`, `canRotate`, `authorizeUpdate`) and `mesh.channel(kind)` let a permissions layer plug in.
-A device's id is the fingerprint of its identity key (`fingerprint(vault.devicePublicKey)`), and a pairing guest
-proves possession of that key. Trust is tied to mesh epochs (never to clocks), only owner devices re-key the
+Identity signatures are **ML-DSA-65** and key exchanges (pairing session, rotation wraps) are hybrid **ML-KEM-768 +
+ECDH P-256**, as AGENTS.md requires; a device's id is the fingerprint of its ML-DSA-65 key
+(`deviceIdOf(vault.devicePublicKey)`), and a pairing guest proves possession of that key. Trust is tied to mesh epochs (never to clocks), only owner devices re-key the
 mesh (an admin's revocation cuts the device off at once and is executed as a re-key by the next owner device online:
 `mesh.rekeyPending`), and links authenticate each other before carrying data.
 Give the mesh a persistent device-local store (`persist: "idb"`, `store` or `vault.store`). Details and breaking
