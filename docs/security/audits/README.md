@@ -11,7 +11,7 @@ prueba de regresión que impide que vuelvan.
 | 1 | 2026-10-03 | `web/provider`, emparejamiento, admisión, `web/trust`, `web/oplog`, `web/merge` | 6 bloqueantes, 7 a corregir y notas, todos corregidos | [2026-10-03-ronda-1.md](2026-10-03-ronda-1.md) |
 | 2 | 2026-10-03 | Re-auditoría de `mesh/fix-audit` tras la ronda 1 | 3 bloqueantes, 5 a corregir y notas, todos corregidos | [2026-10-03-ronda-2.md](2026-10-03-ronda-2.md) |
 | 3 | 2026-10-03 | Re-auditoría de `mesh/fix-audit` @ `4932376` | 3 bloqueantes y 3 a corregir; rediseño a re-clave solo por el dueño; todos corregidos | [2026-10-03-ronda-3.md](2026-10-03-ronda-3.md) |
-| 4 | pendiente | Cambios posteriores a la ronda 3 (migración post-cuántica, abajo) | la añade el siguiente auditor | `2026-10-xx-ronda-4.md` |
+| 4 | 2026-10-03 | Re-auditoría de `mesh/fix-audit` @ `18448f5`: migración post-cuántica y re-clave del dueño | Post-cuántica sin bloqueantes; 2 bloqueantes (R4-B1, R4-B2), 3 a corregir y notas | [2026-10-03-ronda-4.md](2026-10-03-ronda-4.md) |
 
 ## Método
 
@@ -45,9 +45,9 @@ prueba de regresión que impide que vuelvan.
 | `tests/web/audit-regressions-pqc-kex.test.ts` | Migración post-cuántica: intercambios híbridos, rotaciones firmadas y re-clave interrumpida (Q5–Q11) |
 | `tests/web/trust-oplog-security.test.ts` | Batería de seguridad de `web/trust` / `web/oplog` anterior a las rondas |
 
-## Cambios posteriores a la ronda 3 (alcance de la ronda 4)
+## Cambios posteriores a la ronda 3 (auditados en la ronda 4)
 
-La regla de `AGENTS.md` §2 (criptografía post-cuántica) se aplicó después de la ronda 3. La ronda 4 debe cubrir
+La regla de `AGENTS.md` §2 (criptografía post-cuántica) se aplicó después de la ronda 3, y la ronda 4 cubrió
 estos cambios. El detalle está en `docs/WEB-MESH-CRYPTO.md`, sección «Post-quantum cryptography».
 
 | Commit | Cambio | Pruebas |
@@ -58,7 +58,7 @@ estos cambios. El detalle está en `docs/WEB-MESH-CRYPTO.md`, sección «Post-qu
 | `0a720da` | El dueño firma cada rotación con ML-DSA-65; el grant lleva como mucho 16 revocaciones | Q9 |
 | `ba4764b` | Una re-clave interrumpida por `destroy()` no escribe en la bóveda; el dueño retoma las re-claves pendientes al arrancar; el fuzz exige un estado estable 1,5 s | Q10/Q11, fuzz 96/96 |
 
-Puntos que conviene que mire el auditor de la ronda 4:
+Puntos que se pidió revisar al auditor de la ronda 4 (resultado en su documento):
 
 - El QR ya no va firmado. La identidad del anfitrión se prueba dentro de la sesión autenticada por el SAS
   (`hostProof`). Hay que revisar que nada se acepte del QR antes de esa prueba.
