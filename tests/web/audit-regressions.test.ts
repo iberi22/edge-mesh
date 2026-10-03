@@ -627,21 +627,16 @@ describe("audit regressions: web/provider", () => {
 		const rest = [a, x2, c];
 		// one key for the rest, without x1 nor m1 (at epoch 1 if m1's revocation reached the owner before it rotated,
 		// else after a re-key at epoch 2)
-		await until(
-			() =>
-				sameKey(rest) &&
-				a.mesh.epoch >= 1 &&
-				[x1, m1].every(
-					(o) =>
-						keyOf(o) !== keyOf(a) &&
-						rest.every(
-							(d) => !d.mesh.devices().some((x) => x.deviceId === o.id),
-						),
-				),
-			8000,
-		);
-		await settle(300);
-		expect(sameKey(rest)).toBe(true);
+		const done = () =>
+			!a.mesh.rekeyPending &&
+			sameKey(rest) &&
+			a.mesh.epoch >= 1 &&
+			[x1, m1].every(
+				(o) =>
+					keyOf(o) !== keyOf(a) &&
+					rest.every((d) => !d.mesh.devices().some((x) => x.deviceId === o.id)),
+			);
+		expect(await stable(done, 20_000, 500)).toBe(true); // (R4-N7) a state that holds, not a first agreement
 		for (const out of [x1, m1]) {
 			expect(keyOf(out)).not.toBe(keyOf(a));
 			for (const d of rest)
@@ -649,7 +644,7 @@ describe("audit regressions: web/provider", () => {
 			for (const d of rest) expect(d.mesh.peers).not.toContain(out.id);
 		}
 		for (const d of all) d.mesh.destroy();
-	}, 20_000);
+	}, 60_000);
 
 	it("P6 (B4): a device offline during concurrent revocations catches up to the final key", async () => {
 		const hub = createLoopbackHub();
@@ -657,20 +652,22 @@ describe("audit regressions: web/provider", () => {
 		const [m1, m2, c] = ms as [Dev, Dev, Dev];
 		c.mesh.destroy(); // C is offline (keeps doc + vault)
 		await Promise.all([x1.mesh.revoke(m1.id), x2.mesh.revoke(m2.id)]);
-		await until(() => sameKey([a, x1, x2]), 8000);
-		await settle(300);
+		// (R4-N7) the owner executed both requests and the others follow; not merely "still on the same old key"
+		expect(
+			await stable(() => !a.mesh.rekeyPending && a.mesh.epoch >= 1 && sameKey([a, x1, x2]), 20_000, 500),
+		).toBe(true);
 		const c2 = await makeDev("devC", hub, undefined, {
 			doc: c.doc,
 			vault: c.vault,
 		});
-		await until(() => sameKey([a, x1, x2, c2]), 8000);
+		expect(await stable(() => sameKey([a, x1, x2, c2]), 20_000, 500)).toBe(true);
 		expect(keyOf(m1)).not.toBe(keyOf(c2));
 		expect(keyOf(m2)).not.toBe(keyOf(c2));
 		await until(() => c2.mesh.peers.includes(a.id));
 		a.doc.getMap("data").set("after", 1);
 		await until(() => c2.doc.getMap("data").get("after") === 1);
 		for (const d of [...all.filter((d) => d !== c), c2]) d.mesh.destroy();
-	}, 20_000);
+	}, 60_000);
 
 	it("S5: before authentication a link reassembles at most 1 MiB, within a budget shared by all such links", async () => {
 		const big = randomBytes(64 * 1024);
