@@ -34,7 +34,7 @@ export interface OpBody extends OpInput {
 
 /** Signed op as it travels on the wire. */
 export interface Op extends OpBody {
-	/** ES256 by the author's device key over canonicalJson(body), base64url P1363 */
+	/** ML-DSA-65 by the author's device key over canonicalJson(body), base64url */
 	sig: string;
 }
 

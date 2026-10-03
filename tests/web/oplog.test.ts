@@ -233,10 +233,11 @@ describe("web/oplog: catch-up protocol", () => {
 		const b = await w.log(undefined, t);
 		const want = (await wantFor(b, await haveMessage(a))) as WantMsg;
 		expect(want?.ranges).toEqual([{ author: w.waiter.fp, from: 1, to: 30 }]);
-		const frames = await serve(a, want, { maxBytes: 4096 });
+		// an ML-DSA-65 signed op is ~4.9 KB: a 16 KiB frame budget holds a few
+		const frames = await serve(a, want, { maxBytes: 16384 });
 		expect(frames.length).toBeGreaterThan(1);
 		for (const f of frames)
-			expect(canonicalJson(f).length).toBeLessThanOrEqual(4096);
+			expect(canonicalJson(f).length).toBeLessThanOrEqual(16384);
 		for (const f of frames.reverse()) await b.ingestMany(f.ops); // even in reverse frame order
 		expect(await b.heads()).toEqual({ [w.waiter.fp]: 30 });
 		expect(await wantFor(b, await haveMessage(a))).toBeNull();

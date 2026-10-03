@@ -126,7 +126,7 @@ export async function world(): Promise<World> {
 				notBefore: T0 - 1000,
 				issuedAt: T0 - 1000,
 				...input,
-				subject: { jwk: subject.jwk },
+				subject: { pub: subject.pub },
 			},
 			{ inst: INST, parent, now: T0 - 1000 },
 		);
@@ -147,7 +147,7 @@ export async function world(): Promise<World> {
 		trust: (o = {}) =>
 			createTrustStore({
 				inst: INST,
-				root: root.jwk,
+				root: root.pub,
 				schema: { ...SCHEMA, maxDepth: o.maxDepth ?? SCHEMA.maxDepth },
 				now: o.now ?? clk.now,
 			}),

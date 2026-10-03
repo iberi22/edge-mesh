@@ -89,7 +89,7 @@ describe("audit regressions: web/trust + web/oplog", () => {
 			const body: OpBody = {
 				t: "op",
 				v: 1,
-				alg: "ES256",
+				alg: "ML-DSA-65",
 				inst: "local-test",
 				author: w.cook.fp,
 				seq,
@@ -187,7 +187,7 @@ describe("audit regressions: web/trust + web/oplog", () => {
 			await log.ingest({
 				t: "op",
 				v: 1,
-				alg: "ES256",
+				alg: "ML-DSA-65",
 				inst: "local-test",
 				author: `junk${i}`,
 				seq: 1,
@@ -298,7 +298,7 @@ describe("audit regressions: web/trust + web/oplog", () => {
 			await log.ingest({
 				t: "op",
 				v: 1,
-				alg: "ES256",
+				alg: "ML-DSA-65",
 				inst: "local-test",
 				author: `junk${i}`,
 				seq: 1,
@@ -337,7 +337,7 @@ describe("audit regressions: web/trust + web/oplog", () => {
 		};
 		const all = (await serve(a.log, want)).flatMap((f) => f.ops);
 		expect(all).toHaveLength(60);
-		const capped = (await serve(a.log, want, { maxWantBytes: 4096 })).flatMap(
+		const capped = (await serve(a.log, want, { maxWantBytes: 16384 })).flatMap(
 			(f) => f.ops,
 		);
 		expect(capped.length).toBeGreaterThan(0);
@@ -365,9 +365,8 @@ describe("audit regressions: web/trust + web/oplog", () => {
 		await new Promise((r) => setTimeout(r, 200));
 		const answered = sent.filter((x) => x.to === "evil").length;
 		expect(answered).toBeGreaterThan(0);
-		expect(answered).toBeLessThanOrEqual(
-			5 * Math.ceil((60 * 400) / (60 * 1024)) + 5,
-		);
+		const perWant = (await serve(a.log, want)).length; // frames answering one want
+		expect(answered).toBeLessThanOrEqual(5 * perWant); // 5 wants answered, the other 45 dropped
 		const other = sent.length;
 		(deliver as unknown as (f: string, d: Uint8Array) => void)(
 			"honest",

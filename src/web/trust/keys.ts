@@ -1,90 +1,74 @@
-// Device / root signing keys: ECDSA P-256 + SHA-256, signatures in IEEE P1363 (WebCrypto native) as base64url,
-// public keys as JWK, fingerprint = base64url(SHA-256(canonicalJson(publicJwk))). Same contract as Fize's
-// `publicMenuSignature.ts` (`publicKeyFingerprint`, `signSnapshot`, `verifySnapshot`).
-import { b64uDecode, b64uEncode, bs } from "../util.js";
+// Device / root signing keys: ML-DSA-65 (FIPS 204, `@noble/post-quantum`), as required by AGENTS.md (post-quantum
+// identity signatures; no ECDSA fallback for security payloads). Public keys travel as base64url of the raw 1952-byte
+// key; signatures as base64url of the raw 3309-byte signature; the fingerprint is
+// base64url(SHA-256(canonicalJson({ alg: "ML-DSA-65", pub }))) so a future algorithm can never collide with this one.
+// `canonicalJson` itself is unchanged (Fize shares it).
+import { ml_dsa65 } from "@noble/post-quantum/ml-dsa.js";
+import { b64uDecode, b64uEncode } from "../util.js";
 import { canonicalBytes, sha256B64u } from "./canonical.js";
 
-export const SIG_ALG = "ES256" as const;
+export const SIG_ALG = "ML-DSA-65" as const;
 export type SigAlg = typeof SIG_ALG;
+export const PUBLIC_KEY_BYTES = 1952;
+export const SECRET_KEY_BYTES = 4032;
+export const SIGNATURE_BYTES = 3309;
 
-const ALGO = { name: "ECDSA", namedCurve: "P-256" } as const;
-const SIGN = { name: "ECDSA", hash: "SHA-256" } as const;
+const decodeLen = (s: unknown, n: number): Uint8Array | null => {
+	if (typeof s !== "string" || s.length > 2 * n) return null;
+	try {
+		const b = b64uDecode(s);
+		return b.length === n ? b : null;
+	} catch {
+		return null;
+	}
+};
 
-/** Only the public members of an EC JWK (never `d`, even if a private JWK is passed). */
-export function publicJwk(jwk: JsonWebKey): JsonWebKey {
-	return { kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y };
+/** A base64url ML-DSA-65 public key (exactly 1952 bytes). */
+export function isPublicKey(pub: unknown): pub is string {
+	return decodeLen(pub, PUBLIC_KEY_BYTES) !== null;
 }
 
-export function isEcP256Jwk(jwk: unknown): jwk is JsonWebKey {
-	if (!jwk || typeof jwk !== "object") return false;
-	const j = jwk as Record<string, unknown>;
-	return (
-		j.kty === "EC" &&
-		j.crv === "P-256" &&
-		typeof j.x === "string" &&
-		typeof j.y === "string"
-	);
+/** Stable key id: base64url(SHA-256(canonicalJson({ alg: "ML-DSA-65", pub }))). */
+export function keyFingerprint(pub: string): Promise<string> {
+	return sha256B64u(canonicalBytes({ alg: SIG_ALG, pub }));
 }
 
-/** Stable key id: base64url(SHA-256(canonicalJson(publicJwk(jwk)))). */
-export function jwkFingerprint(jwk: JsonWebKey): Promise<string> {
-	return sha256B64u(canonicalBytes(publicJwk(jwk)));
-}
-
-/** Something that signs with a device (or root) key. The private key never needs to leave WebCrypto. */
+/** Something that signs with a device (or root) key. */
 export interface Signer {
 	readonly alg: SigAlg;
-	/** fingerprint of `jwk` */
+	/** fingerprint of `pub` */
 	readonly fp: string;
-	/** public JWK */
-	readonly jwk: JsonWebKey;
+	/** base64url ML-DSA-65 public key */
+	readonly pub: string;
 	sign(data: Uint8Array): Promise<Uint8Array>;
 }
 
-/** Wrap an ECDSA P-256 key pair (private key may be non-extractable). */
-export async function createSigner(keyPair: CryptoKeyPair): Promise<Signer> {
-	const jwk = publicJwk(
-		await crypto.subtle.exportKey("jwk", keyPair.publicKey),
-	);
-	const fp = await jwkFingerprint(jwk);
+/** Wrap an ML-DSA-65 key pair. The secret key stays with the caller (keep it in the device's vault). */
+export async function createSigner(keys: {
+	secretKey: Uint8Array;
+	publicKey: Uint8Array;
+}): Promise<Signer> {
+	if (
+		keys.publicKey.length !== PUBLIC_KEY_BYTES ||
+		keys.secretKey.length !== SECRET_KEY_BYTES
+	)
+		throw new Error("not an ML-DSA-65 key pair");
+	const pub = b64uEncode(keys.publicKey);
+	const sk = keys.secretKey;
 	return {
 		alg: SIG_ALG,
-		fp,
-		jwk,
-		sign: async (data) =>
-			new Uint8Array(
-				await crypto.subtle.sign(SIGN, keyPair.privateKey, bs(data)),
-			),
+		fp: await keyFingerprint(pub),
+		pub,
+		sign: async (data) => ml_dsa65.sign(data, sk),
 	};
 }
 
-/** New device key: non-extractable private key (store the CryptoKeyPair in IndexedDB as-is). */
-export async function generateSigner(
-	extractable = false,
-): Promise<Signer & { keyPair: CryptoKeyPair }> {
-	const keyPair = (await crypto.subtle.generateKey(ALGO, extractable, [
-		"sign",
-		"verify",
-	])) as CryptoKeyPair;
-	return Object.assign(await createSigner(keyPair), { keyPair });
-}
-
-const keyCache = new Map<string, Promise<CryptoKey>>();
-const KEY_CACHE_MAX = 4096;
-
-function verifyKey(jwk: JsonWebKey): Promise<CryptoKey> {
-	const pub = publicJwk(jwk);
-	const k = `${pub.x}.${pub.y}`;
-	let p = keyCache.get(k);
-	if (!p) {
-		if (keyCache.size >= KEY_CACHE_MAX) keyCache.clear();
-		p = crypto.subtle.importKey("jwk", { ...pub, ext: true }, ALGO, false, [
-			"verify",
-		]);
-		keyCache.set(k, p);
-		p.catch(() => keyCache.delete(k));
-	}
-	return p;
+/** New ML-DSA-65 device key (keep `secretKey` in the device's vault). */
+export async function generateSigner(): Promise<
+	Signer & { secretKey: Uint8Array; publicKey: Uint8Array }
+> {
+	const kp = ml_dsa65.keygen();
+	return Object.assign(await createSigner(kp), kp);
 }
 
 export async function signBytes(
@@ -94,35 +78,30 @@ export async function signBytes(
 	return b64uEncode(await signer.sign(data));
 }
 
-/** Never throws: malformed key / signature => false. */
+/** Never throws: malformed key / signature or another algorithm's key => false. */
 export async function verifyBytes(
-	jwk: JsonWebKey,
+	pub: string,
 	data: Uint8Array,
 	sigB64u: string,
 ): Promise<boolean> {
+	const pk = decodeLen(pub, PUBLIC_KEY_BYTES);
+	const sig = decodeLen(sigB64u, SIGNATURE_BYTES);
+	if (!pk || !sig) return false;
 	try {
-		if (!isEcP256Jwk(jwk) || typeof sigB64u !== "string") return false;
-		const sig = b64uDecode(sigB64u);
-		if (sig.length !== 64) return false;
-		return await crypto.subtle.verify(
-			SIGN,
-			await verifyKey(jwk),
-			bs(sig),
-			bs(data),
-		);
+		return ml_dsa65.verify(sig, data, pk);
 	} catch {
 		return false;
 	}
 }
 
-/** Sign canonicalJson(value) (the Fize snapshot contract). */
+/** Sign canonicalJson(value) with ML-DSA-65 (shared contract with apps such as Fize). */
 export const signCanonical = (
 	signer: Signer,
 	value: unknown,
 ): Promise<string> => signBytes(signer, canonicalBytes(value));
 
 export const verifyCanonical = (
-	jwk: JsonWebKey,
+	pub: string,
 	value: unknown,
 	sig: string,
-): Promise<boolean> => verifyBytes(jwk, canonicalBytes(value), sig);
+): Promise<boolean> => verifyBytes(pub, canonicalBytes(value), sig);

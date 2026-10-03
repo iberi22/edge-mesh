@@ -1,3 +1,4 @@
+import { ml_dsa65 } from "@noble/post-quantum/ml-dsa.js";
 import { describe, expect, it } from "vitest";
 import {
 	canonicalJson,
@@ -5,12 +6,12 @@ import {
 	createTrustStore,
 	generateSigner,
 	issueGrant,
-	jwkFingerprint,
+	keyFingerprint,
 	rolePreset,
 	signCanonical,
 	verifyCanonical,
 } from "../../src/web/trust/index.js";
-import { b64uEncode } from "../../src/web/util.js";
+import { b64uDecode, b64uEncode } from "../../src/web/util.js";
 import { INST, SCHEMA, T0, world } from "./trust-fixtures.js";
 
 // Verbatim copy of Fize `src-astro/src/lib/publicMenuSignature.ts` canonicalJson + fingerprint (contract check).
@@ -23,15 +24,6 @@ function fizeCanonicalJson(value: unknown): string {
 		.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 	return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${fizeCanonicalJson(v)}`).join(",")}}`;
 }
-async function fizeFingerprint(jwk: JsonWebKey): Promise<string> {
-	const pub = { kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y };
-	const d = await crypto.subtle.digest(
-		"SHA-256",
-		new TextEncoder().encode(fizeCanonicalJson(pub)),
-	);
-	return b64uEncode(new Uint8Array(d));
-}
-
 describe("web/trust: keys and canonical JSON (Fize contract)", () => {
 	it("canonicalJson is byte-identical to Fize's", () => {
 		const samples: unknown[] = [
@@ -50,30 +42,64 @@ describe("web/trust: keys and canonical JSON (Fize contract)", () => {
 			expect(canonicalJson(s)).toBe(fizeCanonicalJson(s));
 	});
 
-	it("fingerprint matches Fize publicKeyFingerprint and ignores private members", async () => {
-		const kp = (await crypto.subtle.generateKey(
+	it("fingerprint = base64url(SHA-256(canonicalJson({ alg, pub }))) of the ML-DSA-65 public key", async () => {
+		const kp = ml_dsa65.keygen();
+		const s = await createSigner(kp);
+		expect(s.alg).toBe("ML-DSA-65");
+		expect(s.pub).toBe(b64uEncode(kp.publicKey));
+		const d = await crypto.subtle.digest(
+			"SHA-256",
+			new TextEncoder().encode(
+				fizeCanonicalJson({ alg: "ML-DSA-65", pub: s.pub }),
+			),
+		);
+		expect(s.fp).toBe(b64uEncode(new Uint8Array(d)));
+		expect(await keyFingerprint(s.pub)).toBe(s.fp);
+		await expect(
+			createSigner({
+				secretKey: new Uint8Array(32),
+				publicKey: new Uint8Array(65),
+			}),
+		).rejects.toThrow();
+	});
+
+	it("signs canonical JSON with ML-DSA-65 (base64url), verifiable with plain @noble/post-quantum; ECDSA is rejected", async () => {
+		const s = await generateSigner();
+		const value = { v: 1, z: "x", a: [1, 2] };
+		const sig = await signCanonical(s, value);
+		expect(b64uDecode(sig).length).toBe(3309);
+		expect(await verifyCanonical(s.pub, { a: [1, 2], z: "x", v: 1 }, sig)).toBe(
+			true,
+		); // key order irrelevant
+		expect(
+			ml_dsa65.verify(
+				b64uDecode(sig),
+				new TextEncoder().encode(canonicalJson(value)),
+				s.publicKey,
+			),
+		).toBe(true);
+		expect(await verifyCanonical(s.pub, { ...value, z: "y" }, sig)).toBe(false);
+		expect(await verifyCanonical("AAAA", value, sig)).toBe(false); // malformed key: false, no throw
+		expect(await verifyCanonical(s.pub, value, "@@@")).toBe(false);
+		// an ES256 (P1363) signature and key are not accepted in place of ML-DSA-65
+		const ec = (await crypto.subtle.generateKey(
 			{ name: "ECDSA", namedCurve: "P-256" },
 			true,
 			["sign", "verify"],
 		)) as CryptoKeyPair;
-		const priv = await crypto.subtle.exportKey("jwk", kp.privateKey);
-		const s = await createSigner(kp);
-		expect(s.fp).toBe(await fizeFingerprint(s.jwk));
-		expect(await jwkFingerprint(priv)).toBe(s.fp);
-		expect(s.jwk).not.toHaveProperty("d");
-	});
-
-	it("signs canonical JSON as ES256 P1363 base64url, verifiable with plain WebCrypto", async () => {
-		const s = await generateSigner();
-		const value = { v: 1, z: "x", a: [1, 2] };
-		const sig = await signCanonical(s, value);
-		expect(sig).toMatch(/^[A-Za-z0-9_-]{86}$/); // 64 bytes
-		expect(await verifyCanonical(s.jwk, { a: [1, 2], z: "x", v: 1 }, sig)).toBe(
-			true,
-		); // key order irrelevant
-		expect(await verifyCanonical(s.jwk, { ...value, z: "y" }, sig)).toBe(false);
-		expect(await verifyCanonical({ kty: "EC" }, value, sig)).toBe(false); // malformed key: false, no throw
-		expect(await verifyCanonical(s.jwk, value, "@@@")).toBe(false);
+		const ecSig = new Uint8Array(
+			await crypto.subtle.sign(
+				{ name: "ECDSA", hash: "SHA-256" },
+				ec.privateKey,
+				new TextEncoder().encode(canonicalJson(value)),
+			),
+		);
+		const ecPub = new Uint8Array(
+			await crypto.subtle.exportKey("raw", ec.publicKey),
+		);
+		expect(
+			await verifyCanonical(b64uEncode(ecPub), value, b64uEncode(ecSig)),
+		).toBe(false);
 	});
 });
 
@@ -114,7 +140,7 @@ describe("web/trust: TrustStore", () => {
 			SCHEMA.roles?.cocina?.permissions,
 		);
 		expect(t.isMember(w.cook.fp)).toBe(true);
-		expect(t.keyOf(w.cook.fp)).toEqual(w.cook.jwk);
+		expect(t.keyOf(w.cook.fp)).toEqual(w.cook.pub);
 	});
 
 	it("is order-independent: children before parents wait as pending, then resolve", async () => {
@@ -147,7 +173,7 @@ describe("web/trust: TrustStore", () => {
 		expect((await t.add(lvl)).reason).toMatch(/bad level/);
 		const other = await issueGrant(
 			w.root,
-			{ subject: { jwk: w.waiter.jwk }, ...rolePreset(SCHEMA, "mesero") },
+			{ subject: { pub: w.waiter.pub }, ...rolePreset(SCHEMA, "mesero") },
 			{ inst: "local-other" },
 		);
 		expect((await t.add(other)).reason).toBe("wrong instance");
@@ -171,14 +197,14 @@ describe("web/trust: TrustStore", () => {
 		await expect(
 			createTrustStore({
 				inst: INST,
-				root: w.root.jwk,
+				root: w.root.pub,
 				rootFingerprint: w.owner.fp,
 				schema: SCHEMA,
 			}),
 		).rejects.toThrow(/root fingerprint/);
 		const t = await createTrustStore({
 			inst: INST,
-			root: w.root.jwk,
+			root: w.root.pub,
 			rootFingerprint: w.root.fp,
 			schema: SCHEMA,
 		});
@@ -283,7 +309,7 @@ describe("web/trust: TrustStore", () => {
 		const w = await world();
 		const t = await createTrustStore({
 			inst: INST,
-			root: w.root.jwk,
+			root: w.root.pub,
 			schema: SCHEMA,
 			maxPending: 1,
 		});

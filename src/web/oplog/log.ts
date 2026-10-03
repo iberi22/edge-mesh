@@ -102,7 +102,7 @@ const vkey = (author: string, seq: number) => `${author}:${seq}`;
 function opShape(x: unknown): string | null {
 	if (!isObj(x) || x.t !== "op") return "not an op";
 	if (x.v !== 1 || x.alg !== SIG_ALG) return "unsupported version/alg";
-	if (!isStr(x.inst) || !isStr(x.author) || !isStr(x.sig))
+	if (!isStr(x.inst) || !isStr(x.author) || !isStr(x.sig, 4500))
 		return "missing fields";
 	if (typeof x.seq !== "number" || !Number.isSafeInteger(x.seq) || x.seq < 1)
 		return "bad seq";
@@ -608,9 +608,9 @@ export class OpLog {
 		const existing = await this.store.get(op.author, op.seq);
 		if (existing && existing.id === id) return { status: "duplicate", id };
 
-		const jwk = this.trust.keyOf(op.author);
-		if (!jwk) return this.park(op, "unknown-author", size);
-		if (!(await verifyCanonical(jwk, body, op.sig)))
+		const pub = this.trust.keyOf(op.author);
+		if (!pub) return this.park(op, "unknown-author", size);
+		if (!(await verifyCanonical(pub, body, op.sig)))
 			return this.rejectOp("bad-signature", op, undefined, id);
 
 		const anchor = anchored ? undefined : this.anchorFor(op.author, op.seq);

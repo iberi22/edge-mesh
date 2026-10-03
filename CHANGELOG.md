@@ -136,6 +136,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Notes: links whose handshake does not complete within `handshakeTimeoutMs` (default 120 s) are closed (9); the
   evidence path is gone (7); what the handshake binds and why a live relay can only delay or drop is documented (8).
 
+### Post-quantum signatures and key exchange (AGENTS.md §2)
+- **`web/trust` / `web/oplog` on ML-DSA-65** (`@noble/post-quantum`): grants, revocations and ops carry
+  `alg: "ML-DSA-65"` (any other alg is rejected); keys are base64url raw public keys (`DeviceRef.pub`, `kem?`), the
+  fingerprint is base64url(SHA-256(canonicalJson({alg, pub}))). `signCanonical` / `verifyCanonical` keep the Fize
+  canonical JSON with the ML-DSA backend. Sizes: public key 1952 B, signature 3309 B (an op is ~4.9 KB on the wire,
+  well under the 32 KiB op cap; a 60 KiB catch-up frame holds ~12 ops). Node (noble 0.6.1): sign ~7.5 ms, verify
+  ~2.1 ms, keygen ~2 ms.
+
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,
   `maxFrameBytes`, `maxMessageBytes`. `VaultClient.store` (optional).
@@ -156,6 +164,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unauthorized ops, replay, forks, seq cut-off, cascade, order independence, tampering).
 
 ### Changed (breaking)
+- `web/trust`: `Signer` is `{alg, fp, pub, sign}` over ML-DSA-65 (`createSigner({secretKey, publicKey})`,
+  `generateSigner()`); `keyFingerprint`, `isPublicKey` replace `jwkFingerprint`, `publicJwk`, `isEcP256Jwk`;
+  `GrantInput.subject` and `TrustStoreOptions.root` take base64url public keys; `TrustStore.keyOf` returns one.
+  ES256 grants, revocations and ops are rejected.
 - `wrapMeshKey(priv, toPub, rotId, from, to, key)` / `unwrapMeshKey(priv, fromPub, rotId, from, to, wrap)` (v3);
   meta layout of stored wraps is `rotrec:<rotId>` + `rot:<rotId>:<deviceId>` (no `old:` entries: retired keys stay in
   the local store).

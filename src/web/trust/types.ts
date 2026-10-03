@@ -30,12 +30,15 @@ export interface TrustSchema {
 }
 
 export interface DeviceRef {
-	/** fingerprint of `jwk` (verified on ingest) */
+	/** fingerprint of `pub` (verified on ingest) */
 	fp: string;
 	/** public signing key (ECDSA P-256 JWK) */
-	jwk: JsonWebKey;
+	/** base64url ML-DSA-65 public signing key */
+	pub: string;
 	/** optional raw P-256 ECDH public key (base64url) for module-key wraps (web/keyring, T5) */
 	ecdh?: string;
+	/** optional base64url ML-KEM-768 encapsulation key (hybrid key wraps) */
+	kem?: string;
 }
 
 export interface GrantBody {
@@ -73,7 +76,7 @@ export interface GrantBody {
 export interface Grant extends GrantBody {
 	/** base64url(SHA-256(canonicalJson(body))) */
 	id: string;
-	/** ES256 over canonicalJson(body) by the issuer key, base64url P1363 */
+	/** ML-DSA-65 over canonicalJson(body) by the issuer key, base64url */
 	sig: string;
 }
 

@@ -131,12 +131,14 @@ with its own permissions". The core never hard-codes modules or roles: each app 
 
 | Entry point | What it does |
 | :--- | :--- |
-| `@iberi22/edge-mesh/web/trust` | Device keys (ECDSA P-256, JWK fingerprint), signed **grants** (role + per-module `ver`/`editar`/`administrar` + delegation budget + validity + optional seq cut-off + issuer chain) and **revocations** (issued by the root or a strict ancestor of the target grant, cut by the revoker's last-seen `seq`, always cascading). `TrustStore` ingests documents from any source in any order, keeps only chains that reach the configured root, enforces delegation (depth, admins cannot mint admins, permissions ⊆ issuer's) and answers `can(deviceFp, module, level, { seq, time })` |
+| `@iberi22/edge-mesh/web/trust` | Device keys (**ML-DSA-65**, post-quantum; fingerprint = SHA-256 of canonical `{alg, pub}`), signed **grants** (role + per-module `ver`/`editar`/`administrar` + delegation budget + validity + optional seq cut-off + issuer chain) and **revocations** (issued by the root or a strict ancestor of the target grant, cut by the revoker's last-seen `seq`, always cascading). `TrustStore` ingests documents from any source in any order, keeps only chains that reach the configured root, enforces delegation (depth, admins cannot mint admins, permissions ⊆ issuer's) and answers `can(deviceFp, module, level, { seq, time })` |
 | `@iberi22/edge-mesh/web/oplog` | One append-only, signed, hash-chained log per device (`seq`, `prev`, HLC). Receivers verify signature → chain (gap = pending, fork = equivocation evidence) → capability at the op's `seq`/HLC. Rejected ops go to quarantine with a reason; held ops are re-evaluated when grants/revocations arrive. Catch-up protocol (`have` version vector → `want` ranges → `ops` frames ≤ 64 KiB) and a channel adapter |
 | `@iberi22/edge-mesh/web/merge` | Deterministic projections of accepted ops: `lwwField` (per-field LWW by HLC, causal `base`, optional owner precedence, tombstones), `eventLog` (app reducer / state machine, invalid transitions become conflicts), `ledger` (signed movements summed, negative rejected/flagged/allowed) |
 
-Signatures and fingerprints use the same canonical JSON + ES256/P1363/base64url contract as Fize's
-`publicMenuSignature.ts`, so apps can share helpers. Yjs stays for presence and the device list only.
+Signatures use the same canonical JSON as Fize's `publicMenuSignature.ts` (`canonicalJson` is byte-identical), signed
+with **ML-DSA-65** (base64url signature, base64url public key), as AGENTS.md requires for identity signatures. Apps
+migrate with `signCanonical` / `verifyCanonical` / `keyFingerprint` from `web/trust`; ES256 documents are rejected
+(Fize migrates its signed public-menu snapshots separately). Yjs stays for presence and the device list only.
 
 Integration sketch (Fize as the example app; the module list lives in the app, not in the core):
 
@@ -159,7 +161,7 @@ const schema = {
 
 // Owner device: the restaurant root key signs a grant for a newly paired device (pub key from the SAS-confirmed pairing).
 const trust = await createTrustStore({ inst: "local-<fp>", root: rootPublicJwk, schema });
-const grant = await issueGrant(rootSigner, { subject: { jwk: guestJwk }, name: "Ana", ...rolePreset(schema, "mesero") },
+const grant = await issueGrant(rootSigner, { subject: { pub: guestPub }, name: "Ana", ...rolePreset(schema, "mesero") },
   { inst: trust.inst });
 await trust.add(grant); // replicate trust.docs() to every node; they re-add them on boot
 

@@ -21,7 +21,7 @@ import {
 	checkRevocationShape,
 	verifyDocSignature,
 } from "./docs.js";
-import { jwkFingerprint, publicJwk } from "./keys.js";
+import { isPublicKey, keyFingerprint } from "./keys.js";
 import {
 	type AddResult,
 	type At,
@@ -39,8 +39,8 @@ import {
 export interface TrustStoreOptions {
 	inst: string;
 	/** Root public key (restaurant / tenant key). Only grants chaining to it are trusted. */
-	root: JsonWebKey;
-	/** Optional cross-check: must equal jwkFingerprint(root). */
+	root: string;
+	/** Optional cross-check: must equal keyFingerprint(root). */
 	rootFingerprint?: string;
 	schema: TrustSchema;
 	/** clock used only when `At.time` is omitted (UI checks). Default Date.now */
@@ -52,7 +52,9 @@ export interface TrustStoreOptions {
 export async function createTrustStore(
 	opts: TrustStoreOptions,
 ): Promise<TrustStore> {
-	const rootFp = await jwkFingerprint(opts.root);
+	if (!isPublicKey(opts.root))
+		throw new Error("root is not an ML-DSA-65 public key");
+	const rootFp = await keyFingerprint(opts.root);
 	if (opts.rootFingerprint && opts.rootFingerprint !== rootFp)
 		throw new Error("root fingerprint mismatch");
 	return new TrustStore(opts, rootFp);
@@ -86,7 +88,7 @@ export class TrustStore {
 	readonly rootFp: string;
 	readonly schema: TrustSchema;
 	readonly maxDepth: number;
-	private readonly root: JsonWebKey;
+	private readonly root: string;
 	private readonly now: () => number;
 	private readonly maxPending: number;
 	private readonly grants = new Map<string, Grant>();
@@ -103,7 +105,7 @@ export class TrustStore {
 
 	constructor(opts: TrustStoreOptions, rootFp: string) {
 		this.inst = opts.inst;
-		this.root = publicJwk(opts.root);
+		this.root = opts.root;
 		this.rootFp = rootFp;
 		this.schema = opts.schema;
 		this.maxDepth = opts.schema.maxDepth ?? 2;
@@ -185,7 +187,7 @@ export class TrustStore {
 	private async verifyAndStore(doc: TrustDoc): Promise<AddResult> {
 		if (this.grants.has(doc.id) || this.revs.has(doc.id))
 			return { status: "duplicate", id: doc.id };
-		let issuerJwk: JsonWebKey;
+		let issuerPub: string;
 		let parent: Grant | undefined;
 		if (doc.issuer === this.rootFp) {
 			if (doc.parent !== undefined)
@@ -193,7 +195,7 @@ export class TrustStore {
 					doc.id,
 					"root-issued document must not have a parent",
 				);
-			issuerJwk = this.root;
+			issuerPub = this.root;
 		} else {
 			if (doc.parent === undefined)
 				return this.reject(
@@ -208,7 +210,7 @@ export class TrustStore {
 			}
 			if (parent.subject.fp !== doc.issuer)
 				return this.reject(doc.id, "issuer is not the subject of parent grant");
-			issuerJwk = parent.subject.jwk;
+			issuerPub = parent.subject.pub;
 		}
 		// B5: a grant cannot revoke itself (that would retroactively erase its subject's accepted history)
 		if (
@@ -218,7 +220,7 @@ export class TrustStore {
 		)
 			return this.reject(doc.id, "self-revocation");
 		// not remembered by id: a forged copy of a legit body must not block the real document
-		if (!(await verifyDocSignature(doc, issuerJwk)))
+		if (!(await verifyDocSignature(doc, issuerPub)))
 			return { status: "rejected", id: doc.id, reason: "bad signature" };
 		if (doc.t === "grant") {
 			const why = this.checkDelegation(doc, parent);
@@ -419,8 +421,8 @@ export class TrustStore {
 	}
 
 	/** Public signing key of a device with any accepted grant (also revoked ones: old ops still verify). */
-	keyOf(fp: string): JsonWebKey | undefined {
-		return this.d().byFp.get(fp)?.[0]?.subject.jwk;
+	keyOf(fp: string): string | undefined {
+		return this.d().byFp.get(fp)?.[0]?.subject.pub;
 	}
 
 	grantsOf(fp: string): Grant[] {

@@ -80,7 +80,7 @@ describe("security: forged and escalated grants", () => {
 		const mallory = await generateSigner();
 		const selfRoot = await issueGrant(
 			mallory,
-			{ subject: { jwk: mallory.jwk }, ...rolePreset(SCHEMA, "owner") },
+			{ subject: { pub: mallory.pub }, ...rolePreset(SCHEMA, "owner") },
 			{ inst: INST },
 		);
 		expect((await t.add(selfRoot)).status).toBe("rejected"); // issuer is not the root and has no parent
@@ -98,7 +98,7 @@ describe("security: forged and escalated grants", () => {
 		const otherRoot = await generateSigner();
 		const t = await createTrustStore({
 			inst: INST,
-			root: otherRoot.jwk,
+			root: otherRoot.pub,
 			schema: SCHEMA,
 		});
 		const res = await t.addMany(w.docs);
@@ -119,7 +119,7 @@ describe("security: forged and escalated grants", () => {
 		// mallory signs a grant naming the admin as issuer (with the admin's real parent grant)
 		const forged = await issueGrant(
 			mallory,
-			{ subject: { jwk: mallory.jwk }, ...rolePreset(SCHEMA, "mesero") },
+			{ subject: { pub: mallory.pub }, ...rolePreset(SCHEMA, "mesero") },
 			{ inst: INST, parent: w.g.admin },
 		);
 		const asAdmin = { ...forged, issuer: w.admin.fp };
@@ -201,7 +201,7 @@ describe("security: forged and escalated grants", () => {
 		const t = await w.trust();
 		const g = await issueGrant(
 			w.root,
-			{ subject: { jwk: w.waiter.jwk }, ...rolePreset(SCHEMA, "mesero") },
+			{ subject: { pub: w.waiter.pub }, ...rolePreset(SCHEMA, "mesero") },
 			{ inst: "local-other" },
 		);
 		expect((await t.add(g)).reason).toBe("wrong instance");
@@ -216,7 +216,7 @@ describe("security: op authenticity", () => {
 		const body: OpBody = {
 			t: "op",
 			v: 1,
-			alg: "ES256",
+			alg: "ML-DSA-65",
 			inst: INST,
 			author: mallory.fp,
 			seq: 1,
@@ -230,7 +230,7 @@ describe("security: op authenticity", () => {
 		});
 		const selfGrant = await issueGrant(
 			mallory,
-			{ subject: { jwk: mallory.jwk }, ...rolePreset(SCHEMA, "owner") },
+			{ subject: { pub: mallory.pub }, ...rolePreset(SCHEMA, "owner") },
 			{ inst: INST },
 		);
 		await trust.add(selfGrant);
@@ -247,7 +247,7 @@ describe("security: op authenticity", () => {
 		const body: OpBody = {
 			t: "op",
 			v: 1,
-			alg: "ES256",
+			alg: "ML-DSA-65",
 			inst: INST,
 			author: w.waiter.fp,
 			seq: 1,
@@ -362,7 +362,7 @@ describe("security: capabilities on ops", () => {
 		): OpBody => ({
 			t: "op",
 			v: 1,
-			alg: "ES256",
+			alg: "ML-DSA-65",
 			inst: INST,
 			author: w.waiter.fp,
 			seq,
@@ -681,7 +681,7 @@ describe("security: order independence", () => {
 		const outsiderOp = await forge(outsider, {
 			t: "op",
 			v: 1,
-			alg: "ES256",
+			alg: "ML-DSA-65",
 			inst: INST,
 			author: outsider.fp,
 			seq: 1,

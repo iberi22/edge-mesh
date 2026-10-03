@@ -1,9 +1,8 @@
 // Signed trust documents: create, parse (shape), id and signature checks. No policy here (see store.ts).
 import { contentId } from "./canonical.js";
 import {
-	isEcP256Jwk,
-	jwkFingerprint,
-	publicJwk,
+	isPublicKey,
+	keyFingerprint,
 	SIG_ALG,
 	type Signer,
 	signCanonical,
@@ -21,7 +20,8 @@ import {
 } from "./types.js";
 
 export interface GrantInput {
-	subject: { jwk: JsonWebKey; ecdh?: string };
+	/** base64url ML-DSA-65 public key of the device (and optionally its ECDH / ML-KEM keys for key wraps) */
+	subject: { pub: string; ecdh?: string; kem?: string };
 	role: string;
 	permissions: Permissions;
 	delegate?: number;
@@ -63,11 +63,13 @@ export async function issueGrant(
 	ctx: IssueContext,
 ): Promise<Grant> {
 	const now = ctx.now ?? Date.now();
-	const jwk = publicJwk(input.subject.jwk);
+	if (!isPublicKey(input.subject.pub))
+		throw new Error("subject is not an ML-DSA-65 public key");
 	const subject: DeviceRef = {
-		fp: await jwkFingerprint(jwk),
-		jwk,
+		fp: await keyFingerprint(input.subject.pub),
+		pub: input.subject.pub,
 		ecdh: input.subject.ecdh,
+		kem: input.subject.kem,
 	};
 	const body: GrantBody = {
 		t: "grant",
@@ -159,7 +161,7 @@ export function checkGrantShape(
 	if (x.v !== 1 || x.alg !== SIG_ALG) return "unsupported version/alg";
 	if (
 		!isStr(x.id) ||
-		!isStr(x.sig, 256) ||
+		!isStr(x.sig, 4500) ||
 		!isStr(x.inst) ||
 		!isStr(x.issuer) ||
 		!isStr(x.role, 128)
@@ -168,7 +170,13 @@ export function checkGrantShape(
 	}
 	if (!isOptStr(x.parent) || !isOptStr(x.name, 256)) return "bad parent/name";
 	const s = x.subject;
-	if (!isObj(s) || !isStr(s.fp) || !isEcP256Jwk(s.jwk) || !isOptStr(s.ecdh))
+	if (
+		!isObj(s) ||
+		!isStr(s.fp) ||
+		!isPublicKey(s.pub) ||
+		!isOptStr(s.ecdh) ||
+		!isOptStr(s.kem, 2048)
+	)
 		return "bad subject";
 	if (!isNat(x.delegate) || !isNat(x.notBefore) || !isNat(x.issuedAt))
 		return "bad numbers";
@@ -186,7 +194,7 @@ export function checkRevocationShape(x: unknown): string | null {
 	if (x.v !== 1 || x.alg !== SIG_ALG) return "unsupported version/alg";
 	if (
 		!isStr(x.id) ||
-		!isStr(x.sig, 256) ||
+		!isStr(x.sig, 4500) ||
 		!isStr(x.inst) ||
 		!isStr(x.issuer) ||
 		!isStr(x.target)
@@ -209,14 +217,14 @@ export function checkRevocationShape(x: unknown): string | null {
 	return null;
 }
 
-/** id == hash(body) and (for grants) subject.fp == fingerprint(subject.jwk). */
+/** id == hash(body) and (for grants) subject.fp == fingerprint(subject.pub). */
 export async function checkIntegrity(
 	doc: Grant | Revocation,
 ): Promise<string | null> {
 	if ((await contentId(bodyOf(doc))) !== doc.id) return "id mismatch";
 	if (
 		doc.t === "grant" &&
-		(await jwkFingerprint(doc.subject.jwk)) !== doc.subject.fp
+		(await keyFingerprint(doc.subject.pub)) !== doc.subject.fp
 	)
 		return "subject fp mismatch";
 	return null;
@@ -224,5 +232,5 @@ export async function checkIntegrity(
 
 export const verifyDocSignature = (
 	doc: Grant | Revocation,
-	issuerJwk: JsonWebKey,
-): Promise<boolean> => verifyCanonical(issuerJwk, bodyOf(doc), doc.sig);
+	issuerPub: string,
+): Promise<boolean> => verifyCanonical(issuerPub, bodyOf(doc), doc.sig);
