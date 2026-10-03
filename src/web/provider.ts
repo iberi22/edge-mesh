@@ -1,6 +1,19 @@
 import * as Y from "yjs";
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate, removeAwarenessStates } from "y-protocols/awareness";
+import {
+	type Admission,
+	type Revocation,
+	type Role,
+	type TrustRoot,
+	canIssue,
+	canRevokeRole,
+	signAdmission,
+	signRevocation,
+	verifyChain,
+	verifyRevocation,
+} from "./admission.js";
 import { deriveDocMaterial, deriveSenderKey, hkdf, importAesKey, openUpdate, sealUpdate } from "./crypto.js";
+import { DEFAULT_MAX_FRAME, F_FRAG, Reassembler, fragment } from "./fragment.js";
 import { type EcdhIdentity, ecdhSignedBytes, generateEcdhIdentity, unwrapMeshKey, wrapMeshKey } from "./rotation.js";
 import {
 	type GrantBody,
@@ -12,13 +25,14 @@ import {
 	decodePairPayload,
 	derivePairKey,
 } from "./pairing.js";
-import { derivePairRoomId, deriveRoomId } from "./rooms.js";
+import { derivePairRoomId, deriveRoomId, fingerprint, meshNamespace } from "./rooms.js";
+import { type MeshStore, idbStore, memoryStore } from "./store.js";
 import type { Device, PeerLink, RtcOptions, SigTransport, VaultClient } from "./types.js";
 import { b64uDecode, b64uEncode, concat, fromUtf8, randomBytes, utf8 } from "./util.js";
 import { connectViaSignaling } from "./webrtc.js";
 
 export type MeshStatus = "off" | "connecting" | "online";
-export type MeshEvent = "status" | "peers" | "devices" | "sas" | "paired" | "revoked" | "error";
+export type MeshEvent = "status" | "peers" | "devices" | "sas" | "paired" | "revoked" | "rejected" | "error";
 
 export interface MeshOptions {
 	appId: string;
@@ -31,6 +45,68 @@ export interface MeshOptions {
 	deviceName?: string;
 	rtc?: RtcOptions;
 	now?: () => number;
+	/**
+	 * Device-local store for trust state (pinned root, verified admissions, revocations). Default: `vault.store`,
+	 * else IndexedDB when persist:'idb', else memory (a reloaded device then has to be paired again).
+	 */
+	store?: MeshStore;
+	/**
+	 * Replaces the built-in admission check (signed admission chain up to the pinned root). Called for every
+	 * candidate device with the identity key the mesh would trust for it; it MUST check that this key belongs to
+	 * `deviceId` (e.g. against a signed grant), because the shared doc is writable by every member.
+	 * Only devices it accepts receive rotation wraps, have their ECDH key used and appear in `devices()`.
+	 */
+	authorizeDevice?: (deviceId: string, devicePub: Uint8Array) => boolean | Promise<boolean>;
+	/**
+	 * May `issuer` revoke `target` (which rotates the mesh key for everybody)? Checked before a local revoke() and
+	 * for every incoming rotation. Default: built-in roles (owner > admin > member; nobody revokes the owner).
+	 */
+	canRotate?: (issuer: string, target: string) => boolean | Promise<boolean>;
+	/**
+	 * Data authorization hook: called before applying every incoming Yjs update with the AUTHENTICATED peer that
+	 * delivered it (with signFrames on). Default: allow. Note that a sync reply may carry other members' changes:
+	 * `sender` is the delivering device, not necessarily the author (per-author authorization needs a signed log).
+	 * A refused update is dropped and reported as a 'rejected' event.
+	 */
+	authorizeUpdate?: (sender: string, update: Uint8Array) => boolean | Promise<boolean>;
+	/**
+	 * Sign every data frame with the device identity key and require valid signatures from ADMITTED devices
+	 * (default true). Per-sender subkeys alone do not authenticate the sender: every member can derive them.
+	 * `false` restores the legacy unsigned wire; it must then be off on every device of the mesh.
+	 */
+	signFrames?: boolean;
+	/**
+	 * Namespace of this mesh instance within the app (e.g. a restaurant id); it is bound into the room ids and
+	 * every channel frame. Must be identical on all devices. Default: fingerprint of the owner's identity key.
+	 */
+	instance?: string;
+	/** Largest message handed to a link; bigger ones are fragmented (H5). Default 64 KiB. */
+	maxFrameBytes?: number;
+	/** Largest reassembled message accepted from a peer. Default 64 MiB. */
+	maxMessageBytes?: number;
+}
+
+export interface PairHostOptions {
+	/** Role of the admitted guest. Default "member". Only the owner admits admins. */
+	role?: Exclude<Role, "owner">;
+	/** Application data for this guest (e.g. a signed capability grant), sent inside the encrypted grant. */
+	extra?: (guest: Device) => unknown | Promise<unknown>;
+}
+
+/** A private, encrypted, signed message channel of one kind inside the mesh (e.g. "oplog"). */
+export interface MeshChannel {
+	/** `{appId}/{instance}/{kind}`: frames from any other app or instance are rejected. */
+	readonly namespace: string;
+	/** Send to every connected, authenticated member (or only `to`). Large payloads are fragmented. */
+	send(data: Uint8Array, opts?: { to?: string }): Promise<void>;
+	/** `from` is the authenticated sender (signFrames on). */
+	onMessage(cb: (data: Uint8Array, from: string) => void): () => void;
+	close(): void;
+}
+
+export interface PairJoinResult {
+	host?: Device;
+	extra?: unknown;
 }
 
 export interface PairOffer {
@@ -47,23 +123,36 @@ export interface Mesh {
 	readonly awareness: Awareness;
 	/** Resolves when local persistence is loaded and this device is registered. */
 	readonly ready: Promise<void>;
-	pairHost(): Promise<PairOffer>;
-	pairJoin(payload: string, opts?: { confirmSas?: (code: string) => Promise<boolean> | boolean }): Promise<void>;
+	/** Pinned trust root (mesh owner), or null before the first pairing. */
+	readonly root: TrustRoot | null;
+	/** `{appId}/{instance}` of this mesh ("" instance before the first pairing unless MeshOptions.instance). */
+	readonly namespace: string;
+	/** Own message channel of a kind (letters, digits, '-', '_', '.'), separate from the shared Y.Doc. */
+	channel(kind: string): MeshChannel;
+	pairHost(opts?: PairHostOptions): Promise<PairOffer>;
+	pairJoin(payload: string, opts?: { confirmSas?: (code: string) => Promise<boolean> | boolean }): Promise<PairJoinResult>;
+	/** This device plus every ADMITTED device (self-registered entries in the shared doc are ignored). */
 	devices(): Device[];
+	/** Verified role of a device (default: this one), or null if it is not admitted. */
+	role(deviceId?: string): Role | null;
 	revoke(deviceId: string): Promise<void>;
 	leave(): void;
 	destroy(): void;
 	on(event: MeshEvent, cb: (data: any) => void): () => void;
 }
 
-const F_DATA = 1;
+const F_DATA = 1; // legacy unsigned data frame (only with signFrames:false)
 const F_PAIR = 2;
+const F_SDATA = 3; // signed data frame: plaintext = kind | sigLen(u16) | sig | body
 const K_SV = 0;
 const K_UPDATE = 1;
 const K_AWARENESS = 2;
 const K_ROTATE = 3;
+const K_CHANNEL = 4; // body = nsLen(u16) | namespace | payload
 const ORIGIN = Symbol("swal-mesh");
-const DEV = "dev/";
+const DEV = "dev/"; // dev/<deviceId> = Device (informative only: trust comes from adm/)
+const ADM_PREFIX = "adm/"; // adm/<deviceId> = Admission signed by an owner/admin, verified against the local root pin
+const REV_PREFIX = "rev/"; // rev/<deviceId> = Revocation signed by the revoker (H4: replicated + persisted locally)
 const ECDH_PREFIX = "ecdh/"; // ecdh/<deviceId> = { pub, sig } (sig by the device identity key)
 const ROT_PREFIX = "rot:"; // rot:<epoch>:<deviceId> = { from, wrap, revoked } (pairwise-wrapped new mesh key)
 const OLD_PREFIX = "old:"; // old:<epoch> = previous mesh key (b64u); only readable by current members (meta is under the NEW key)
@@ -85,7 +174,17 @@ interface LinkRec {
 	closing?: boolean;
 	/** link on a retired epoch room: only used to hand pairwise wraps to peers that missed the rotation */
 	legacy?: Legacy;
+	/** signed frames from a sender whose admission has not reached us yet (bounded; replayed on trust changes) */
+	held?: { frames: Array<{ d: Uint8Array; t: number }>; bytes: number };
 }
+
+const HOLD_MAX_FRAMES = 64;
+const HOLD_MAX_BYTES = 8 * 1024 * 1024;
+const HOLD_MS = 30_000;
+
+/** What a device signs for a data frame: bound to the room (mesh key + epoch), the sender and the kind. */
+const frameSigBytes = (rid: string, sender: string, kind: number, body: Uint8Array) =>
+	concat(utf8(`swal-frame/v1|${rid}|${sender}|`), new Uint8Array([kind]), body);
 
 interface Legacy {
 	epoch: number;
@@ -114,11 +213,22 @@ export function createMesh(opts: MeshOptions): Mesh {
 	let docMat: Uint8Array | null = null;
 	let sigKey: CryptoKey | null = null;
 	let dataRid = "";
+	let instanceId = opts.instance ?? "";
 	let epoch = 0;
 	let status: MeshStatus = "off";
 	const links = new Set<LinkRec>();
 	const senderKeys = new Map<string, CryptoKey>(); // `${epoch}|${deviceId}` -> per-sender AES-GCM key
-	const revokedIds = new Set<string>();
+	const revokedIds = new Map<string, number>(); // deviceId -> revocation time (persisted in the local store)
+	const store: MeshStore =
+		opts.store ??
+		vault.store ??
+		(opts.persist === "idb" && typeof indexedDB !== "undefined" ? idbStore(`swal-mesh-local/${appId}/${topicName}`) : memoryStore());
+	let root: TrustRoot | null = null;
+	let admCache: Record<string, Admission> = {}; // verified admissions: survive tampering with the shared doc
+	let ecdhOk: Record<string, string> = {}; // `${deviceId}|${identityPub}` -> verified ECDH pub
+	let trusted = new Map<string, Device>(); // admitted devices other than this one
+	let admittedAt = new Map<string, number>(); // `at` of each trusted device's VERIFIED admission
+	let selfAdm: Admission | null = null;
 	const legacy = new Map<string, Legacy>(); // retired data rid -> its epoch material
 	let ecdhId: EcdhIdentity | null = null;
 	const rooms = new Map<string, () => void>(); // rid -> leave
@@ -127,6 +237,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 	let guestSession: { s: GuestPairing; rid: string } | null = null;
 	let pairRids = new Set<string>();
 
+	const maxFrame = opts.maxFrameBytes ?? DEFAULT_MAX_FRAME;
+	const signFrames = opts.signFrames !== false;
 	const peerIds = () => [...new Set([...links].filter((l) => l.deviceId && l.rid !== "pair" && !l.legacy && !l.closing).map((l) => l.deviceId!))];
 	const setStatus = () => {
 		const s: MeshStatus = !running ? "off" : peerIds().length > 0 ? "online" : "connecting";
@@ -138,14 +250,117 @@ export function createMesh(opts: MeshOptions): Mesh {
 	};
 	const err = (e: unknown) => emit("error", e);
 
-	// ---- devices (inside the encrypted-on-the-wire Y.Doc 'meta' map) ----
-	const devices = (): Device[] =>
-		[...meta.keys()].filter((k) => k.startsWith(DEV)).map((k) => meta.get(k) as Device).sort((a, b) => a.addedAt - b.addedAt);
-	meta.observe(() => emit("devices", devices()));
+	// ---- devices: only ADMITTED ones (H1). The 'meta' map is writable by every member, so a device entry is
+	// trusted only through a signed admission chain up to the locally pinned root (or the authorizeDevice hook).
+	const selfRole = (): Role | null => (root?.deviceId === vault.deviceId ? "owner" : (selfAdm?.role ?? null));
+	const selfDevice = (): Device => {
+		const d = meta.get(DEV + vault.deviceId) as Device | undefined;
+		return {
+			deviceId: vault.deviceId,
+			pub: b64uEncode(vault.devicePublicKey),
+			name: d?.name ?? opts.deviceName ?? "device",
+			addedAt: d?.addedAt ?? 0,
+			...(selfRole() ? { role: selfRole()! } : {}),
+			...(selfAdm ? { admittedBy: selfAdm.by } : {}),
+		};
+	};
+	const devices = (): Device[] => [selfDevice(), ...trusted.values()].sort((a, b) => a.addedAt - b.addedAt);
+	const roleOf = (id: string): Role | null => (id === vault.deviceId ? selfRole() : (trusted.get(id)?.role ?? null));
+	/** H2: rotation/revocation only from an authorized issuer. A target that is not admitted counts as a member. */
+	const canRotate = async (issuer: string, target: string): Promise<boolean> => {
+		if (opts.canRotate) return Boolean(await opts.canRotate(issuer, target));
+		const ir = roleOf(issuer);
+		const tr = target === root?.deviceId ? "owner" : (roleOf(target) ?? "member");
+		return ir !== null && canRevokeRole(ir, tr);
+	};
+	const chainCtx = (r: TrustRoot) => ({
+		vault,
+		root: r,
+		candidates: (id: string) => {
+			const out: Admission[] = [];
+			const m = meta.get(ADM_PREFIX + id) as Admission | undefined;
+			if (m) out.push(m);
+			if (admCache[id] && admCache[id].sig !== m?.sig) out.push(admCache[id]);
+			return out;
+		},
+		revokedAt: (id: string) => revokedIds.get(id),
+	});
+	let trustChain: Promise<void> = Promise.resolve();
+	const refreshTrust = () => (trustChain = trustChain.then(computeTrust).catch(err));
+	const persistRevoked = () => store.set("revoked", Object.fromEntries(revokedIds));
+	/** A device is cut off if revoked and not re-admitted (newer admission) afterwards. */
+	const isRevoked = (id: string) => {
+		const at = revokedIds.get(id);
+		return at !== undefined && !(trusted.has(id) && (admittedAt.get(id) ?? -1) > at);
+	};
+	async function computeTrust() {
+		// 1) signed revocations replicated in the doc (only valid ones count; the local map only ever grows)
+		if (root) {
+			const rctx = chainCtx(root);
+			const rmemo = new Map<string, Promise<Admission | null>>();
+			let changed = false;
+			for (const k of meta.keys()) {
+				if (!k.startsWith(REV_PREFIX)) continue;
+				const r = meta.get(k) as Revocation;
+				if (r?.target !== k.slice(REV_PREFIX.length) || (revokedIds.get(r.target) ?? -1) >= r.at) continue;
+				if (!(await verifyRevocation(rctx, r, rmemo))) continue;
+				revokedIds.set(r.target, r.at);
+				changed = true;
+			}
+			if (changed) await persistRevoked();
+		}
+		const ids = new Set<string>(Object.keys(admCache));
+		for (const k of meta.keys()) {
+			if (k.startsWith(ADM_PREFIX)) ids.add(k.slice(ADM_PREFIX.length));
+			else if (opts.authorizeDevice && k.startsWith(DEV)) ids.add(k.slice(DEV.length));
+		}
+		if (root) ids.add(root.deviceId);
+		ids.delete(vault.deviceId);
+		const memo = new Map<string, Promise<Admission | null>>();
+		const ctx = root ? chainCtx(root) : null;
+		const next = new Map<string, Device>();
+		const nextAt = new Map<string, number>();
+		const nextCache: Record<string, Admission> = {};
+		for (const id of ids) {
+			const adm = ctx ? await verifyChain(ctx, id, memo) : null;
+			if (adm?.sig) nextCache[id] = adm;
+			const dev = meta.get(DEV + id) as Device | undefined;
+			const pub = adm?.pub ?? (opts.authorizeDevice && typeof dev?.pub === "string" ? dev.pub : undefined);
+			if (!pub) continue;
+			if (opts.authorizeDevice ? !(await opts.authorizeDevice(id, b64uDecode(pub))) : !adm) continue;
+			if (adm) nextAt.set(id, adm.at);
+			next.set(id, {
+				deviceId: id,
+				pub,
+				name: adm?.name || dev?.name || id,
+				addedAt: adm?.at || dev?.addedAt || 0,
+				...(adm ? { role: adm.role, admittedBy: adm.by } : {}),
+			});
+		}
+		selfAdm = ctx && root?.deviceId !== vault.deviceId ? await verifyChain(ctx, vault.deviceId, memo) : null;
+		if (selfAdm?.sig) nextCache[vault.deviceId] = selfAdm;
+		trusted = next;
+		admittedAt = nextAt;
+		if (JSON.stringify(nextCache) !== JSON.stringify(admCache)) {
+			admCache = nextCache;
+			await store.set("adm", admCache);
+		}
+		// verify (and remember) each member's ECDH key now, so a later overwrite in meta cannot replace it
+		for (const id of next.keys()) await peerEcdhPub(id);
+		emit("devices", devices());
+		replayHeld();
+	}
+	meta.observe(() => void refreshTrust());
 
 	// ---- persistence ----
 	let persistence: { destroy(): Promise<void> | void } | null = null;
 	const ready = (async () => {
+		const r = (await store.get("root")) as TrustRoot | undefined;
+		if (r && typeof r.deviceId === "string" && typeof r.pub === "string" && typeof r.mid === "string") root = r;
+		const rv = (await store.get("revoked")) as Record<string, number> | undefined;
+		for (const [id, at] of Object.entries(rv ?? {})) if (typeof at === "number") revokedIds.set(id, at);
+		admCache = ((await store.get("adm")) as Record<string, Admission> | undefined) ?? {};
+		ecdhOk = ((await store.get("ecdh")) as Record<string, string> | undefined) ?? {};
 		if (opts.persist === "idb" && typeof indexedDB !== "undefined") {
 			const { IndexeddbPersistence } = await import("y-indexeddb");
 			const p = new IndexeddbPersistence(`swal-mesh/${appId}/${topicName}`, doc);
@@ -164,7 +379,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 			} satisfies Device);
 		}
 		await publishEcdh();
-		if (devices().length > 1 && !destroyed) await start(); // already paired: resume
+		await refreshTrust();
+		if (root && trusted.size > 0 && !destroyed) await start(); // already paired: resume
 	})();
 	ready.catch(err);
 
@@ -180,17 +396,24 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const sig = b64uEncode(await vault.sign(ecdhSignedBytes(vault.deviceId, pub)));
 		meta.set(ECDH_PREFIX + vault.deviceId, { pub, sig });
 	}
-	/** Verified ECDH public key of a registered device, or null. */
+	/**
+	 * ECDH public key of an ADMITTED device, verified against the identity key from its admission (never against
+	 * the self-declared dev/<id> entry). A key verified once is remembered, so tampering with meta cannot swap it.
+	 */
 	async function peerEcdhPub(deviceId: string): Promise<Uint8Array | null> {
-		const dev = meta.get(DEV + deviceId) as Device | undefined;
+		const idPub = trusted.get(deviceId)?.pub;
+		if (!idPub) return null;
+		const slot = `${deviceId}|${idPub}`;
 		const e = meta.get(ECDH_PREFIX + deviceId) as { pub: string; sig: string } | undefined;
-		if (!dev || !e || typeof e.pub !== "string" || typeof e.sig !== "string") return null;
-		try {
-			const ok = await vault.verify(b64uDecode(dev.pub), ecdhSignedBytes(deviceId, e.pub), b64uDecode(e.sig));
-			return ok ? b64uDecode(e.pub) : null;
-		} catch {
-			return null;
+		if (e && typeof e.pub === "string" && typeof e.sig === "string" && e.pub !== ecdhOk[slot]) {
+			try {
+				if (await vault.verify(b64uDecode(idPub), ecdhSignedBytes(deviceId, e.pub), b64uDecode(e.sig))) {
+					ecdhOk = { ...ecdhOk, [slot]: e.pub };
+					await store.set("ecdh", ecdhOk);
+				}
+			} catch {}
 		}
+		return ecdhOk[slot] ? b64uDecode(ecdhOk[slot]) : null;
 	}
 
 	// ---- keys ----
@@ -202,28 +425,61 @@ export function createMesh(opts: MeshOptions): Mesh {
 	}
 	async function loadKeys(raw?: Uint8Array) {
 		meshKey = raw ?? (await vault.getOrCreateMeshKey());
-		epoch = Math.max(Number(await vault.getEpoch?.() ?? 0), Number(meta.get("epoch") ?? 0), epoch);
+		epoch = Math.max(Number((await vault.getEpoch?.()) ?? 0), Number((await store.get("epoch")) ?? 0), Number(meta.get("epoch") ?? 0), epoch);
 		docMat = await deriveDocMaterial(meshKey, topicName);
 		sigKey = await importAesKey(await hkdf(meshKey, `swal-signal/v1|${topicName}`));
-		dataRid = await deriveRoomId(meshKey, appId, topicName, epoch);
+		instanceId = opts.instance ?? (root ? await fingerprint(b64uDecode(root.pub)) : "");
+		dataRid = await deriveRoomId(meshKey, appId, topicName, epoch, instanceId || undefined);
+	}
+
+	// ---- link I/O: per-link ordered queue; messages above maxFrame are fragmented (H5) ----
+	const outQ = new WeakMap<PeerLink, Promise<void>>();
+	function sendBytes(link: PeerLink, bytes: Uint8Array, alive: () => boolean = () => true): Promise<void> {
+		const next = (outQ.get(link) ?? Promise.resolve())
+			.then(async () => {
+				if (!alive()) return;
+				for (const f of await fragment(bytes, maxFrame)) {
+					if (!alive()) return;
+					link.send(f);
+				}
+			})
+			.catch(err);
+		outQ.set(link, next);
+		return next;
 	}
 
 	// ---- framing ----
 	// Every sender seals under its OWN subkey (HKDF over the sender's deviceId); receivers derive it
 	// from the deviceId in the frame header (also bound in the AAD). Wire: F_DATA | idLen | id | nonce | ct+tag.
+	// With signFrames (default) the plaintext also carries the sender's identity signature over
+	// (rid, sender, kind, body): F_SDATA | idLen | id | nonce | AES-GCM(kind | sigLen | sig | body).
+	const signCache = new WeakMap<Uint8Array, { rid: string; kind: number; sig: Promise<Uint8Array> }>();
+	function signFor(rid: string, kind: number, body: Uint8Array): Promise<Uint8Array> {
+		const c = signCache.get(body); // a broadcast signs once for all links
+		if (c && c.rid === rid && c.kind === kind) return c.sig;
+		const sig = vault.sign(frameSigBytes(rid, vault.deviceId, kind, body));
+		signCache.set(body, { rid, kind, sig });
+		return sig;
+	}
 	async function sendFrame(rec: LinkRec, kind: number, body: Uint8Array) {
 		const lg = rec.legacy;
 		const mat = lg ? lg.material : docMat;
 		if (!mat || rec.closing) return;
+		const rid = lg ? lg.rid : dataRid;
 		const key = await senderKey(mat, lg ? lg.epoch : epoch, vault.deviceId);
 		const id = utf8(vault.deviceId);
-		const sealed = await sealUpdate(key, concat(new Uint8Array([kind]), body), `${lg ? lg.rid : dataRid}|${vault.deviceId}`);
+		let inner: Uint8Array;
+		if (signFrames) {
+			const sig = await signFor(rid, kind, body);
+			inner = concat(new Uint8Array([kind, sig.length >> 8, sig.length & 0xff]), sig, body);
+		} else inner = concat(new Uint8Array([kind]), body);
+		const sealed = await sealUpdate(key, inner, `${rid}|${vault.deviceId}`);
 		if (rec.closing) return;
-		rec.link.send(concat(new Uint8Array([F_DATA, id.length]), id, sealed));
+		await sendBytes(rec.link, concat(new Uint8Array([signFrames ? F_SDATA : F_DATA, id.length]), id, sealed), () => !rec.closing);
 	}
 	const established = () =>
 		[...links].filter(
-			(l) => !l.closing && !l.legacy && (l.rid === dataRid || l.rid === "") && !(l.deviceId && revokedIds.has(l.deviceId)),
+			(l) => !l.closing && !l.legacy && (l.rid === dataRid || l.rid === "") && !(l.deviceId && isRevoked(l.deviceId)),
 		);
 	/** Synchronous: the link leaves `links` right now (the transport's onClose may fire much later). */
 	function closeRec(rec: LinkRec) {
@@ -243,33 +499,78 @@ export function createMesh(opts: MeshOptions): Mesh {
 	function sendPair(link: PeerLink) {
 		let f = pairSenders.get(link);
 		if (!f) {
-			f = (m: unknown) => link.send(concat(new Uint8Array([F_PAIR]), utf8(JSON.stringify(m))));
+			f = (m: unknown) => void sendBytes(link, concat(new Uint8Array([F_PAIR]), utf8(JSON.stringify(m))));
 			pairSenders.set(link, f);
 		}
 		return f;
+	}
+
+	const reject = (reason: string, from?: string) => emit("rejected", { reason, from });
+	const heldAt = new WeakMap<Uint8Array, number>(); // first time a frame was held (kept across replays)
+	function hold(rec: LinkRec, data: Uint8Array) {
+		if (!rec.held) rec.held = { frames: [], bytes: 0 };
+		const h = rec.held;
+		const t = heldAt.get(data) ?? now();
+		heldAt.set(data, t);
+		h.frames.push({ d: data, t });
+		h.bytes += data.length;
+		while (h.frames.length > HOLD_MAX_FRAMES || h.bytes > HOLD_MAX_BYTES) h.bytes -= h.frames.shift()!.d.length;
+	}
+	/** Re-run held frames once the trust state changed (a pending admission may have arrived). */
+	function replayHeld() {
+		for (const rec of links) {
+			const h = rec.held;
+			if (!h || rec.closing) continue;
+			rec.held = undefined;
+			for (const f of h.frames) {
+				if (now() - f.t > HOLD_MS) continue;
+				rec.chain = rec.chain.then(() => onData(rec, f.d)).catch(err);
+			}
+		}
 	}
 
 	async function onData(rec: LinkRec, data: Uint8Array) {
 		const lg = rec.legacy;
 		const mat = lg ? lg.material : docMat;
 		if (!mat || !running || rec.closing) return;
+		const signed = data[0] === F_SDATA;
+		if (!signed && signFrames) return reject("unsigned frame");
 		const idLen = data[1];
 		const sender = fromUtf8(data.subarray(2, 2 + idLen));
-		if (revokedIds.has(sender)) return;
+		if (isRevoked(sender)) return;
+		if (rec.deviceId && rec.deviceId !== sender) return reject("frame sender does not match the link", sender);
+		const rid = lg ? lg.rid : dataRid;
 		let plain: Uint8Array;
 		try {
 			const key = await senderKey(mat, lg ? lg.epoch : epoch, sender);
-			plain = await openUpdate(key, data.subarray(2 + idLen), `${lg ? lg.rid : dataRid}|${sender}`);
+			plain = await openUpdate(key, data.subarray(2 + idLen), `${rid}|${sender}`);
 		} catch {
 			return; // wrong key / tampered / other epoch: drop silently
 		}
 		if (rec.closing) return;
+		const kind = plain[0];
+		let body = plain.subarray(1);
+		if (signed) {
+			const sigLen = plain.length >= 3 ? (plain[1] << 8) | plain[2] : -1;
+			if (sigLen < 0 || plain.length < 3 + sigLen) return reject("malformed signed frame", sender);
+			const sig = plain.subarray(3, 3 + sigLen);
+			body = plain.subarray(3 + sigLen);
+			const pub = trusted.get(sender)?.pub;
+			if (!pub) {
+				if (!lg) hold(rec, data); // its admission may still be on its way through another peer
+				return;
+			}
+			let ok = false;
+			try {
+				ok = await vault.verify(b64uDecode(pub), frameSigBytes(rid, sender, kind, body), sig);
+			} catch {}
+			if (!ok) return reject("bad frame signature", sender);
+			if (rec.closing) return;
+		}
 		if (!rec.deviceId) {
 			rec.deviceId = sender;
 			setStatus();
 		}
-		const kind = plain[0];
-		const body = plain.subarray(1);
 		if (lg) {
 			// retired room: the only thing we do is hand THIS peer its own pairwise wrap for the next epoch
 			if (kind === K_SV) {
@@ -284,12 +585,62 @@ export function createMesh(opts: MeshOptions): Mesh {
 		if (kind === K_SV) {
 			await sendFrame(rec, K_UPDATE, Y.encodeStateAsUpdate(doc, body));
 		} else if (kind === K_UPDATE) {
+			if (opts.authorizeUpdate && !(await opts.authorizeUpdate(sender, body))) return reject("update not authorized", sender);
+			if (rec.closing) return;
 			Y.applyUpdate(doc, body, ORIGIN);
 		} else if (kind === K_AWARENESS) {
 			applyAwarenessUpdate(awareness, body, ORIGIN);
 		} else if (kind === K_ROTATE) {
 			await handleRotate(body);
+		} else if (kind === K_CHANNEL) {
+			const n = body.length >= 2 ? (body[0] << 8) | body[1] : -1;
+			if (n < 0 || body.length < 2 + n) return reject("malformed channel frame", sender);
+			const ns = fromUtf8(body.subarray(2, 2 + n));
+			const k = ns.slice(ns.lastIndexOf("/") + 1);
+			if (ns !== chanNs(k)) return reject("foreign channel", sender);
+			const payload = body.subarray(2 + n);
+			for (const cb of [...(chanSubs.get(k) ?? [])]) {
+				try {
+					cb(payload, sender);
+				} catch (e) {
+					err(e);
+				}
+			}
 		}
+	}
+
+	// ---- channels: app/instance-namespaced message streams over the same encrypted + signed frames ----
+	const chanSubs = new Map<string, Set<(d: Uint8Array, from: string) => void>>();
+	const chanNs = (kind: string) => `${meshNamespace(appId, instanceId)}/${kind}`;
+	function channel(kind: string): MeshChannel {
+		if (!/^[A-Za-z0-9._-]{1,64}$/.test(kind)) throw new Error(`invalid channel kind "${kind}"`);
+		const mine = new Set<(d: Uint8Array, from: string) => void>();
+		return {
+			get namespace() {
+				return chanNs(kind);
+			},
+			async send(data, o = {}) {
+				if (!running) throw new Error("mesh is not connected");
+				const ns = utf8(chanNs(kind));
+				const body = concat(new Uint8Array([ns.length >> 8, ns.length & 0xff]), ns, data);
+				const targets = established().filter((l) => l.deviceId && (o.to === undefined || l.deviceId === o.to));
+				await Promise.all(targets.map((l) => sendFrame(l, K_CHANNEL, body)));
+			},
+			onMessage(cb) {
+				const set = chanSubs.get(kind) ?? new Set();
+				chanSubs.set(kind, set);
+				set.add(cb);
+				mine.add(cb);
+				return () => {
+					set.delete(cb);
+					mine.delete(cb);
+				};
+			},
+			close() {
+				for (const cb of mine) chanSubs.get(kind)?.delete(cb);
+				mine.clear();
+			},
+		};
 	}
 
 	async function handleRotate(body: Uint8Array) {
@@ -299,13 +650,19 @@ export function createMesh(opts: MeshOptions): Mesh {
 		} catch {
 			return;
 		}
-		if (r.to !== vault.deviceId || r.epoch !== epoch + 1 || revokedIds.has(r.from) || r.from === r.revoked) return;
+		if (r.to !== vault.deviceId || r.epoch !== epoch + 1 || isRevoked(r.from) || r.from === r.revoked) return;
+		if (typeof r.revoked !== "string" || r.revoked === vault.deviceId) return;
 		const fromPub = await peerEcdhPub(r.from);
 		if (!fromPub) return;
+		if (!(await canRotate(r.from, r.revoked))) {
+			emit("rejected", { reason: "rotation not authorized", from: r.from, revoked: r.revoked, epoch: r.epoch });
+			return;
+		}
 		let newKey: Uint8Array;
 		try {
-			newKey = await unwrapMeshKey((await ecdhIdentity()).privateKey, fromPub, r.epoch, r.from, r.to, b64uDecode(r.wrap));
+			newKey = await unwrapMeshKey((await ecdhIdentity()).privateKey, fromPub, r.epoch, r.from, r.to, b64uDecode(r.wrap), r.revoked);
 		} catch {
+			emit("rejected", { reason: "rotation wrap does not authenticate", from: r.from, revoked: r.revoked, epoch: r.epoch });
 			return;
 		}
 		if (r.epoch !== epoch + 1) return; // raced with another adoption
@@ -328,13 +685,22 @@ export function createMesh(opts: MeshOptions): Mesh {
 		if (lg) rec.legacy = lg;
 		if (rid === "") rec.rid = ""; // room-less (qr-sdp): frames are self-describing
 		links.add(rec);
+		const reasm = new Reassembler({ maxMessageBytes: opts.maxMessageBytes });
+		const dispatch = (d: Uint8Array) =>
+			d[0] === F_PAIR ? onPairFrame({ ...rec, rid: rid === "" ? ([...pairRids][0] ?? "") : rid }, d) : d[0] === F_DATA || d[0] === F_SDATA ? onData(rec, d) : undefined;
 		link.onMessage((d) => {
 			if (rec.closing) return;
 			rec.chain = rec.chain
-				.then(() => (d[0] === F_PAIR ? onPairFrame({ ...rec, rid: rid === "" ? [...pairRids][0] ?? "" : rid }, d) : d[0] === F_DATA ? onData(rec, d) : undefined))
+				.then(async () => {
+					if (d[0] !== F_FRAG) return dispatch(d);
+					const whole = await reasm.push(d);
+					if (whole && whole[0] !== F_FRAG && !rec.closing) return dispatch(whole);
+				})
 				.catch(err);
 		});
 		link.onClose(() => {
+			reasm.clear();
+			rec.held = undefined;
 			links.delete(rec);
 			setStatus();
 		});
@@ -429,6 +795,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const oldKey = meshKey!;
 		await vault.setMeshKey(newKey);
 		await vault.setEpoch?.(newEpoch);
+		await store.set("epoch", newEpoch);
 		epoch = newEpoch;
 		await loadKeys(newKey);
 		// links stay up across the rotation; the retired room stays joined ONLY to serve wraps to stragglers
@@ -445,7 +812,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 			const e = Number(k.slice(OLD_PREFIX.length));
 			if (!Number.isInteger(e) || e >= epoch) continue;
 			const raw = b64uDecode(meta.get(k) as string);
-			const rid = await deriveRoomId(raw, appId, topicName, e);
+			const rid = await deriveRoomId(raw, appId, topicName, e, instanceId || undefined);
 			if (legacy.has(rid) && rooms.has(rid)) continue;
 			legacy.set(rid, { epoch: e, rid, material: await deriveDocMaterial(raw, topicName) });
 			await joinRoom(rid, await importAesKey(await hkdf(raw, `swal-signal/v1|${topicName}`)));
@@ -455,8 +822,16 @@ export function createMesh(opts: MeshOptions): Mesh {
 		if ([...ev.keysChanged].some((k) => k.startsWith(OLD_PREFIX))) void syncLegacy().catch(err);
 	});
 
+	function forget(deviceId: string, at = now()) {
+		revokedIds.set(deviceId, Math.max(at, revokedIds.get(deviceId) ?? at));
+		trusted.delete(deviceId);
+		admittedAt.delete(deviceId);
+		delete admCache[deviceId];
+		void Promise.all([store.set("adm", admCache), persistRevoked()]).catch(err);
+	}
+
 	async function adoptRotation(newKey: Uint8Array, newEpoch: number, revoked: string) {
-		revokedIds.add(revoked);
+		forget(revoked);
 		for (const l of [...links]) if (l.deviceId === revoked) closeRec(l);
 		const { oldEpoch, oldKey } = await switchEpoch(newKey, newEpoch);
 		doc.transact(() => {
@@ -469,23 +844,28 @@ export function createMesh(opts: MeshOptions): Mesh {
 	async function revoke(deviceId: string) {
 		await ready;
 		if (deviceId === vault.deviceId) throw new Error("cannot revoke the current device");
-		if (!meta.has(DEV + deviceId)) throw new Error("unknown device");
+		await refreshTrust();
+		if (!meta.has(DEV + deviceId) && !trusted.has(deviceId)) throw new Error("unknown device");
+		if (!(await canRotate(vault.deviceId, deviceId))) throw new Error(`not authorized to revoke ${deviceId}`);
 		if (!running) await start();
 		// cut the revoked device off SYNCHRONOUSLY: its link must not be reachable by anything below
-		revokedIds.add(deviceId);
+		forget(deviceId);
 		for (const l of [...links]) if (l.deviceId === deviceId) closeRec(l);
 		const newKey = randomBytes(32);
 		const newEpoch = epoch + 1;
+		const rev = root
+			? await signRevocation(vault, { mid: root.mid, target: deviceId, by: vault.deviceId, epoch: newEpoch, at: revokedIds.get(deviceId) ?? now() })
+			: null;
 		const priv = (await ecdhIdentity()).privateKey;
 		const wraps = new Map<string, RotateMsg>();
-		for (const d of devices()) {
-			if (d.deviceId === vault.deviceId || d.deviceId === deviceId) continue;
+		for (const d of trusted.values()) {
+			if (d.deviceId === deviceId) continue;
 			const pub = await peerEcdhPub(d.deviceId);
 			if (!pub) {
 				err(new Error(`no verified ECDH key for ${d.deviceId}: it must be re-paired after the rotation`));
 				continue;
 			}
-			const wrap = await wrapMeshKey(priv, pub, newEpoch, vault.deviceId, d.deviceId, newKey);
+			const wrap = await wrapMeshKey(priv, pub, newEpoch, vault.deviceId, d.deviceId, newKey, deviceId);
 			wraps.set(d.deviceId, { epoch: newEpoch, from: vault.deviceId, to: d.deviceId, wrap, revoked: deviceId });
 		}
 		// 1) hand each connected remaining peer ITS OWN wrap, 2) switch, 3) publish the removal + wraps under the NEW key
@@ -497,7 +877,9 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const { oldEpoch, oldKey } = await switchEpoch(newKey, newEpoch);
 		doc.transact(() => {
 			meta.delete(DEV + deviceId);
+			meta.delete(ADM_PREFIX + deviceId);
 			meta.delete(ECDH_PREFIX + deviceId);
+			if (rev) meta.set(REV_PREFIX + deviceId, rev);
 			meta.set("epoch", newEpoch);
 			meta.set(OLD_PREFIX + oldEpoch, b64uEncode(oldKey));
 			for (const [to, m] of wraps) meta.set(`${ROT_PREFIX}${newEpoch}:${to}`, { from: m.from, wrap: m.wrap, revoked: deviceId });
@@ -506,26 +888,81 @@ export function createMesh(opts: MeshOptions): Mesh {
 	}
 
 	// ---- pairing ----
-	async function pairHost(): Promise<PairOffer> {
+	/** First pairing of a fresh mesh: this device becomes its owner (the pinned trust root). */
+	async function ensureRoot(): Promise<TrustRoot> {
+		if (root) return root;
+		const mid = typeof meta.get("mid") === "string" ? (meta.get("mid") as string) : b64uEncode(randomBytes(16));
+		meta.set("mid", mid);
+		root = { mid, deviceId: vault.deviceId, pub: b64uEncode(vault.devicePublicKey) };
+		await store.set("root", root);
+		return root;
+	}
+
+	/** Admission chain of `id` from the local cache, up to (excluding) the root. */
+	function chainOf(id: string): Admission[] {
+		const out: Admission[] = [];
+		for (let cur = id, i = 0; i < 8 && cur !== root?.deviceId; i++) {
+			const a = admCache[cur];
+			if (!a) break;
+			out.push(a);
+			cur = a.by;
+		}
+		return out;
+	}
+
+	async function pairHost(o: PairHostOptions = {}): Promise<PairOffer> {
 		await ready;
+		const guestRole: Role = o.role ?? "member";
+		const r = await ensureRoot();
+		await refreshTrust();
+		const mine = selfRole();
+		if (!mine || !canIssue(mine, guestRole)) throw new Error(`this device (${mine ?? "not admitted"}) cannot admit a ${guestRole}`);
 		const key = await vault.getOrCreateMeshKey();
-		if (!meta.has("mid")) meta.set("mid", b64uEncode(randomBytes(16)));
-		const offer = await createPairOffer(vault, { mid: meta.get("mid"), appId, topic: topicName, now: now() });
+		const offer = await createPairOffer(vault, { mid: r.mid, appId, topic: topicName, now: now() });
 		const rid = await derivePairRoomId(offer.pairSecret);
 		const pairKey = await derivePairKey(offer.pairSecret);
 		const host = new HostPairing(offer, {
 			now,
 			onSas: (p: SasPrompt) => emit("sas", { role: "host", ...p }),
-			buildGrant: async (): Promise<GrantBody> => ({
-				meshKey: b64uEncode(key),
-				epoch,
-				mid: meta.get("mid"),
-				snapshot: b64uEncode(Y.encodeStateAsUpdate(doc)),
-				hostDevice: meta.get(DEV + vault.deviceId),
-			}),
+			buildGrant: async (guest): Promise<GrantBody> => {
+				const adm = await signAdmission(vault, {
+					mid: r.mid,
+					deviceId: guest.deviceId,
+					pub: guest.pub,
+					name: guest.name,
+					role: guestRole,
+					by: vault.deviceId,
+					at: now(),
+				});
+				const dev: Device = { ...guest, addedAt: adm.at, role: guestRole, admittedBy: vault.deviceId };
+				const extra = o.extra ? await o.extra(dev) : undefined;
+				if (opts.authorizeDevice && !(await opts.authorizeDevice(guest.deviceId, b64uDecode(guest.pub)))) {
+					throw new Error("device not authorized by the mesh policy");
+				}
+				revokedIds.delete(guest.deviceId); // explicit re-admission (its new admission post-dates the revocation)
+				await persistRevoked();
+				admCache[guest.deviceId] = adm;
+				trusted.set(guest.deviceId, dev);
+				admittedAt.set(guest.deviceId, adm.at);
+				doc.transact(() => {
+					meta.delete(REV_PREFIX + guest.deviceId);
+					meta.set(ADM_PREFIX + guest.deviceId, adm);
+					meta.set(DEV + guest.deviceId, { deviceId: dev.deviceId, pub: dev.pub, name: dev.name, addedAt: dev.addedAt });
+				});
+				await store.set("adm", admCache);
+				return {
+					meshKey: b64uEncode(key),
+					epoch,
+					mid: r.mid,
+					snapshot: b64uEncode(Y.encodeStateAsUpdate(doc)),
+					hostDevice: selfDevice(),
+					root: r,
+					admissions: [adm, ...chainOf(vault.deviceId)],
+					...(extra !== undefined ? { extra } : {}),
+				};
+			},
 			onPaired: (d) => {
-				doc.transact(() => meta.set(DEV + d.deviceId, d));
-				emit("paired", d);
+				emit("paired", trusted.get(d.deviceId) ?? d);
 				endPairing(rid);
 				void start().catch(err);
 			},
@@ -554,9 +991,12 @@ export function createMesh(opts: MeshOptions): Mesh {
 		(hostSession?.s as any)?._end?.();
 		leaveRoom(rid);
 		pairRids.delete(rid);
-		// let the last frame (grant) flush before dropping the pairing links
+		// let the last frame (grant, possibly fragmented) flush before dropping the pairing links
 		const pairLinks = [...links].filter((l) => l.rid === "pair");
-		setTimeout(() => pairLinks.forEach((l) => l.link.close()), 500);
+		for (const l of pairLinks) {
+			const drained = Promise.race([outQ.get(l.link) ?? Promise.resolve(), new Promise((r) => setTimeout(r, 10_000))]);
+			void drained.then(() => setTimeout(() => l.link.close(), 500));
+		}
 		if (hostSession?.rid === rid) hostSession = null;
 		if (guestSession?.rid === rid) guestSession = null;
 		setStatus();
@@ -583,22 +1023,48 @@ export function createMesh(opts: MeshOptions): Mesh {
 		try {
 			const g = await guest.result;
 			clearTimeout(timeout);
+			// the trust root and our admission arrive over the SAS-authenticated session; the chain must be valid and
+			// lead to the very host key that signed the QR payload
+			if (!g.root || !Array.isArray(g.admissions)) throw new Error("pairing grant carries no admission (host too old?)");
+			const grantAdm = new Map<string, Admission[]>();
+			for (const a of g.admissions) grantAdm.set(a?.deviceId, [...(grantAdm.get(a?.deviceId) ?? []), a]);
+			const gctx = { vault, root: g.root, candidates: (id: string) => grantAdm.get(id) ?? [], revokedAt: () => undefined };
+			const memo = new Map<string, Promise<Admission | null>>();
+			const mine = await verifyChain(gctx, vault.deviceId, memo);
+			if (!mine || mine.pub !== b64uEncode(vault.devicePublicKey)) throw new Error("pairing grant: invalid admission for this device");
+			const issuer = await verifyChain(gctx, mine.by, memo);
+			if (!issuer || issuer.pub !== p.dpk) throw new Error("pairing grant: admission not issued by the paired host");
+			if (root?.mid !== g.root.mid) {
+				admCache = {};
+				ecdhOk = {};
+				revokedIds.clear();
+			}
+			root = g.root;
+			await store.set("root", root);
+			for (const list of grantAdm.values()) for (const a of list) if (a.deviceId !== g.root.deviceId) admCache[a.deviceId] = a;
+			await store.set("adm", admCache);
 			const key = b64uDecode(g.meshKey);
 			await vault.setMeshKey(key);
 			await vault.setEpoch?.(g.epoch);
 			epoch = g.epoch;
 			Y.applyUpdate(doc, b64uDecode(g.snapshot), ORIGIN);
-			meta.set("epoch", g.epoch);
-			meta.set(DEV + vault.deviceId, {
-				deviceId: vault.deviceId,
-				pub: b64uEncode(vault.devicePublicKey),
-				name: opts.deviceName ?? "device",
-				addedAt: now(),
-			} satisfies Device);
+			doc.transact(() => {
+				meta.set("epoch", g.epoch);
+				meta.set(ADM_PREFIX + vault.deviceId, mine);
+				meta.set(DEV + vault.deviceId, {
+					deviceId: vault.deviceId,
+					pub: b64uEncode(vault.devicePublicKey),
+					name: opts.deviceName ?? "device",
+					addedAt: mine.at,
+				} satisfies Device);
+			});
 			await publishEcdh();
+			await refreshTrust();
 			endPairing(rid);
+			if (running) stopNetwork(); // re-pairing while online (e.g. after a revocation): rejoin under the new key
 			emit("paired", g.hostDevice);
 			await start();
+			return { host: g.hostDevice, extra: g.extra };
 		} catch (e) {
 			clearTimeout(timeout);
 			endPairing(rid);
@@ -615,6 +1081,16 @@ export function createMesh(opts: MeshOptions): Mesh {
 		},
 		get epoch() {
 			return epoch;
+		},
+		get root() {
+			return root;
+		},
+		get namespace() {
+			return meshNamespace(appId, instanceId);
+		},
+		channel,
+		role(deviceId = vault.deviceId) {
+			return deviceId === vault.deviceId ? selfRole() : (trusted.get(deviceId)?.role ?? null);
 		},
 		awareness,
 		ready,

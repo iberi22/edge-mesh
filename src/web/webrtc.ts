@@ -3,54 +3,93 @@ import type { PeerLink, RtcOptions, SignalingChannel } from "./types.js";
 import { b64uDecode, b64uEncode, fromUtf8, utf8 } from "./util.js";
 
 const CHUNK = 16000;
+/** Largest message this link reassembles; the mesh fragments everything above 64 KiB itself (fragment.ts). */
+const MAX_LINK_MESSAGE = 4 * 1024 * 1024;
+/** Backpressure: stop handing chunks to SCTP above HIGH, resume on bufferedamountlow (LOW). */
+const HIGH_WATER = 1024 * 1024;
+const LOW_WATER = 256 * 1024;
 
-/** Wrap an RTCDataChannel as a PeerLink, chunking messages (1 flag byte: 1 = more follows). */
+/**
+ * Wrap an RTCDataChannel as a PeerLink, chunking messages (1 flag byte: 1 = more follows). Reassembly is bounded
+ * (a peer streaming "more follows" forever gets the link closed) and sends respect `bufferedAmount`, so a burst
+ * of large messages never overflows the browser's send queue (which would close the channel).
+ */
 export function dataChannelLink(id: string, dc: RTCDataChannel): PeerLink {
 	dc.binaryType = "arraybuffer";
+	dc.bufferedAmountLowThreshold = LOW_WATER;
 	const msgCbs: Array<(d: Uint8Array) => void> = [];
 	const closeCbs: Array<() => void> = [];
 	let parts: Uint8Array[] = [];
+	let partsLen = 0;
 	let closed = false;
+	let closing = false;
+	const queue: Uint8Array[] = [];
+	const flush = () => {
+		while (queue.length > 0 && !closed && dc.readyState === "open" && dc.bufferedAmount < HIGH_WATER) {
+			try {
+				dc.send(queue.shift() as unknown as ArrayBuffer);
+			} catch {
+				return close(true);
+			}
+		}
+		if (closing && queue.length === 0) close(true);
+	};
+	dc.addEventListener("bufferedamountlow", flush);
+	dc.addEventListener("open", flush);
 	dc.addEventListener("message", (ev: MessageEvent) => {
+		if (closed) return;
 		const buf = new Uint8Array(ev.data as ArrayBuffer);
+		partsLen += buf.length - 1;
+		if (partsLen > MAX_LINK_MESSAGE) return close(true);
 		parts.push(buf.subarray(1));
 		if (buf[0] === 1) return;
-		const total = parts.reduce((n, p) => n + p.length, 0);
-		const out = new Uint8Array(total);
+		const out = new Uint8Array(partsLen);
 		let o = 0;
 		for (const p of parts) {
 			out.set(p, o);
 			o += p.length;
 		}
 		parts = [];
+		partsLen = 0;
 		for (const cb of msgCbs) cb(out);
 	});
 	const fireClose = () => {
 		if (closed) return;
 		closed = true;
+		parts = [];
+		queue.length = 0;
 		for (const cb of closeCbs) cb();
 	};
+	/** Graceful by default: queued chunks are handed to SCTP first (bounded wait), then the channel closes. */
+	function close(force = false) {
+		if (!force && !closed && queue.length > 0 && dc.readyState === "open") {
+			if (!closing) setTimeout(() => close(true), 10_000);
+			closing = true;
+			return;
+		}
+		try {
+			dc.close();
+		} catch {}
+		fireClose();
+	}
 	dc.addEventListener("close", fireClose);
 	dc.addEventListener("error", fireClose);
 	return {
 		id,
 		send(data) {
+			if (closed) return;
 			for (let i = 0; i < data.length || i === 0; i += CHUNK) {
 				const chunk = data.subarray(i, i + CHUNK);
 				const framed = new Uint8Array(chunk.length + 1);
 				framed[0] = i + CHUNK < data.length ? 1 : 0;
 				framed.set(chunk, 1);
-				dc.send(framed as unknown as ArrayBuffer);
+				queue.push(framed);
 			}
+			flush();
 		},
 		onMessage: (cb) => void msgCbs.push(cb),
 		onClose: (cb) => void closeCbs.push(cb),
-		close() {
-			try {
-				dc.close();
-			} catch {}
-			fireClose();
-		},
+		close: () => close(),
 	};
 }
 

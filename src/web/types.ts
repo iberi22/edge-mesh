@@ -1,3 +1,6 @@
+import type { Role } from "./admission.js";
+import type { MeshStore } from "./store.js";
+
 /** Minimal vault contract. An adapter comes from @swal/vault/web (not a dependency here). */
 export interface VaultClient {
 	readonly deviceId: string;
@@ -16,6 +19,12 @@ export interface VaultClient {
 	/** Optional: persist the rotation epoch (otherwise it lives in memory + the encrypted doc). */
 	getEpoch?(): Promise<number> | number;
 	setEpoch?(epoch: number): Promise<void> | void;
+	/**
+	 * Optional: persistent, device-local key/value store for the mesh's trust state (pinned root, verified
+	 * admissions, revocations). Used when MeshOptions.store is not given. Without either (and without
+	 * persist:'idb') that state lives in memory only and a reloaded device must be paired again.
+	 */
+	store?: MeshStore;
 }
 
 /** A bidirectional message pipe to one remote peer (WebRTC data channel, loopback, ...). */
@@ -66,6 +75,10 @@ export interface Device {
 	pub: string;
 	name: string;
 	addedAt: number;
+	/** Role from the device's verified admission (set by `Mesh.devices()`). */
+	role?: Role;
+	/** deviceId of the admitting device (set by `Mesh.devices()`). */
+	admittedBy?: string;
 }
 
 export interface RtcOptions {

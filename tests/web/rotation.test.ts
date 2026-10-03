@@ -1,6 +1,6 @@
 import * as Y from "yjs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createLoopbackHub, createMesh, deriveRoomId } from "../../src/web/index.js";
+import { createLoopbackHub, createMesh, deriveRoomId, fingerprint } from "../../src/web/index.js";
 import type { LoopbackHub, LinkTransport } from "../../src/web/index.js";
 import { __setNonceCounter, deriveDocMaterial, deriveSenderKey, openUpdate, sealUpdate } from "../../src/web/crypto.js";
 import { unwrapMeshKey } from "../../src/web/rotation.js";
@@ -93,16 +93,17 @@ async function trio(hub: LoopbackHub, opts: { c?: Opts; a?: Opts; b?: Opts } = {
 }
 
 /** Everything the revoked device could ever read: decrypt each captured frame with the OLD key. */
-async function decryptInbox(inbox: Uint8Array[], oldKey: Uint8Array) {
-	const rid = await deriveRoomId(oldKey, APP, TOPIC, 0);
+async function decryptInbox(inbox: Uint8Array[], oldKey: Uint8Array, instance: string) {
+	const rid = await deriveRoomId(oldKey, APP, TOPIC, 0, instance);
 	const material = await deriveDocMaterial(oldKey, TOPIC);
 	const out: Array<{ kind: number; text: string }> = [];
 	for (const f of inbox) {
-		if (f[0] !== 1) continue;
+		if (f[0] !== 1 && f[0] !== 3) continue; // F_DATA (legacy) / F_SDATA (signed: kind | sigLen(u16) | sig | body)
 		const sender = new TextDecoder().decode(f.subarray(2, 2 + f[1]));
 		try {
 			const plain = await openUpdate(await deriveSenderKey(material, TOPIC, sender), f.subarray(2 + f[1]), `${rid}|${sender}`);
-			out.push({ kind: plain[0], text: new TextDecoder("latin1").decode(plain.subarray(1)) });
+			const body = f[0] === 3 ? plain.subarray(3 + ((plain[1] << 8) | plain[2])) : plain.subarray(1);
+			out.push({ kind: plain[0], text: new TextDecoder("latin1").decode(body) });
 		} catch {}
 	}
 	return out;
@@ -113,7 +114,7 @@ async function revokedCannotLearn(a: Dev, c: Dev, inbox: Uint8Array[], oldKey: U
 	expect(newKey).not.toEqual(oldKey);
 	expect(c.vault.meshKey).toEqual(oldKey);
 	expect(c.mesh.epoch).toBe(0);
-	const seen = await decryptInbox(inbox, oldKey);
+	const seen = await decryptInbox(inbox, oldKey, await fingerprint(a.vault.devicePublicKey)); // instance = owner A
 	expect(seen.length).toBeGreaterThan(0); // sanity: the old key does read the old traffic
 	expect(seen.filter((s) => s.kind === 3)).toHaveLength(0); // no K_ROTATE ever reached it
 	for (const s of seen) {
@@ -128,8 +129,8 @@ async function revokedCannotLearn(a: Dev, c: Dev, inbox: Uint8Array[], oldKey: U
 	expect(wraps).not.toContain("rot:1:devC");
 	for (const k of wraps) {
 		const w = metaOf(a).get(k);
-		await expect(unwrapMeshKey(cEcdh.privateKey, aPub, 1, w.from, "devC", b64uDecode(w.wrap))).rejects.toThrow();
-		await expect(unwrapMeshKey(cEcdh.privateKey, aPub, 1, w.from, k.split(":")[2], b64uDecode(w.wrap))).rejects.toThrow();
+		await expect(unwrapMeshKey(cEcdh.privateKey, aPub, 1, w.from, "devC", b64uDecode(w.wrap), "devC")).rejects.toThrow();
+		await expect(unwrapMeshKey(cEcdh.privateKey, aPub, 1, w.from, k.split(":")[2], b64uDecode(w.wrap), "devC")).rejects.toThrow();
 	}
 }
 

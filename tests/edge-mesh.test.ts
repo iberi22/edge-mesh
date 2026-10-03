@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 import { EdgeMesh, YjsAdapter } from "../src/edge-mesh.js";
+import { createPostQuantumIdentity } from "../src/identity/index.js";
+import { signEnvelope } from "../src/protocol/index.js";
 import { MemoryTransport } from "../src/transport/memory.js";
 import { TIPO_MENSAJE, type NodoId } from "../src/types/index.js";
 
@@ -142,6 +144,29 @@ describe("EdgeMesh", () => {
 		expect(estadoCambiadoSpy).toHaveBeenCalled();
 	});
 
+	it("rejects unsigned or wrongly signed SYNC envelopes by default", async () => {
+		await edgeMesh.iniciar();
+		const remote = createPostQuantumIdentity("remote-peer" as NodoId);
+		const impostor = createPostQuantumIdentity("remote-peer" as NodoId);
+		edgeMesh.registrarClavePublica("remote-peer" as NodoId, remote.exportarPublico());
+		const remoteAdapter = new YjsAdapter();
+		remoteAdapter.getMap("data").set("evil", 1);
+		const envelope = {
+			id: "env-unsigned",
+			tipo: TIPO_MENSAJE.SYNC,
+			origen: "remote-peer" as NodoId,
+			destino: "edge-node" as NodoId,
+			timestamp: Date.now(),
+			version: 1,
+			nonce: "n-unsigned",
+			payload: { docId: "default", tipoSync: "delta", datos: Array.from(remoteAdapter.getState()), clock: Date.now() },
+		};
+		await edgeMesh.recibirEnvelope(envelope);
+		await edgeMesh.recibirEnvelope(await signEnvelope({ ...envelope, id: "env-forged", nonce: "n-forged" } as never, impostor));
+		expect(edgeMesh.yjsAdapter.getMap("data").get("evil")).toBeUndefined();
+		remoteAdapter.destroy();
+	});
+
 	it("should process valid SYNC envelopes and emit syncCompletado", async () => {
 		await edgeMesh.iniciar();
 
@@ -168,8 +193,11 @@ describe("EdgeMesh", () => {
 				clock: Date.now(),
 			},
 		};
+		// signed envelopes are required by default: the sender is a known peer
+		const remote = createPostQuantumIdentity("remote-peer" as NodoId);
+		edgeMesh.registrarClavePublica("remote-peer" as NodoId, remote.exportarPublico());
 
-		await edgeMesh.recibirEnvelope(envelope);
+		await edgeMesh.recibirEnvelope(await signEnvelope(envelope as never, remote));
 
 		// Assert sync is completed and data is updated locally
 		expect(edgeMesh.yjsAdapter.getMap("data").get("foo")).toBe("bar");

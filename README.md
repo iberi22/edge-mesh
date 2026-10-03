@@ -110,6 +110,16 @@ channel.on("mensaje", (event) => {
 channel.enviarMensaje("Hello from node alpha!");
 ```
 
+### Browser mesh (`@iberi22/edge-mesh/web`)
+
+`createMesh({ appId, topic, doc, vault, signaling })` syncs a `Y.Doc` between paired browser devices over WebRTC,
+end-to-end encrypted. Trust is explicit: the first device that hosts a pairing is the owner; others join through a
+QR pairing confirmed with a 6-digit SAS and receive a signed admission (`member` or `admin`). Frames are signed by
+the sender's device key, revocation rotates the key for admitted devices only, and large messages are fragmented.
+Hooks (`authorizeDevice`, `canRotate`, `authorizeUpdate`) and `mesh.channel(kind)` let a permissions layer plug in.
+Give the mesh a persistent device-local store (`persist: "idb"`, `store` or `vault.store`). Details and breaking
+changes: [`docs/WEB-MESH-CRYPTO.md`](docs/WEB-MESH-CRYPTO.md).
+
 ---
 
 ## Feature Matrix
