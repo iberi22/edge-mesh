@@ -508,7 +508,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 	const reject = (reason: string, from?: string) => emit("rejected", { reason, from });
 	const heldAt = new WeakMap<Uint8Array, number>(); // first time a frame was held (kept across replays)
 	function hold(rec: LinkRec, data: Uint8Array) {
-		const h = (rec.held ??= { frames: [], bytes: 0 });
+		if (!rec.held) rec.held = { frames: [], bytes: 0 };
+		const h = rec.held;
 		const t = heldAt.get(data) ?? now();
 		heldAt.set(data, t);
 		h.frames.push({ d: data, t });
@@ -626,8 +627,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 				await Promise.all(targets.map((l) => sendFrame(l, K_CHANNEL, body)));
 			},
 			onMessage(cb) {
-				let set = chanSubs.get(kind);
-				if (!set) chanSubs.set(kind, (set = new Set()));
+				const set = chanSubs.get(kind) ?? new Set();
+				chanSubs.set(kind, set);
 				set.add(cb);
 				mine.add(cb);
 				return () => {

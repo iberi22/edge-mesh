@@ -184,9 +184,15 @@ export function isRevocation(x: unknown): x is Revocation {
 	);
 }
 
-export async function signRevocation(vault: VaultClient, body: Omit<Revocation, "sig" | "v">): Promise<Revocation> {
+export async function signRevocation(
+	vault: VaultClient,
+	body: Omit<Revocation, "sig" | "v">,
+): Promise<Revocation> {
 	const unsigned = { v: 1 as const, ...body };
-	return { ...unsigned, sig: b64uEncode(await vault.sign(revocationBytes(unsigned))) };
+	return {
+		...unsigned,
+		sig: b64uEncode(await vault.sign(revocationBytes(unsigned))),
+	};
 }
 
 /**
@@ -198,14 +204,24 @@ export async function verifyRevocation(
 	r: Revocation,
 	memo: Map<string, Promise<Admission | null>> = new Map(),
 ): Promise<boolean> {
-	if (!isRevocation(r) || r.mid !== ctx.root.mid || r.target === ctx.root.deviceId || r.by === r.target) return false;
+	if (
+		!isRevocation(r) ||
+		r.mid !== ctx.root.mid ||
+		r.target === ctx.root.deviceId ||
+		r.by === r.target
+	)
+		return false;
 	const issuer = await verifyChain(ctx, r.by, memo);
 	if (!issuer) return false;
 	const target = await verifyChain(ctx, r.target, memo);
 	if (!canRevokeRole(issuer.role, target?.role ?? "member")) return false;
 	try {
 		const { sig, ...body } = r;
-		return await ctx.vault.verify(b64uDecode(issuer.pub), revocationBytes(body), b64uDecode(sig));
+		return await ctx.vault.verify(
+			b64uDecode(issuer.pub),
+			revocationBytes(body),
+			b64uDecode(sig),
+		);
 	} catch {
 		return false;
 	}

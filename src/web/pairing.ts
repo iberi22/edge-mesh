@@ -1,6 +1,6 @@
+import type { Admission, TrustRoot } from "./admission.js";
 import { hkdf, importAesKey, openUpdate, sealUpdate } from "./crypto.js";
 import { hmac } from "./rooms.js";
-import type { Admission, TrustRoot } from "./admission.js";
 import type { Device, VaultClient } from "./types.js";
 import { b64uDecode, b64uEncode, bs, equalBytes, fromUtf8, randomBytes, utf8 } from "./util.js";
 
