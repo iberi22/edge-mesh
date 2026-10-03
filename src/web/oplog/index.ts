@@ -13,7 +13,12 @@ export type { OpLogEvents, OpLogOptions, OpVerdict } from "./log.js";
 export { compareOps, OpLog, OpLogError, openOpLog } from "./log.js";
 export type { OpStore, QuarantineStore } from "./store.js";
 export { MemoryOpStore, MemoryQuarantineStore } from "./store.js";
-export type { OpLogChannel, OpLogSync, ServeOptions } from "./sync.js";
+export type {
+	OpLogChannel,
+	OpLogSync,
+	ServeOptions,
+	SyncRateLimit,
+} from "./sync.js";
 export {
 	attachOpLogSync,
 	decodeMessage,

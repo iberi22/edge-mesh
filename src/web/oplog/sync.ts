@@ -16,6 +16,18 @@ export interface ServeOptions {
 	maxBytes?: number;
 	/** max ops answered for one `want` (DoS bound). Default 5000 */
 	maxOps?: number;
+	/** max total bytes answered for one `want` (S7). Default 4 MiB; the peer asks again for the rest */
+	maxWantBytes?: number;
+}
+
+/** S7: per-peer budget of requests that make this device do work (`want`, and `have` asking for a reply). */
+export interface SyncRateLimit {
+	/** requests per peer per window. Default 30 */
+	requests?: number;
+	/** window length in ms. Default 10 000 */
+	windowMs?: number;
+	/** local clock (only used for this local budget). Default Date.now */
+	now?: () => number;
 }
 
 const isObj = (x: unknown): x is Record<string, unknown> =>
@@ -60,6 +72,7 @@ export async function serve(
 	if (want.inst !== log.inst || !Array.isArray(want.ranges)) return [];
 	const maxBytes = opts.maxBytes ?? 60 * 1024;
 	let budget = opts.maxOps ?? 5000;
+	let bytesLeft = opts.maxWantBytes ?? 4 * 1024 * 1024;
 	const frames: OpsMsg[] = [];
 	let cur: OpsMsg = { t: "oplog/ops", v: 1, inst: log.inst, ops: [] };
 	let size = canonicalJson(cur).length;
@@ -71,10 +84,15 @@ export async function serve(
 			typeof r.to !== "number"
 		)
 			continue;
-		if (budget <= 0) break;
+		if (budget <= 0 || bytesLeft <= 0) break;
 		const to = Math.min(r.to, r.from + budget - 1);
 		for (const s of await log.store.range(r.author, Math.max(1, r.from), to)) {
 			const n = canonicalJson(s.op).length + 1;
+			if (n > bytesLeft) {
+				bytesLeft = 0;
+				break;
+			}
+			bytesLeft -= n;
 			if (cur.ops.length && size + n > maxBytes) {
 				frames.push(cur);
 				cur = { t: "oplog/ops", v: 1, inst: log.inst, ops: [] };
@@ -142,18 +160,37 @@ export function attachOpLogSync(
 		/** forward newly stored remote ops to every peer (partial meshes, pairwise qr-sdp links). Default true */
 		relay?: boolean;
 		onIngest?: (from: string, results: IngestResult[]) => void;
+		/** S7: per-peer rate limit of `want` / `have`-with-reply */
+		rate?: SyncRateLimit;
 	} = {},
 ): OpLogSync {
 	const send = (to: string | null, m: OpLogMessage) =>
 		ch.send(to, encodeMessage(m));
+	const maxReq = opts.rate?.requests ?? 30;
+	const windowMs = opts.rate?.windowMs ?? 10_000;
+	const clock = opts.rate?.now ?? Date.now;
+	const usage = new Map<string, { start: number; n: number }>();
+	/** S7: does `from` still have budget for a request that costs us work? */
+	const allow = (from: string): boolean => {
+		const t = clock();
+		let u = usage.get(from);
+		if (!u || t - u.start >= windowMs) {
+			if (!u && usage.size >= 4096) usage.clear();
+			u = { start: t, n: 0 };
+			usage.set(from, u);
+		}
+		u.n++;
+		return u.n <= maxReq;
+	};
 	const handle = async (from: string, data: Uint8Array) => {
 		const m = decodeMessage(data);
 		if (!m || m.inst !== log.inst) return;
 		if (m.t === "oplog/have") {
 			const want = await wantFor(log, m);
 			if (want) send(from, want);
-			if (m.reply) send(from, await haveMessage(log));
+			if (m.reply && allow(from)) send(from, await haveMessage(log));
 		} else if (m.t === "oplog/want") {
+			if (!allow(from)) return;
 			for (const f of await serve(log, m, opts)) send(from, f);
 		} else {
 			const ops = m.ops.slice(0, 10_000);

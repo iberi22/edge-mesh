@@ -66,6 +66,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   snapshot; data arrives by normal sync), and a 16 MiB bounded WebRTC send queue that closes slow links.
 - **S6 re-pairing replaced a pinned root**: the root is pinned on first use per `mid`; the pairing QR (v3) names the
   root (its fingerprint) and the guest checks that the grant chain ends at it.
+- **S7 catch-up amplification** (`web/oplog`): a `want` is answered with at most `maxOps` (5000) ops and
+  `maxWantBytes` (4 MiB); `attachOpLogSync` rate-limits `want` and `have`-with-reply per peer (`rate`: 30 per 10 s).
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,

@@ -1,10 +1,13 @@
-// Regression tests for the security audit of web/trust + web/oplog (A1–A4). Each one reproduces an attack from the
+// Regression tests for the security audit of web/trust + web/oplog (A1–A4, S7). Each one reproduces an attack from the
 // audit and asserts that it no longer works.
 import { describe, expect, it } from "vitest";
 import {
+	attachOpLogSync,
+	encodeMessage,
 	MemoryOpStore,
 	type Op,
 	type OpBody,
+	serve,
 } from "../../src/web/oplog/index.js";
 import {
 	contentId,
@@ -315,6 +318,61 @@ describe("audit regressions: web/trust + web/oplog", () => {
 			true,
 			true,
 		]);
+	});
+
+	it("S7: catch-up answers are capped per want (ops and bytes) and wants are rate-limited per peer", async () => {
+		const w = await world();
+		const a = await ready(w, w.waiter);
+		for (let i = 0; i < 60; i++)
+			await a.log.append(
+				op(`o${i}`, { payload: { table: i, note: "x".repeat(200) } }),
+			);
+		const want = {
+			t: "oplog/want" as const,
+			v: 1 as const,
+			inst: a.log.inst,
+			ranges: [{ author: w.waiter.fp, from: 1, to: 60 }],
+		};
+		const all = (await serve(a.log, want)).flatMap((f) => f.ops);
+		expect(all).toHaveLength(60);
+		const capped = (await serve(a.log, want, { maxWantBytes: 4096 })).flatMap(
+			(f) => f.ops,
+		);
+		expect(capped.length).toBeGreaterThan(0);
+		expect(capped.length).toBeLessThan(15);
+		// a peer flooding wants gets at most `requests` answers per window
+		const sent: Array<{ to: string | null; n: number }> = [];
+		let deliver: ((from: string, data: Uint8Array) => void) | null = null;
+		const t = 1_000;
+		attachOpLogSync(
+			a.log,
+			{
+				send: (to, data) => sent.push({ to, n: data.length }),
+				onMessage: (cb) => {
+					deliver = cb;
+					return () => {};
+				},
+			},
+			{ relay: false, rate: { requests: 5, windowMs: 10_000, now: () => t } },
+		);
+		for (let i = 0; i < 50; i++)
+			(deliver as unknown as (f: string, d: Uint8Array) => void)(
+				"evil",
+				encodeMessage(want),
+			);
+		await new Promise((r) => setTimeout(r, 200));
+		const answered = sent.filter((x) => x.to === "evil").length;
+		expect(answered).toBeGreaterThan(0);
+		expect(answered).toBeLessThanOrEqual(
+			5 * Math.ceil((60 * 400) / (60 * 1024)) + 5,
+		);
+		const other = sent.length;
+		(deliver as unknown as (f: string, d: Uint8Array) => void)(
+			"honest",
+			encodeMessage(want),
+		);
+		await new Promise((r) => setTimeout(r, 50));
+		expect(sent.length).toBeGreaterThan(other); // other peers are not affected
 	});
 });
 

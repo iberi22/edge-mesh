@@ -1,4 +1,4 @@
-// Regression tests for the security audit of web/provider (P1–P6). Each one reproduces an attack from the audit
+// Regression tests for the security audit of web/provider (P1–P6, plus S1, S5, S6). Each one reproduces an attack
 // and asserts that it no longer works.
 import { describe, expect, it } from "vitest";
 import * as Y from "yjs";
