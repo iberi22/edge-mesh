@@ -155,7 +155,7 @@ describe("audit regressions: web/provider", () => {
 		for (const x of [a, b, c2]) x.mesh.destroy();
 	});
 
-	open(
+	it(
 		"P3 (B3): re-pairing an online device into ANOTHER mesh is refused and leaks nothing",
 		async () => {
 			const hub = createLoopbackHub();
@@ -176,6 +176,36 @@ describe("audit regressions: web/provider", () => {
 			for (const x of [a, b, e, f]) x.mesh.destroy();
 		},
 	);
+
+	it("P3 (B3): a device moves to another mesh only with a fresh doc, and then syncs only with the new mesh", async () => {
+		const hub = createLoopbackHub();
+		const a = await makeDev("devA", hub);
+		const b = await makeDev("devB", hub);
+		await pair(a, b);
+		a.doc.getMap("secret").set("x-recipe", "mesh X private data");
+		await until(() => b.doc.getMap("secret").get("x-recipe") !== undefined);
+		const e = await makeDev("devE", hub);
+		const f = await makeDev("devF", hub);
+		await pair(e, f);
+		b.mesh.destroy();
+		a.mesh.destroy(); // mesh X is out of reach (e.g. the device moved to restaurant Y)
+		// same vault + local store (pinned to mesh X), but a fresh doc: allowed to move
+		const b2 = await makeDev("devB", hub, undefined, { vault: b.vault });
+		await pair(e, b2);
+		expect(b2.mesh.root?.mid).toBe(e.mesh.root?.mid);
+		expect(b2.mesh.devices().map((d) => d.deviceId)).not.toContain(a.id);
+		f.doc.getMap("y").set("hello", "from f");
+		await until(() => b2.doc.getMap("y").get("hello") === "from f");
+		b2.doc.getMap("y").set("back", "from b2");
+		await until(() => f.doc.getMap("y").get("back") === "from b2");
+		const a2 = await makeDev("devA", hub, undefined, { doc: a.doc, vault: a.vault }); // X comes back
+		await settle(300);
+		expect(f.doc.getMap("secret").get("x-recipe")).toBeUndefined();
+		expect(b2.doc.getMap("secret").get("x-recipe")).toBeUndefined();
+		expect(a2.doc.getMap("y").get("hello")).toBeUndefined();
+		expect(a2.mesh.peers).not.toContain(b2.id);
+		for (const x of [a2, b2, e, f]) x.mesh.destroy();
+	});
 
 	for (const sk of [0, 3_600_000])
 		(sk === 0 ? it : open)(

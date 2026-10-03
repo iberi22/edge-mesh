@@ -219,7 +219,9 @@ export function createMesh(opts: MeshOptions): Mesh {
 	let epoch = 0;
 	let status: MeshStatus = "off";
 	const links = new Set<LinkRec>();
-	const senderKeys = new Map<string, CryptoKey>(); // `${epoch}|${deviceId}` -> per-sender AES-GCM key
+	// per-sender AES-GCM keys, cached PER KEY MATERIAL (never by epoch number: two meshes, or two concurrent
+	// rotations, can share an epoch number). Reset by loadKeys (B3).
+	let senderKeys = new WeakMap<Uint8Array, Map<string, Promise<CryptoKey>>>();
 	const revokedIds = new Map<string, number>(); // deviceId -> revocation time (persisted in the local store)
 	const store: MeshStore =
 		opts.store ??
@@ -423,10 +425,15 @@ export function createMesh(opts: MeshOptions): Mesh {
 	}
 
 	// ---- keys ----
-	async function senderKey(material: Uint8Array, ep: number, deviceId: string): Promise<CryptoKey> {
-		const k = `${ep}|${deviceId}`;
-		let key = senderKeys.get(k);
-		if (!key) senderKeys.set(k, (key = await deriveSenderKey(material, topicName, deviceId)));
+	function senderKey(material: Uint8Array, deviceId: string): Promise<CryptoKey> {
+		let m = senderKeys.get(material);
+		if (!m) senderKeys.set(material, (m = new Map()));
+		let key = m.get(deviceId);
+		if (!key) {
+			if (m.size >= 4096) m.clear();
+			key = deriveSenderKey(material, topicName, deviceId);
+			m.set(deviceId, key);
+		}
 		return key;
 	}
 	const localNum = (x: unknown) => (typeof x === "number" && Number.isSafeInteger(x) && x >= 0 ? x : 0);
@@ -435,6 +442,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		await store.set("epoch", n);
 	}
 	async function loadKeys(raw?: Uint8Array) {
+		senderKeys = new WeakMap(); // B3: nothing derived from a previous mesh key survives a key change
 		meshKey = raw ?? (await vault.getOrCreateMeshKey());
 		// B2: the epoch is device-local state (vault / local store), advanced only by a verified rotation or by the
 		// authenticated pairing grant. It is NEVER read from the shared doc, which every member can write.
@@ -479,7 +487,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const mat = lg ? lg.material : docMat;
 		if (!mat || rec.closing) return;
 		const rid = lg ? lg.rid : dataRid;
-		const key = await senderKey(mat, lg ? lg.epoch : epoch, vault.deviceId);
+		const key = await senderKey(mat, vault.deviceId);
 		const id = utf8(vault.deviceId);
 		let inner: Uint8Array;
 		if (signFrames) {
@@ -556,7 +564,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const rid = lg ? lg.rid : dataRid;
 		let plain: Uint8Array;
 		try {
-			const key = await senderKey(mat, lg ? lg.epoch : epoch, sender);
+			const key = await senderKey(mat, sender);
 			plain = await openUpdate(key, data.subarray(2 + idLen), `${rid}|${sender}`);
 		} catch {
 			return; // wrong key / tampered / other epoch: drop silently
@@ -1017,10 +1025,32 @@ export function createMesh(opts: MeshOptions): Mesh {
 		setStatus();
 	}
 
+	const MOVE_MESH_ERR =
+		"this device belongs to another mesh: to join a different one, create a new Mesh with a fresh Y.Doc";
+	/** Only this device's own bookkeeping (dev/<self>, ecdh/<self>) and no shared content at all. */
+	function docIsFresh(): boolean {
+		for (const [name, t] of doc.share) {
+			if (name === "meta") {
+				for (const k of meta.keys()) if (k !== DEV + vault.deviceId && k !== ECDH_PREFIX + vault.deviceId) return false;
+				continue;
+			}
+			const ty = t as unknown as { _start: unknown; _map: Map<string, unknown> };
+			if (ty._start !== null || ty._map.size > 0) return false;
+		}
+		return true;
+	}
+
 	async function pairJoin(encoded: string, o: { confirmSas?: (code: string) => Promise<boolean> | boolean } = {}) {
 		await ready;
 		const p: PairPayload = decodePairPayload(encoded);
 		if (p.appId !== appId || p.topic !== topicName) throw new Error("pairing payload is for a different app/topic");
+		// B3: a device moving to ANOTHER mesh would merge this mesh's doc into it (and keep serving it). Only a fresh
+		// doc may change meshes: create a new Mesh with a new Y.Doc for that.
+		const moving = root !== null && root.mid !== p.mid;
+		if (moving && !docIsFresh()) throw new Error(MOVE_MESH_ERR);
+		// ...and while moving, the old mesh must not fill the fresh doc: go offline from it (resumed on failure)
+		const resumeOld = moving && running;
+		if (resumeOld) stopNetwork();
 		const confirm =
 			o.confirmSas ??
 			((code: string) =>
@@ -1049,10 +1079,21 @@ export function createMesh(opts: MeshOptions): Mesh {
 			if (!mine || mine.pub !== b64uEncode(vault.devicePublicKey)) throw new Error("pairing grant: invalid admission for this device");
 			const issuer = await verifyChain(gctx, mine.by, memo);
 			if (!issuer || issuer.pub !== p.dpk) throw new Error("pairing grant: admission not issued by the paired host");
-			if (root?.mid !== g.root.mid) {
+			if (g.root.mid !== p.mid || g.mid !== p.mid) throw new Error("pairing grant: mesh id does not match the pairing code");
+			const switching = root?.mid !== g.root.mid;
+			if (switching && root && !docIsFresh()) throw new Error(MOVE_MESH_ERR);
+			// leave the current network BEFORE touching keys or the doc: nothing of one mesh may reach the other
+			if (running) stopNetwork();
+			if (switching) {
 				admCache = {};
 				ecdhOk = {};
 				revokedIds.clear();
+				trusted = new Map();
+				admittedAt = new Map();
+				selfAdm = null;
+				legacy.clear();
+				await store.set("ecdh", ecdhOk);
+				await persistRevoked();
 			}
 			root = g.root;
 			await store.set("root", root);
@@ -1076,13 +1117,13 @@ export function createMesh(opts: MeshOptions): Mesh {
 			await publishEcdh();
 			await refreshTrust();
 			endPairing(rid);
-			if (running) stopNetwork(); // re-pairing while online (e.g. after a revocation): rejoin under the new key
 			emit("paired", g.hostDevice);
 			await start();
 			return { host: g.hostDevice, extra: g.extra };
 		} catch (e) {
 			clearTimeout(timeout);
 			endPairing(rid);
+			if (resumeOld && !running && root?.mid !== p.mid) void start().catch(err);
 			throw e;
 		}
 	}

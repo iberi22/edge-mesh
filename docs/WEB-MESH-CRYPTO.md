@@ -6,7 +6,8 @@
 - Each sender seals with its OWN AES-256-GCM key:
   `senderKey = HKDF(docMaterial, "swal-doc/v1|" + topic + "|sender|" + deviceId)`.
   Receivers derive the key from the sender `deviceId` in the frame header (also bound in the AAD
-  `rid|deviceId`). Subkeys are cached per `(epoch, deviceId)`.
+  `rid|deviceId`). Subkeys are cached per **key material** (not per epoch number, which two meshes or two
+  concurrent rotations can share), and the cache is reset whenever the mesh key changes.
 - Nonce = 8-byte random prefix + 4-byte big-endian counter, per sender key. The prefix is regenerated
   before the counter would wrap, so a (key, nonce) pair is never reused, not even by two reloads of the
   same device, and a 64-bit prefix collision between two senders is harmless because their keys differ.
@@ -48,6 +49,12 @@ The shared `meta` map is writable by every member, so nothing in it is trusted b
   signature over `["swal-pair-ack/v1", transcript, deviceId, pub, name]` (the SAS transcript hash binds it to this
   session). The host admits nobody unless `deviceId = fingerprint(pub)` and the signature verifies, and it refuses a
   guest claiming its own or the root's identity, or an id already admitted under another key.
+- Changing meshes: `pairJoin` into a mesh with another `mid` is refused unless the local doc is **fresh** (no shared
+  content; only this device's own `dev/` and `ecdh/` entries), because the doc of the old mesh would otherwise be
+  merged into (and served to) the new one. To move a device, create a new `Mesh` with a new `Y.Doc` (same vault and
+  store are fine); while such a move is in progress the device goes offline from the old mesh (and resumes it if the
+  pairing fails). On success all trust state of the old mesh (admissions, ECDH pins, revocations, retired rooms,
+  sender keys) is dropped before the new key is installed, and nothing is sent until the network restarts.
 - Pairing grant: besides the mesh key it carries the root and the guest's admission chain; the guest checks that
   the chain is valid and that its issuer's key is the host key that signed the QR payload. `pairHost({ role,
   extra })` lets the app attach data for the guest (e.g. a signed capability grant); `pairJoin` returns

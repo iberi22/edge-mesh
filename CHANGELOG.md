@@ -31,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an id admitted under another key.
 - **B2 epoch hijack**: the epoch is never derived from the shared doc any more (no `meta.epoch`); it lives in the
   vault / device-local store and only moves through the pairing grant or a verified rotation.
+- **B3 re-pairing leaked the old mesh**: sender keys are cached per key material and reset on every key change;
+  `pairJoin` into another mesh (`mid`) is refused unless the local doc is fresh, the old network is stopped before
+  any key/doc change, and the old mesh's trust state is dropped. The grant's `mid` must match the pairing code.
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,
