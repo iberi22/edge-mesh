@@ -661,7 +661,21 @@ describe("audit regressions: web/provider", () => {
 		await a.mesh.revoke(x1.id); // concurrent: epoch 1 on both sides, x1's rotation is void (issuer revoked)
 		await p1;
 		const rest = [a, x2, c];
-		await until(() => sameKey(rest) && a.mesh.epoch === 2, 8000);
+		// one key for the rest, without x1 nor m1 (at epoch 1 if m1's revocation reached the owner before it rotated,
+		// else after a re-key at epoch 2)
+		await until(
+			() =>
+				sameKey(rest) &&
+				a.mesh.epoch >= 1 &&
+				[x1, m1].every(
+					(o) =>
+						keyOf(o) !== keyOf(a) &&
+						rest.every(
+							(d) => !d.mesh.devices().some((x) => x.deviceId === o.id),
+						),
+				),
+			8000,
+		);
 		await settle(300);
 		expect(sameKey(rest)).toBe(true);
 		for (const out of [x1, m1]) {

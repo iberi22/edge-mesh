@@ -85,6 +85,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the cap with no drain progress for `stallMs` (15 s).
 - **SF1 epoch jump bricked the mesh**: epochs are bounded to `2^31 - 1` everywhere (`MAX_EPOCH`) and a rotation may be
   at most `MAX_EPOCH_SKIP` (8) ahead of the local epoch; stragglers are served in steps.
+- **SF2 a revoked admin evicted members through the retired room**: rotation frames of a revoked device are ignored
+  on retired-room links; on live links at most 4 per sender, and only its own revocations at its revocation epoch of
+  targets its rotation cuts off (8 per frame); failed records are negatively cached (R1b). Verified revocations are
+  republished to the shared doc so membership views converge (V2).
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,

@@ -195,9 +195,18 @@ Authorization never compares clocks across devices. An admission carries the iss
 with a **later** epoch. A re-admission issued at or after the revocation epoch is valid again; the revocation record
 stays and keeps voiding the older admissions. A revocation counts if its issuer's chain was valid **as of
 `epoch - 1`** (the epoch it rotated from) and the role ladder allowed it then, so concurrent revocations (an admin
-revoking a member while the owner revokes that admin) all count. Limitation: a revoked admin that colludes with a
-current member can still get a back-dated revocation (`epoch` <= its own revocation) of a member it could revoke
-before into the doc; it exposes no key or data and the owner re-admits the member.
+revoking a member while the owner revokes that admin) all count.
+
+What a revoked device can still do with revocations (SF2): it keeps the old key, so it can still reach devices through
+the retired rooms. Its rotation frames are ignored there entirely. On a live link (in practice only right around its
+own revocation) at most 4 of its rotation frames are considered, and from each only revocations it signed at the epoch
+of its own revocation, of devices that rotation cuts off (what it may legitimately have done concurrently), at most 8
+per frame. Records that fail verification are remembered and never verified twice. What remains possible: a revoked
+admin, **without any colluder**, can get such a revocation (dated at its own revocation epoch) of members it could
+revoke back then accepted, but only while a live link to it still exists; and a revoked admin plus a colluding member
+can put such a record into the shared doc. It exposes no key or data, and the owner re-admits the member. Every device
+republishes the revocations it verified into the shared doc (`rev/<id>:<epoch>`), so all devices end up with the same
+membership view.
 
 ## Signaling cap
 

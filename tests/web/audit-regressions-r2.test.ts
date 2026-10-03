@@ -144,9 +144,16 @@ describe("audit round 2 regressions: web/provider", () => {
 		const c = ms[3] as Dev;
 		await Promise.all(xs.map((x, i) => x.mesh.revoke((ms[i] as Dev).id)));
 		const rest = [a, ...xs, c];
-		await until(() => sameKey(rest), 10_000);
+		const out3 = ms.slice(0, 3);
+		const done = () =>
+			sameKey(rest) &&
+			out3.every(
+				(o) =>
+					keyOf(o) !== keyOf(a) && rest.every((d) => !ids(d).includes(o.id)),
+			);
+		await until(done, 15_000);
 		await settle(1000);
-		expect(sameKey(rest)).toBe(true);
+		await until(done, 10_000); // stable, not an intermediate state
 		expect(a.mesh.epoch).toBeLessThanOrEqual(4);
 		for (const out of ms.slice(0, 3)) {
 			expect(keyOf(out)).not.toBe(keyOf(a));
@@ -197,8 +204,16 @@ describe("audit round 2 regressions: web/provider", () => {
 			for (const d of [...first, ...second]) H.set(d.id, await re(d, h));
 			const get = (d: Dev) => H.get(d.id) as Dev;
 			const rest = [get(a), get(x1), get(x2), get(c)];
-			await until(() => sameKey(rest), 15_000);
+			const done = () =>
+				sameKey(rest) &&
+				[get(m1), get(m2)].every(
+					(o) =>
+						keyOf(o) !== keyOf(get(a)) &&
+						rest.every((d) => !ids(d).includes(o.id)),
+				);
+			await until(done, 15_000);
 			await settle(500);
+			await until(done, 10_000); // stable, not an intermediate state
 			expect(sameKey(rest)).toBe(true);
 			for (const out of [get(m1), get(m2)]) {
 				expect(keyOf(out)).not.toBe(keyOf(get(a)));
@@ -208,183 +223,171 @@ describe("audit round 2 regressions: web/provider", () => {
 			for (const d of H.values()) d.mesh.destroy();
 		}, 45_000);
 
-	open(
-		"SF2: a REVOKED admin cannot evict members through the retired room's evidence path",
-		async () => {
-			const hub = createLoopbackHub();
-			const { a, xs, ms, all } = await mesh(hub, ["x1"], ["m1", "m2", "devC"]);
-			const x1 = xs[0] as Dev;
-			const [m1, m2, c] = ms as [Dev, Dev, Dev];
-			const k0 = (x1.vault.meshKey as Uint8Array).slice();
-			const mid = a.mesh.root?.mid as string;
-			const instance = a.mesh.namespace.split("/")[1] as string;
-			await a.mesh.revoke(x1.id); // epoch 1: x1 is out
-			await until(
-				() =>
-					[a, m1, m2, c].every(
-						(d) => d.mesh.epoch === 1 && keyOf(d) === keyOf(a),
-					),
-				5000,
-			);
-			await settle(300);
-			x1.mesh.destroy();
-			const { rid0, mat0, lks } = await retiredRoomLinks(
-				hub,
-				x1,
-				k0,
-				instance,
-				3,
-			);
-			const revs = [];
-			for (const m of [m1, m2])
-				revs.push(
-					await signRevocation(x1.vault, {
-						mid,
-						target: m.id,
-						by: x1.id,
-						epoch: 1,
-					}),
-				);
-			const body = utf8(
-				JSON.stringify({
-					rot: {
-						v: 1,
-						epoch: 1,
-						from: x1.id,
-						revoked: [m1.id, m2.id],
-						to: [],
-						n: "x",
-						revs,
-					},
-					to: "",
-					wrap: "",
+	it("SF2: a REVOKED admin cannot evict members through the retired room's evidence path", async () => {
+		const hub = createLoopbackHub();
+		const { a, xs, ms, all } = await mesh(hub, ["x1"], ["m1", "m2", "devC"]);
+		const x1 = xs[0] as Dev;
+		const [m1, m2, c] = ms as [Dev, Dev, Dev];
+		const k0 = (x1.vault.meshKey as Uint8Array).slice();
+		const mid = a.mesh.root?.mid as string;
+		const instance = a.mesh.namespace.split("/")[1] as string;
+		await a.mesh.revoke(x1.id); // epoch 1: x1 is out
+		await until(
+			() =>
+				[a, m1, m2, c].every(
+					(d) => d.mesh.epoch === 1 && keyOf(d) === keyOf(a),
+				),
+			5000,
+		);
+		await settle(300);
+		x1.mesh.destroy();
+		const { rid0, mat0, lks } = await retiredRoomLinks(
+			hub,
+			x1,
+			k0,
+			instance,
+			3,
+		);
+		const revs = [];
+		for (const m of [m1, m2])
+			revs.push(
+				await signRevocation(x1.vault, {
+					mid,
+					target: m.id,
+					by: x1.id,
+					epoch: 1,
 				}),
 			);
-			const sess = randomBytes(8);
+		const body = utf8(
+			JSON.stringify({
+				rot: {
+					v: 1,
+					epoch: 1,
+					from: x1.id,
+					revoked: [m1.id, m2.id],
+					to: [],
+					n: "x",
+					revs,
+				},
+				to: "",
+				wrap: "",
+			}),
+		);
+		const sess = randomBytes(8);
+		for (const l of lks)
+			l.send(await craft(x1.vault, mat0, rid0, 3, body, sess, 1));
+		await settle(1500);
+		expect(a.mesh.epoch).toBe(1);
+		expect(ids(a)).toEqual(expect.arrayContaining([m1.id, m2.id]));
+		expect(ids(c)).toEqual(expect.arrayContaining([m1.id, m2.id]));
+		expect(keyOf(m1)).toBe(keyOf(a));
+		for (const d of all) d.mesh.destroy();
+	}, 20_000);
+
+	it("SF2/R1b: a revoked device cannot make remaining devices verify floods of revocation records", async () => {
+		const hub = createLoopbackHub();
+		const { a, xs, all } = await mesh(hub, ["x1"], ["m1"]);
+		const x1 = xs[0] as Dev;
+		const k0 = (x1.vault.meshKey as Uint8Array).slice();
+		const mid = a.mesh.root?.mid as string;
+		const instance = a.mesh.namespace.split("/")[1] as string;
+		await a.mesh.revoke(x1.id);
+		await until(() => a.mesh.epoch === 1);
+		x1.mesh.destroy();
+		let verifies = 0;
+		const orig = a.vault.verify.bind(a.vault);
+		a.vault.verify = (p, d, s) => {
+			verifies++;
+			return orig(p, d, s);
+		};
+		const { rid0, mat0, lks } = await retiredRoomLinks(
+			hub,
+			x1,
+			k0,
+			instance,
+			1,
+		);
+		const fake = await signRevocation(x1.vault, {
+			mid,
+			target: x1.id,
+			by: x1.id,
+			epoch: 1,
+		});
+		const bad = Array.from({ length: 64 }, () => ({
+			...fake,
+			target: b64uEncode(randomBytes(17)).slice(0, 22),
+		}));
+		const body = utf8(
+			JSON.stringify({
+				rot: {
+					v: 1,
+					epoch: 1,
+					from: x1.id,
+					revoked: [x1.id],
+					to: [],
+					n: "x",
+					revs: bad,
+				},
+				to: "",
+				wrap: "",
+			}),
+		);
+		const before = verifies;
+		const sess = randomBytes(8);
+		for (let i = 0; i < 20; i++)
 			for (const l of lks)
-				l.send(await craft(x1.vault, mat0, rid0, 3, body, sess, 1));
-			await settle(1500);
-			expect(a.mesh.epoch).toBe(1);
-			expect(ids(a)).toEqual(expect.arrayContaining([m1.id, m2.id]));
-			expect(ids(c)).toEqual(expect.arrayContaining([m1.id, m2.id]));
-			expect(keyOf(m1)).toBe(keyOf(a));
-			for (const d of all) d.mesh.destroy();
-		},
-		20_000,
-	);
+				l.send(await craft(x1.vault, mat0, rid0, 3, body, sess, i + 1));
+		await settle(1500);
+		expect(verifies - before).toBeLessThan(64);
+		for (const d of all) d.mesh.destroy();
+	}, 20_000);
 
-	open(
-		"SF2/R1b: a revoked device cannot make remaining devices verify floods of revocation records",
-		async () => {
-			const hub = createLoopbackHub();
-			const { a, xs, all } = await mesh(hub, ["x1"], ["m1"]);
-			const x1 = xs[0] as Dev;
-			const k0 = (x1.vault.meshKey as Uint8Array).slice();
-			const mid = a.mesh.root?.mid as string;
-			const instance = a.mesh.namespace.split("/")[1] as string;
-			await a.mesh.revoke(x1.id);
-			await until(() => a.mesh.epoch === 1);
-			x1.mesh.destroy();
-			let verifies = 0;
-			const orig = a.vault.verify.bind(a.vault);
-			a.vault.verify = (p, d, s) => {
-				verifies++;
-				return orig(p, d, s);
-			};
-			const { rid0, mat0, lks } = await retiredRoomLinks(
-				hub,
-				x1,
-				k0,
-				instance,
-				1,
-			);
-			const fake = await signRevocation(x1.vault, {
-				mid,
-				target: x1.id,
-				by: x1.id,
-				epoch: 1,
-			});
-			const bad = Array.from({ length: 64 }, () => ({
-				...fake,
-				target: b64uEncode(randomBytes(17)).slice(0, 22),
-			}));
-			const body = utf8(
-				JSON.stringify({
-					rot: {
-						v: 1,
-						epoch: 1,
-						from: x1.id,
-						revoked: [x1.id],
-						to: [],
-						n: "x",
-						revs: bad,
-					},
-					to: "",
-					wrap: "",
-				}),
-			);
-			const before = verifies;
-			const sess = randomBytes(8);
-			for (let i = 0; i < 20; i++)
-				for (const l of lks)
-					l.send(await craft(x1.vault, mat0, rid0, 3, body, sess, i + 1));
-			await settle(1500);
-			expect(verifies - before).toBeLessThan(64);
-			for (const d of all) d.mesh.destroy();
-		},
-		20_000,
-	);
-
-	open(
-		"V2 (note): a late revocation from a void rotation never leaves devices with different membership views",
-		async () => {
-			const hub = createLoopbackHub();
-			const { a, xs, ms, all } = await mesh(hub, ["x1"], ["m1", "devC"]);
-			const x1 = xs[0] as Dev;
-			const [m1, c] = ms as [Dev, Dev];
-			const k0 = (x1.vault.meshKey as Uint8Array).slice();
-			const mid = a.mesh.root?.mid as string;
-			const instance = a.mesh.namespace.split("/")[1] as string;
-			await a.mesh.revoke(x1.id);
-			await until(() => sameKey([a, m1, c]) && a.mesh.epoch === 1);
-			x1.mesh.destroy();
-			const { rid0, mat0, lks } = await retiredRoomLinks(
-				hub,
-				x1,
-				k0,
-				instance,
-				2,
-			);
-			const rev = await signRevocation(x1.vault, {
-				mid,
-				target: m1.id,
-				by: x1.id,
-				epoch: 1,
-			});
-			const body = utf8(
-				JSON.stringify({
-					rot: {
-						v: 1,
-						epoch: 1,
-						from: x1.id,
-						revoked: [m1.id],
-						to: [],
-						n: "x",
-						revs: [rev],
-					},
-					to: "",
-					wrap: "",
-				}),
-			);
-			const toC = lks.find((l) => l.id === c.id) as PeerLink;
-			toC.send(await craft(x1.vault, mat0, rid0, 3, body, randomBytes(8), 1));
-			await settle(2000);
-			expect(ids(c).includes(m1.id)).toBe(ids(a).includes(m1.id));
-			expect(keyOf(m1) === keyOf(a)).toBe(ids(a).includes(m1.id));
-			for (const d of all) d.mesh.destroy();
-		},
-		30_000,
-	);
+	it("V2 (note): a late revocation from a void rotation never leaves devices with different membership views", async () => {
+		const hub = createLoopbackHub();
+		const { a, xs, ms, all } = await mesh(hub, ["x1"], ["m1", "devC"]);
+		const x1 = xs[0] as Dev;
+		const [m1, c] = ms as [Dev, Dev];
+		const k0 = (x1.vault.meshKey as Uint8Array).slice();
+		const mid = a.mesh.root?.mid as string;
+		const instance = a.mesh.namespace.split("/")[1] as string;
+		await a.mesh.revoke(x1.id);
+		await until(() => sameKey([a, m1, c]) && a.mesh.epoch === 1);
+		x1.mesh.destroy();
+		const { rid0, mat0, lks } = await retiredRoomLinks(
+			hub,
+			x1,
+			k0,
+			instance,
+			2,
+		);
+		const rev = await signRevocation(x1.vault, {
+			mid,
+			target: m1.id,
+			by: x1.id,
+			epoch: 1,
+		});
+		const body = utf8(
+			JSON.stringify({
+				rot: {
+					v: 1,
+					epoch: 1,
+					from: x1.id,
+					revoked: [m1.id],
+					to: [],
+					n: "x",
+					revs: [rev],
+				},
+				to: "",
+				wrap: "",
+			}),
+		);
+		const toC = lks.find((l) => l.id === c.id) as PeerLink;
+		toC.send(await craft(x1.vault, mat0, rid0, 3, body, randomBytes(8), 1));
+		await settle(2000);
+		expect(ids(c).includes(m1.id)).toBe(ids(a).includes(m1.id));
+		expect(keyOf(m1) === keyOf(a)).toBe(ids(a).includes(m1.id));
+		for (const d of all) d.mesh.destroy();
+	}, 30_000);
 
 	for (const withFakes of [true, false])
 		(withFakes ? open : it)(

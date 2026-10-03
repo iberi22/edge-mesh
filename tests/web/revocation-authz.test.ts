@@ -63,7 +63,7 @@ describe("H2: only authorized issuers revoke / rotate", () => {
 		// an insider rewrites the `revoked` field of the stored rotation (here: naming D) to make B cut off another member
 		const w = storedWraps(d, 1).find((x) => x.to === b.id)!;
 		metaOf(d).set(`rotrec:${w.id}`, { ...w.rec, revoked: [d.id] });
-		await until(() => metaOf(a).get(`rotrec:${w.id}`).revoked[0] === d.id);
+		await until(() => metaOf(a).get(`rotrec:${w.id}`)?.revoked?.[0] === d.id);
 		const revokedSeen: string[] = [];
 		const b2 = await makeDev("devB", hub, undefined, { doc: b.doc, vault: b.vault });
 		const rejected: string[] = [];

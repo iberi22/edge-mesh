@@ -740,9 +740,10 @@ export function createMesh(opts: MeshOptions): Mesh {
 			body = plain.subarray(15 + sigLen);
 			sess = b64uEncode(sessBytes);
 			if (revoked) {
-				// a revoked device is never listened to... except for the signed revocations its rotation carries: they
-				// verify on their own and must count (concurrent revocations are merged, B4)
-				if (kind === K_ROTATE) await serialRot(() => rotationEvidence(body));
+				// a revoked device is never listened to... except, on a LIVE link, for the revocations its rotation carries
+				// that it signed concurrently with its own revocation (B4 union). Never through a retired room (SF2): a
+				// revoked device keeps the old key and could otherwise back-date revocations of everybody.
+				if (kind === K_ROTATE && !lg) await serialRot(() => rotationEvidence(body, sender));
 				return;
 			}
 			const pub = trusted.get(sender)?.pub;
@@ -865,13 +866,20 @@ export function createMesh(opts: MeshOptions): Mesh {
 		if (!list.some((x) => x.sig === r.sig)) revRecs.set(r.target, [...list, r].slice(-4));
 	}
 	/** Verify and record the signed revocations a rotation carries. They count whatever happens to its key. */
-	async function ingestRevs(revs: readonly unknown[]): Promise<boolean> {
+	const badRevs = new Set<string>(); // SF2/R1b: signatures of records that did not verify (never checked twice)
+	async function ingestRevs(revs: readonly unknown[], max = 16): Promise<boolean> {
 		if (!root) return false;
 		let changed = false;
-		for (const r of revs.slice(0, 64)) {
-			if (!isRevocation(r) || revokedIds.get(r.target)?.includes(r.epoch)) continue;
-			if (!(await verifyRevocation(chainCtx(root), r))) continue;
+		for (const r of revs.slice(0, max)) {
+			if (!isRevocation(r) || revokedIds.get(r.target)?.includes(r.epoch) || badRevs.has(r.sig)) continue;
+			if (!(await verifyRevocation(chainCtx(root), r))) {
+				if (badRevs.size >= 4096) badRevs.clear();
+				badRevs.add(r.sig);
+				continue;
+			}
 			keepRevRecord(r);
+			// note V2: republish what we verified, so devices that never saw the rotation carrying it learn it too
+			if (!meta.has(revKey(r))) meta.set(revKey(r), r);
 			changed = addRevocation(r.target, r.epoch) || changed;
 		}
 		if (changed) {
@@ -881,10 +889,22 @@ export function createMesh(opts: MeshOptions): Mesh {
 		}
 		return changed;
 	}
-	/** A rotation from a device we already consider revoked: only its revocation records are taken into account. */
-	async function rotationEvidence(body: Uint8Array) {
+	const evidenceSeen = new Map<string, number>(); // SF2: evidence frames accepted per revoked sender
+	/**
+	 * A rotation from a device we already consider revoked: only the revocations IT signed at the epoch of its own
+	 * revocation, of devices that rotation cuts off, are taken into account (what it may have done concurrently).
+	 */
+	async function rotationEvidence(body: Uint8Array, sender: string) {
 		const m = parseRotate(body);
-		if (m && (await ingestRevs(m.rot.revs))) await coverCheck();
+		if (!m || m.rot.from !== sender) return;
+		const n = evidenceSeen.get(sender) ?? 0;
+		if (n >= 4) return; // a handful per revoked device is all a concurrent rotation needs
+		evidenceSeen.set(sender, n + 1);
+		const own = revokedIds.get(sender) ?? [];
+		const revs = m.rot.revs.filter(
+			(r) => isRevocation(r) && r.by === sender && own.includes(r.epoch) && m.rot.revoked.includes(r.target),
+		);
+		if (await ingestRevs(revs, 8)) await coverCheck();
 	}
 	/** Its issuer was revoked at an epoch <= the rotation's: the rotation is void (its key must not be used). */
 	function rotIssuerRevoked(r: { from: string; epoch: number }): boolean {
