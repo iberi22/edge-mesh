@@ -217,7 +217,16 @@ const revKey = (r: { target: string; epoch: number }) => `${REV_PREFIX}${r.targe
 const REVRECORDS_KEY = "revrecords";
 /** local store: cuts not backed by a built-in-valid record (custom `canRotate` hook) */
 const LOCALCUTS_KEY = "localcuts";
-const MAX_REV_RECORDS = 512;
+/**
+ * R4-B1: pending revocation REQUESTS are bounded per issuer (an admin cannot crowd out anybody else's records); beyond
+ * the cap the issuer's newest are set aside (and retried once the owner executes some). EXECUTED revocations (by the
+ * owner, or cut by an adopted owner rotation) are kept for good as compact tombstones (`executed`), never evicted.
+ */
+const MAX_PENDING_PER_ISSUER = 64;
+/** Full records of executed revocations kept to carry/republish; the fact itself lives on in the tombstones. */
+const MAX_SETTLED_RECORDS = 256;
+/** local store: executed revocations, deviceId -> [[epoch, record hash ("" if cut by a rotation alone)]] */
+const EXECUTED_KEY = "revexecuted";
 /** A hybrid wrap is base64url(ML-KEM-768 ciphertext 1088 B || AES-GCM(32 B) 60 B) = 1531 characters. */
 const MAX_WRAP_CHARS = 1600;
 const KEX_KEY = "kex"; // device-local store: verified key-agreement keys (the pre-PQC "ecdh" entry is ignored)
@@ -343,6 +352,10 @@ export function createMesh(opts: MeshOptions): Mesh {
 	const revokedIds = new Map<string, number[]>();
 	// every signed revocation record seen (shared doc, owner rotations, own), keyed by the hash of the whole record
 	const revStore = new Map<string, Revocation>();
+	/** R4-B1: executed revocations (tombstones): permanent, independent of the bounded pool of requests */
+	const executed = new Map<string, Array<[number, string]>>();
+	/** requests set aside because their issuer is over its cap (retried when the owner executes some) */
+	const overCap = new Set<string>();
 	// local cuts that are not backed by a record valid under the built-in ladder (custom `canRotate` hook)
 	const localCuts = new Map<string, number[]>();
 	const store: MeshStore =
@@ -450,6 +463,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 	const refreshTrust = () => (trustChain = trustChain.then(computeTrust).catch(err));
 	const persistRevoked = async () => {
 		await store.set(REVRECORDS_KEY, [...revStore.values()]);
+		await store.set(EXECUTED_KEY, Object.fromEntries(executed));
 		await store.set(LOCALCUTS_KEY, Object.fromEntries(localCuts));
 	};
 	const recHash = async (r: Revocation) =>
@@ -464,7 +478,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 		if (!root || !isRevocation(x)) return false;
 		const r: Revocation = { v: x.v, mid: x.mid, target: x.target, by: x.by, epoch: x.epoch, sig: x.sig };
 		const h = await recHash(r);
-		if (revStore.has(h) || badRevs.has(h)) return false;
+		if (revStore.has(h) || badRevs.has(h) || overCap.has(h)) return false;
 		const bad = () => {
 			if (badRevs.size >= 4096) badRevs.clear();
 			badRevs.add(h);
@@ -480,12 +494,48 @@ export function createMesh(opts: MeshOptions): Mesh {
 		} catch {}
 		if (!ok) return bad();
 		revStore.set(h, r);
-		if (revStore.size > MAX_REV_RECORDS) {
-			const oldest = [...revStore.entries()].sort((a, b) => a[1].epoch - b[1].epoch)[0] as [string, Revocation];
-			revStore.delete(oldest[0]);
-		}
+		if (r.by === root.deviceId) settleRevocation(r.target, r.epoch, h); // the owner's own decision: final
+		if (!boundRecords(r.by, h)) return false;
 		// note V2: republish what we verified, so devices that never saw where it came from learn it too
 		if (!meta.has(revKey(r))) meta.set(revKey(r), r);
+		return true;
+	}
+	const isSettled = (r: Revocation) => (executed.get(r.target) ?? []).some(([e]) => e === r.epoch);
+	/**
+	 * R4-B1: bound the pool. An issuer keeps at most MAX_PENDING_PER_ISSUER unexecuted requests (its newest beyond that
+	 * are set aside); executed records beyond MAX_SETTLED_RECORDS leave the pool (their tombstone stays). Never evicts
+	 * an unexecuted request of another issuer. Returns whether `h` is still in the pool.
+	 */
+	function boundRecords(issuer: string, h: string): boolean {
+		const mine = [...revStore.entries()].filter(([, x]) => x.by === issuer && !isSettled(x));
+		while (issuer !== root?.deviceId && mine.length > MAX_PENDING_PER_ISSUER) {
+			let k = 0; // the newest: highest epoch, latest arrival on ties
+			for (let i = 1; i < mine.length; i++) if ((mine[i] as [string, Revocation])[1].epoch >= (mine[k] as [string, Revocation])[1].epoch) k = i;
+			const [drop] = mine.splice(k, 1)[0] as [string, Revocation];
+			revStore.delete(drop);
+			overCap.add(drop);
+		}
+		const settled = [...revStore.entries()].filter(([, x]) => isSettled(x));
+		if (settled.length > MAX_SETTLED_RECORDS) {
+			settled.sort((x, y) => x[1].epoch - y[1].epoch);
+			for (const [k] of settled.slice(0, settled.length - MAX_SETTLED_RECORDS)) revStore.delete(k);
+		}
+		return revStore.has(h);
+	}
+	/**
+	 * R4-B1: record an executed revocation for good (compact: epoch + record hash), unpin the device's key-agreement keys
+	 * (nothing is ever wrapped for it again, whatever the pool of requests holds), and let requests set aside retry.
+	 */
+	function settleRevocation(target: string, ep: number, h: string): boolean {
+		const l = executed.get(target) ?? [];
+		if (l.some(([e]) => e === ep)) return false;
+		executed.set(target, [...l, [ep, h] as [number, string]].sort((x, y) => x[0] - y[0]).slice(-64));
+		const pins = Object.keys(ecdhOk).filter((k) => k.startsWith(`${target}|`));
+		if (pins.length) {
+			ecdhOk = Object.fromEntries(Object.entries(ecdhOk).filter(([k]) => !pins.includes(k)));
+			void store.set(KEX_KEY, ecdhOk);
+		}
+		overCap.clear();
 		return true;
 	}
 	/**
@@ -501,6 +551,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 			if (!l.includes(ep)) acc.set(id, [...l, ep].sort((x, y) => x - y).slice(-64));
 		};
 		for (const [id, eps] of localCuts) for (const e of eps) add(id, e);
+		for (const [id, eps] of executed) for (const [e] of eps) add(id, e);
 		const ctx: ChainContext = { ...chainCtx(root), revokedAt: (id) => acc.get(id) };
 		const recs = [...revStore.values()].sort((x, y) => x.epoch - y.epoch);
 		const nextRecs = new Map<string, Revocation[]>();
@@ -606,6 +657,12 @@ export function createMesh(opts: MeshOptions): Mesh {
 		admCache = ((await store.get("adm")) as Record<string, Admission> | undefined) ?? {};
 		const recs = (await store.get(REVRECORDS_KEY)) as unknown[] | undefined;
 		for (const r of Array.isArray(recs) ? recs : []) if (isRevocation(r)) revStore.set(await recHash(r), r);
+		const ex = (await store.get(EXECUTED_KEY)) as Record<string, unknown> | undefined;
+		for (const [id, eps] of Object.entries(ex ?? {})) {
+			if (!isDeviceId(id) || !Array.isArray(eps)) continue;
+			const ok = eps.filter((x): x is [number, string] => Array.isArray(x) && isEpoch(x[0]) && typeof x[1] === "string");
+			if (ok.length) executed.set(id, ok.slice(-64));
+		}
 		const lc = (await store.get(LOCALCUTS_KEY)) as Record<string, unknown> | undefined;
 		for (const [id, eps] of Object.entries(lc ?? {})) {
 			if (Array.isArray(eps)) localCuts.set(id, eps.filter((e) => isEpoch(e) && e >= 1) as number[]);
@@ -1288,6 +1345,17 @@ export function createMesh(opts: MeshOptions): Mesh {
 		await store.set("rot", curRot);
 		cands.delete(c.rec.id);
 		for (const [id, x] of cands) if (x.rec.epoch < epoch) cands.delete(id);
+		// R4-B1: what an owner rotation cut off is executed for good (tombstone; the epoch of the record that justified
+		// it when known, else the rotation's)
+		let settledAny = false;
+		for (const t of c.rec.revoked) {
+			const rec = (revRecs.get(t) ?? []).filter((r) => r.epoch <= c.rec.epoch).pop();
+			settledAny = settleRevocation(t, rec ? rec.epoch : c.rec.epoch, rec ? await recHash(rec) : "") || settledAny;
+		}
+		if (settledAny) {
+			await recomputeRevoked();
+			await persistRevoked();
+		}
 		if (opts.canRotate) {
 			// hook mode: the rotation itself is the record of who is cut off
 			for (const t of c.rec.revoked) {
@@ -1305,7 +1373,9 @@ export function createMesh(opts: MeshOptions): Mesh {
 	/** Devices that may hold the current key although they are validly revoked (the owner must re-key without them). */
 	function exposedRevoked(): string[] {
 		const me = vault.deviceId;
-		return [...revokedIds.keys()].filter((t) => t !== me && isRevoked(t) && (curRot ? curRot.to.includes(t) : true));
+		// before any rotation, only a device that was ever admitted can hold the key (made-up ids in requests cannot)
+		const hadKey = (t: string) => trusted.has(t) || admCache[t] !== undefined || meta.has(ADM_PREFIX + t);
+		return [...revokedIds.keys()].filter((t) => t !== me && isRevoked(t) && (curRot ? curRot.to.includes(t) : hadKey(t)));
 	}
 	/** A revocation is known here whose device the current key has not been taken away from yet (UI: pending owner). */
 	const rekeyPending = () => exposedRevoked().length > 0;
@@ -1912,6 +1982,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 				badRevs.clear();
 				revStore.clear();
 				localCuts.clear();
+				executed.clear();
+				overCap.clear();
 				replay.clear();
 				cands.clear();
 				curRot = null;
