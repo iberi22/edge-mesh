@@ -63,6 +63,13 @@ export interface MeshOptions {
 	 */
 	canRotate?: (issuer: string, target: string) => boolean | Promise<boolean>;
 	/**
+	 * Data authorization hook: called before applying every incoming Yjs update with the AUTHENTICATED peer that
+	 * delivered it (with signFrames on). Default: allow. Note that a sync reply may carry other members' changes:
+	 * `sender` is the delivering device, not necessarily the author (per-author authorization needs a signed log).
+	 * A refused update is dropped and reported as a 'rejected' event.
+	 */
+	authorizeUpdate?: (sender: string, update: Uint8Array) => boolean | Promise<boolean>;
+	/**
 	 * Sign every data frame with the device identity key and require valid signatures from ADMITTED devices
 	 * (default true). Per-sender subkeys alone do not authenticate the sender: every member can derive them.
 	 * `false` restores the legacy unsigned wire; it must then be off on every device of the mesh.
@@ -542,6 +549,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 		if (kind === K_SV) {
 			await sendFrame(rec, K_UPDATE, Y.encodeStateAsUpdate(doc, body));
 		} else if (kind === K_UPDATE) {
+			if (opts.authorizeUpdate && !(await opts.authorizeUpdate(sender, body))) return reject("update not authorized", sender);
+			if (rec.closing) return;
 			Y.applyUpdate(doc, body, ORIGIN);
 		} else if (kind === K_AWARENESS) {
 			applyAwarenessUpdate(awareness, body, ORIGIN);
