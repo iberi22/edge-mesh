@@ -41,7 +41,7 @@ import {
 import { derivePairRoomId, deriveRoomId, fingerprint, meshNamespace } from "./rooms.js";
 import { type MeshStore, idbStore, memoryStore } from "./store.js";
 import type { Device, PeerLink, RtcOptions, SigTransport, VaultClient } from "./types.js";
-import { b64uDecode, b64uEncode, concat, fromUtf8, randomBytes, utf8 } from "./util.js";
+import { b64uDecode, b64uEncode, concat, equalBytes, fromUtf8, randomBytes, utf8 } from "./util.js";
 import { connectViaSignaling } from "./webrtc.js";
 
 export type MeshStatus = "off" | "connecting" | "online";
@@ -158,12 +158,17 @@ export interface Mesh {
 
 const F_DATA = 1; // legacy unsigned data frame (only with signFrames:false)
 const F_PAIR = 2;
-const F_SDATA = 3; // signed data frame: plaintext = kind | sigLen(u16) | sig | body
+const F_SDATA = 3; // signed data frame: plaintext = kind | sess(8) | seq(u32) | sigLen(u16) | sig | body
 const K_SV = 0;
 const K_UPDATE = 1;
 const K_AWARENESS = 2;
 const K_ROTATE = 3;
 const K_CHANNEL = 4; // body = nsLen(u16) | namespace | payload
+const K_HELLO = 5; // body = nonce(16): fresh challenge of this link (S1)
+const K_AUTH = 6; // body = peer's nonce(16) | epoch(u32), signed: the sender is live on THIS link (S1)
+const NONCE_BYTES = 16;
+/** Replay window per sender session: seqs at most this far behind the highest one are still accepted once. */
+const REPLAY_WINDOW = 1024;
 const ORIGIN = Symbol("swal-mesh");
 const DEV = "dev/"; // dev/<deviceId> = Device (informative only: trust comes from adm/)
 const ADM_PREFIX = "adm/"; // adm/<deviceId> = Admission signed by an owner/admin, verified against the local root pin
@@ -200,15 +205,31 @@ interface LinkRec {
 	legacy?: Legacy;
 	/** signed frames from a sender whose admission has not reached us yet (bounded; replayed on trust changes) */
 	held?: { frames: Array<{ d: Uint8Array; t: number }>; bytes: number };
+	/** S1: our challenge on this link; the peer must sign it back (K_AUTH) before anything else is accepted */
+	nonce?: Uint8Array;
+	/** S1: the peer answered our challenge: `deviceId` is authenticated for this link, with this sender session */
+	authed?: boolean;
+	peerSess?: string;
+	/** we answered the peer's challenge */
+	authSent?: boolean;
+	started?: boolean;
 }
 
 const HOLD_MAX_FRAMES = 64;
 const HOLD_MAX_BYTES = 8 * 1024 * 1024;
 const HOLD_MS = 30_000;
 
-/** What a device signs for a data frame: bound to the room (mesh key + epoch), the sender and the kind. */
-const frameSigBytes = (rid: string, sender: string, kind: number, body: Uint8Array) =>
-	concat(utf8(`swal-frame/v1|${rid}|${sender}|`), new Uint8Array([kind]), body);
+const u32 = (n: number) => {
+	const b = new Uint8Array(4);
+	new DataView(b.buffer).setUint32(0, n >>> 0, false);
+	return b;
+};
+/**
+ * What a device signs for a data frame: bound to the room (mesh key + epoch), the sender, the kind and a per-sender
+ * session + sequence number (S1: receivers drop duplicates and replays).
+ */
+const frameSigBytes = (rid: string, sender: string, kind: number, sess: Uint8Array, seq: number, body: Uint8Array) =>
+	concat(utf8(`swal-frame/v2|${rid}|${sender}|`), new Uint8Array([kind]), sess, u32(seq), body);
 
 interface Legacy {
 	epoch: number;
@@ -535,13 +556,38 @@ export function createMesh(opts: MeshOptions): Mesh {
 	// from the deviceId in the frame header (also bound in the AAD). Wire: F_DATA | idLen | id | nonce | ct+tag.
 	// With signFrames (default) the plaintext also carries the sender's identity signature over
 	// (rid, sender, kind, body): F_SDATA | idLen | id | nonce | AES-GCM(kind | sigLen | sig | body).
-	const signCache = new WeakMap<Uint8Array, { rid: string; kind: number; sig: Promise<Uint8Array> }>();
-	function signFor(rid: string, kind: number, body: Uint8Array): Promise<Uint8Array> {
-		const c = signCache.get(body); // a broadcast signs once for all links
-		if (c && c.rid === rid && c.kind === kind) return c.sig;
-		const sig = vault.sign(frameSigBytes(rid, vault.deviceId, kind, body));
-		signCache.set(body, { rid, kind, sig });
-		return sig;
+	type Signed = { sig: Uint8Array; sess: Uint8Array; seq: number };
+	const signCache = new WeakMap<Uint8Array, { rid: string; kind: number; p: Promise<Signed> }>();
+	let selfSess = randomBytes(8); // this instance's sender session (a restart is a new session)
+	let selfSeq = 0;
+	function signFor(rid: string, kind: number, body: Uint8Array): Promise<Signed> {
+		const c = signCache.get(body); // a broadcast signs once (same seq) for all links
+		if (c && c.rid === rid && c.kind === kind) return c.p;
+		if (selfSeq >= 0xffffffff) {
+			selfSess = randomBytes(8);
+			selfSeq = 0;
+		}
+		const sess = selfSess;
+		const seq = ++selfSeq;
+		const p = vault.sign(frameSigBytes(rid, vault.deviceId, kind, sess, seq, body)).then((sig) => ({ sig, sess, seq }));
+		signCache.set(body, { rid, kind, p });
+		return p;
+	}
+	// receiver side of S1: highest seq + recently seen seqs per (sender, session)
+	const replay = new Map<string, { max: number; seen: Set<number> }>();
+	function freshSeq(sender: string, sess: string, seq: number): boolean {
+		const k = `${sender}|${sess}`;
+		let w = replay.get(k);
+		if (!w) {
+			if (replay.size >= 4096) replay.delete(replay.keys().next().value as string);
+			w = { max: 0, seen: new Set() };
+			replay.set(k, w);
+		}
+		if (seq + REPLAY_WINDOW <= w.max || w.seen.has(seq)) return false;
+		w.seen.add(seq);
+		if (seq > w.max) w.max = seq;
+		if (w.seen.size > 2 * REPLAY_WINDOW) for (const x of w.seen) if (x + REPLAY_WINDOW <= w.max) w.seen.delete(x);
+		return true;
 	}
 	function sendFrame(rec: LinkRec, kind: number, body: Uint8Array) {
 		const lg = rec.legacy;
@@ -562,8 +608,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 		const id = utf8(vault.deviceId);
 		let inner: Uint8Array;
 		if (signFrames) {
-			const sig = await signFor(rid, kind, body);
-			inner = concat(new Uint8Array([kind, sig.length >> 8, sig.length & 0xff]), sig, body);
+			const { sig, sess, seq } = await signFor(rid, kind, body);
+			inner = concat(new Uint8Array([kind]), sess, u32(seq), new Uint8Array([sig.length >> 8, sig.length & 0xff]), sig, body);
 		} else inner = concat(new Uint8Array([kind]), body);
 		const sealed = await sealUpdate(key, inner, `${rid}|${vault.deviceId}`);
 		if (rec.closing) return;
@@ -571,7 +617,12 @@ export function createMesh(opts: MeshOptions): Mesh {
 	}
 	const established = () =>
 		[...links].filter(
-			(l) => !l.closing && !l.legacy && (l.rid === dataRid || l.rid === "") && !(l.deviceId && isRevoked(l.deviceId)),
+			(l) =>
+				!l.closing &&
+				!l.legacy &&
+				(!signFrames || l.authed) &&
+				(l.rid === dataRid || l.rid === "") &&
+				!(l.deviceId && isRevoked(l.deviceId)),
 		);
 	/** Synchronous: the link leaves `links` right now (the transport's onClose may fire much later). */
 	function closeRec(rec: LinkRec) {
@@ -654,11 +705,16 @@ export function createMesh(opts: MeshOptions): Mesh {
 		if (!plain || rec.closing || plain.length < 1) return;
 		const kind = plain[0];
 		let body = plain.subarray(1);
+		let sess = "";
 		if (signed) {
-			const sigLen = plain.length >= 3 ? (plain[1] << 8) | plain[2] : -1;
-			if (sigLen < 0 || plain.length < 3 + sigLen) return reject("malformed signed frame", sender);
-			const sig = plain.subarray(3, 3 + sigLen);
-			body = plain.subarray(3 + sigLen);
+			if (plain.length < 15) return reject("malformed signed frame", sender);
+			const sessBytes = plain.subarray(1, 9);
+			const seq = new DataView(plain.buffer, plain.byteOffset + 9, 4).getUint32(0, false);
+			const sigLen = (plain[13] << 8) | plain[14];
+			if (plain.length < 15 + sigLen) return reject("malformed signed frame", sender);
+			const sig = plain.subarray(15, 15 + sigLen);
+			body = plain.subarray(15 + sigLen);
+			sess = b64uEncode(sessBytes);
 			if (revoked) {
 				// a revoked device is never listened to... except for the signed revocations its rotation carries: they
 				// verify on their own and must count (concurrent revocations are merged, B4)
@@ -669,17 +725,37 @@ export function createMesh(opts: MeshOptions): Mesh {
 			if (!pub) return;
 			let ok = false;
 			try {
-				ok = await vault.verify(b64uDecode(pub), frameSigBytes(rid, sender, kind, body), sig);
+				ok = await vault.verify(b64uDecode(pub), frameSigBytes(rid, sender, kind, sessBytes, seq, body), sig);
 			} catch {}
 			if (!ok) return reject("bad frame signature", sender);
 			if (rec.closing) return;
+			// S1: a link carries nothing but its handshake until the peer signed OUR fresh challenge on it
+			if (kind === K_HELLO) {
+				if (!retired && body.length === NONCE_BYTES && !rec.authSent) await answerHello(rec, body);
+				return;
+			}
+			if (kind === K_AUTH) {
+				if (retired || rec.authed || !rec.nonce) return;
+				const ep = rec.legacy ? rec.legacy.epoch : epoch;
+				const okAuth =
+					body.length === NONCE_BYTES + 4 &&
+					equalBytes(body.subarray(0, NONCE_BYTES), rec.nonce) &&
+					new DataView(body.buffer, body.byteOffset + NONCE_BYTES, 4).getUint32(0, false) === ep;
+				if (!okAuth) return reject("bad link authentication", sender);
+				rec.deviceId = sender;
+				rec.authed = true;
+				rec.peerSess = sess;
+				setStatus();
+				return maybeStart(rec);
+			}
+			if (!rec.authed || sess !== rec.peerSess || !freshSeq(sender, sess, seq)) return; // replay / other link
 		} else if (revoked) return;
 		if (retired) {
 			if (kind === K_ROTATE) await serialRot(() => handleRotate(body));
 			return;
 		}
 		if (!rec.deviceId) {
-			rec.deviceId = sender;
+			rec.deviceId = sender; // legacy unsigned wire only: the link is bound to its first sender
 			setStatus();
 		}
 		if (lg) {
@@ -895,6 +971,24 @@ export function createMesh(opts: MeshOptions): Mesh {
 		else if (guestSession && pairRids.has(rec.rid)) await guestSession.s.handle(msg, send);
 	}
 
+	/** S1: challenge the peer of a fresh data link; data flows once both sides answered each other's challenge. */
+	function startHandshake(rec: LinkRec) {
+		rec.nonce = randomBytes(NONCE_BYTES);
+		sendFrame(rec, K_HELLO, rec.nonce).catch(err);
+	}
+	async function answerHello(rec: LinkRec, peerNonce: Uint8Array) {
+		rec.authSent = true;
+		await sendFrame(rec, K_AUTH, concat(peerNonce, u32(rec.legacy ? rec.legacy.epoch : epoch)));
+		maybeStart(rec);
+	}
+	function maybeStart(rec: LinkRec) {
+		if (!rec.authed || !rec.authSent || rec.started || rec.closing) return;
+		rec.started = true;
+		if (rec.legacy) return; // retired room: we only answer the straggler's state vector with its wraps
+		sendFrame(rec, K_SV, Y.encodeStateVector(doc)).catch(err);
+		if (awareness.getLocalState()) sendFrame(rec, K_AWARENESS, encodeAwarenessUpdate(awareness, [doc.clientID])).catch(err);
+	}
+
 	function wireLink(link: PeerLink, rid: string) {
 		const isData = running && rid === dataRid;
 		const lg = running && !isData ? legacy.get(rid) : undefined;
@@ -924,7 +1018,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 			setStatus();
 		});
 		if (isPair && guestSession) guestSession.s.attach(sendPair(link));
-		if (isData || (rid === "" && running)) {
+		if (signFrames && (isData || lg || (rid === "" && running))) startHandshake(rec);
+		else if (isData || (rid === "" && running)) {
 			sendFrame(rec, K_SV, Y.encodeStateVector(doc)).catch(err);
 			const st = awareness.getLocalState();
 			if (st) sendFrame(rec, K_AWARENESS, encodeAwarenessUpdate(awareness, [doc.clientID])).catch(err);

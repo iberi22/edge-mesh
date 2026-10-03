@@ -341,94 +341,210 @@ describe("audit regressions: web/provider", () => {
 		expect(await verifyChain(ctx(5, [admM3]), mem.deviceId)).toBeNull();
 	});
 
-	open(
-		"P5 (S1): a relay replaying captured signed frames on a new link neither binds it to the sender nor re-delivers them",
-		async () => {
-			const hub = createLoopbackHub();
-			const captured: Uint8Array[] = [];
-			let capture = false;
-			const sniff = (inner: LinkTransport): LinkTransport => ({
-				...inner,
-				join: (rid, id) => inner.join(rid, id),
-				leave: (rid) => inner.leave(rid),
-				close: () => inner.close(),
-				onLink(cb) {
-					return inner.onLink((l, rid) => {
-						const orig = l.onMessage.bind(l);
-						cb(
-							{
-								...l,
-								id: l.id,
-								send: (d) => l.send(d),
-								close: () => l.close(),
-								onClose: (f) => l.onClose(f),
-								onMessage: (f) =>
-									orig((d) => {
-										if (capture) captured.push(d.slice());
-										f(d);
-									}),
-							},
-							rid,
-						);
-					});
-				},
-			});
-			const rids: string[] = [];
-			let inject: ((l: PeerLink, rid: string) => void) | null = null;
-			const evil: LinkTransport = {
-				kind: "link",
-				name: "evil",
-				async join(rid) {
-					rids.push(rid);
-				},
-				onLink(cb) {
-					inject = cb;
-					return () => {};
-				},
-				leave() {},
-				close() {},
-			};
-			const a = await makeDev("devA", hub);
-			const b = await makeDev("devB", hub, undefined, {
-				signaling: [sniff(hub.transport()), evil],
-			});
-			await pair(a, b);
-			await until(
-				() => b.mesh.peers.includes(a.id) && a.mesh.peers.includes(b.id),
+	it("P5 (S1): a relay replaying captured signed frames on a new link neither binds it to the sender nor re-delivers them", async () => {
+		const hub = createLoopbackHub();
+		const captured: Uint8Array[] = [];
+		let capture = false;
+		const sniff = (inner: LinkTransport): LinkTransport => ({
+			...inner,
+			join: (rid, id) => inner.join(rid, id),
+			leave: (rid) => inner.leave(rid),
+			close: () => inner.close(),
+			onLink(cb) {
+				return inner.onLink((l, rid) => {
+					const orig = l.onMessage.bind(l);
+					cb(
+						{
+							...l,
+							id: l.id,
+							send: (d) => l.send(d),
+							close: () => l.close(),
+							onClose: (f) => l.onClose(f),
+							onMessage: (f) =>
+								orig((d) => {
+									if (capture) captured.push(d.slice());
+									f(d);
+								}),
+						},
+						rid,
+					);
+				});
+			},
+		});
+		const rids: string[] = [];
+		let inject: ((l: PeerLink, rid: string) => void) | null = null;
+		const evil: LinkTransport = {
+			kind: "link",
+			name: "evil",
+			async join(rid) {
+				rids.push(rid);
+			},
+			onLink(cb) {
+				inject = cb;
+				return () => {};
+			},
+			leave() {},
+			close() {},
+		};
+		const a = await makeDev("devA", hub);
+		const b = await makeDev("devB", hub, undefined, {
+			signaling: [sniff(hub.transport()), evil],
+		});
+		await pair(a, b);
+		await until(
+			() => b.mesh.peers.includes(a.id) && a.mesh.peers.includes(b.id),
+		);
+		const got: string[] = [];
+		b.mesh
+			.channel("orders")
+			.onMessage((d, from) =>
+				got.push(`${from}:${new TextDecoder().decode(d)}`),
 			);
-			const got: string[] = [];
-			b.mesh
-				.channel("orders")
-				.onMessage((d, from) =>
-					got.push(`${from}:${new TextDecoder().decode(d)}`),
-				);
-			capture = true;
-			await a.mesh
-				.channel("orders")
-				.send(new TextEncoder().encode("pay table 7"));
-			await until(() => got.length === 1);
-			capture = false;
-			a.mesh.destroy(); // A goes offline
-			await settle(100);
-			const dataRid = rids.filter((r) => !r.startsWith("p_")).at(-1)!;
-			let recvCb: ((d: Uint8Array) => void) | null = null;
-			const fake: PeerLink = {
-				id: "relay",
-				send() {},
-				onMessage: (cb) => {
-					recvCb = cb;
-				},
-				onClose() {},
-				close() {},
-			};
-			inject!(fake, dataRid);
-			for (const f of captured) recvCb!(f);
-			await settle(200);
-			expect(got.length).toBe(1);
-			expect(b.mesh.peers).not.toContain(a.id);
-			b.mesh.destroy();
-		},
-	);
+		capture = true;
+		await a.mesh
+			.channel("orders")
+			.send(new TextEncoder().encode("pay table 7"));
+		await until(() => got.length === 1);
+		capture = false;
+		a.mesh.destroy(); // A goes offline
+		await settle(100);
+		const dataRid = rids.filter((r) => !r.startsWith("p_")).at(-1)!;
+		let recvCb: ((d: Uint8Array) => void) | null = null;
+		const fake: PeerLink = {
+			id: "relay",
+			send() {},
+			onMessage: (cb) => {
+				recvCb = cb;
+			},
+			onClose() {},
+			close() {},
+		};
+		inject!(fake, dataRid);
+		for (const f of captured) recvCb!(f);
+		await settle(200);
+		expect(got.length).toBe(1);
+		expect(b.mesh.peers).not.toContain(a.id);
+		b.mesh.destroy();
+	});
+
+	/** B's transport, with every frame B receives recorded (`log`) and a hook to re-inject frames on a link. */
+	function recorder(inner: LinkTransport) {
+		const log: Array<{ link: string; via: PeerLink; d: Uint8Array }> = [];
+		const deliver = new Map<PeerLink, (d: Uint8Array) => void>();
+		const t: LinkTransport = {
+			...inner,
+			join: (rid, id) => inner.join(rid, id),
+			leave: (rid) => inner.leave(rid),
+			close: () => inner.close(),
+			onLink(cb) {
+				return inner.onLink((l, rid) => {
+					const orig = l.onMessage.bind(l);
+					const wrapped: PeerLink = {
+						id: l.id,
+						send: (d) => l.send(d),
+						close: () => l.close(),
+						onClose: (f) => l.onClose(f),
+						onMessage: (f) => {
+							deliver.set(wrapped, f);
+							orig((d) => {
+								log.push({ link: l.id, via: wrapped, d: d.slice() });
+								f(d);
+							});
+						},
+					};
+					cb(wrapped, rid);
+				});
+			},
+		};
+		return { t, log, deliver };
+	}
+
+	it("P5 (S1): replaying a whole captured session (handshake included) on a new link authenticates nothing", async () => {
+		const hub = createLoopbackHub();
+		const rec = recorder(hub.transport());
+		let inject: ((l: PeerLink, rid: string) => void) | null = null;
+		const rids: string[] = [];
+		const evil: LinkTransport = {
+			kind: "link",
+			name: "evil",
+			async join(rid) {
+				rids.push(rid);
+			},
+			onLink(cb) {
+				inject = cb;
+				return () => {};
+			},
+			leave() {},
+			close() {},
+		};
+		const a = await makeDev("devA", hub);
+		const b = await makeDev("devB", hub, undefined, {
+			signaling: [rec.t, evil],
+		});
+		await pair(a, b);
+		await until(() => b.mesh.peers.includes(a.id));
+		const got: string[] = [];
+		b.mesh
+			.channel("orders")
+			.onMessage((d) => got.push(new TextDecoder().decode(d)));
+		await a.mesh
+			.channel("orders")
+			.send(new TextEncoder().encode("pay table 7"));
+		await until(() => got.length === 1);
+		const rejected: string[] = [];
+		b.mesh.on("rejected", (e) => rejected.push(e.reason));
+		a.mesh.destroy();
+		await settle(100);
+		let recv: ((d: Uint8Array) => void) | null = null;
+		const fake: PeerLink = {
+			id: "relay",
+			send() {},
+			onMessage: (cb) => {
+				recv = cb;
+			},
+			onClose() {},
+			close() {},
+		};
+		const dataRid = rids.filter((r) => !r.startsWith("p_")).at(-1) as string;
+		(inject as unknown as (l: PeerLink, rid: string) => void)(fake, dataRid);
+		for (const f of rec.log.filter((x) => x.link === a.id))
+			(recv as unknown as (d: Uint8Array) => void)(f.d);
+		await settle(300);
+		expect(got).toEqual(["pay table 7"]);
+		expect(b.mesh.peers).not.toContain(a.id);
+		expect(rejected).toContain("bad link authentication"); // the replayed K_AUTH answers another link's challenge
+		b.mesh.destroy();
+	});
+
+	it("P5 (S1): a frame duplicated on the same live link is delivered once", async () => {
+		const hub = createLoopbackHub();
+		const rec = recorder(hub.transport());
+		const a = await makeDev("devA", hub);
+		const b = await makeDev("devB", hub, undefined, { signaling: [rec.t] });
+		await pair(a, b);
+		await until(
+			() => b.mesh.peers.includes(a.id) && a.mesh.peers.includes(b.id),
+		);
+		const got: string[] = [];
+		b.mesh
+			.channel("orders")
+			.onMessage((d) => got.push(new TextDecoder().decode(d)));
+		const before = rec.log.length;
+		await a.mesh
+			.channel("orders")
+			.send(new TextEncoder().encode("pay table 7"));
+		await until(() => got.length === 1);
+		const frames = rec.log.slice(before).filter((x) => x.link === a.id);
+		expect(frames.length).toBeGreaterThan(0);
+		for (const f of frames)
+			(rec.deliver.get(f.via) as (d: Uint8Array) => void)(f.d);
+		await settle(200);
+		expect(got).toEqual(["pay table 7"]);
+		// fresh traffic still flows on that link
+		await a.mesh.channel("orders").send(new TextEncoder().encode("table 8"));
+		await until(() => got.length === 2);
+		for (const x of [a, b]) x.mesh.destroy();
+	});
 
 	it("P6 (B4): concurrent revocations by two admins converge: both targets excluded, one key for everybody else", async () => {
 		const hub = createLoopbackHub();

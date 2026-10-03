@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveDocMaterial, deriveSenderKey, sealUpdate } from "../../src/web/crypto.js";
+import { deriveDocMaterial, deriveSenderKey, openUpdate, sealUpdate } from "../../src/web/crypto.js";
 import { type LinkTransport, type PeerLink, createLoopbackHub, deriveRoomId, fingerprint } from "../../src/web/index.js";
 import { concat, randomBytes, utf8 } from "../../src/web/util.js";
 import { label, makeDev, makeVault, pair, trio, until } from "./helpers.js";
@@ -75,9 +75,16 @@ describe("own channel per app / instance", () => {
 	it("a validly signed channel frame carrying another app's namespace is rejected", async () => {
 		const hub = createLoopbackHub();
 		const bLinks: PeerLink[] = [];
+		const sent: Uint8Array[] = [];
 		const t: LinkTransport = hub.transport();
 		const orig = t.onLink.bind(t);
-		t.onLink = (cb) => orig((l, rid) => (bLinks.push(l), cb(l, rid)));
+		t.onLink = (cb) =>
+			orig((l, rid) => {
+				bLinks.push(l);
+				const send = l.send.bind(l);
+				l.send = (d) => (sent.push(d.slice()), send(d));
+				cb(l, rid);
+			});
 		const a = await makeDev("devA", hub);
 		const b = await makeDev("devB", hub, undefined, { signaling: [t] });
 		await pair(a, b);
@@ -89,11 +96,27 @@ describe("own channel per app / instance", () => {
 		// B (a real member) signs a K_CHANNEL frame whose namespace belongs to another app
 		const instance = await fingerprint(a.vault.devicePublicKey);
 		const rid = await deriveRoomId(b.vault.meshKey!, "fize", "fize/data/r1", 0, instance);
+		const key = await deriveSenderKey(await deriveDocMaterial(b.vault.meshKey!, "fize/data/r1"), "fize/data/r1", b.id);
+		// B's live sender session and a fresh sequence number (read from one of its own frames): the frame below is
+		// exactly what a real member could sign and send, except for the foreign namespace
+		let sess = new Uint8Array(8);
+		let seq = 0;
+		for (const f of sent) {
+			if (f[0] !== 3) continue;
+			try {
+				const p = await openUpdate(key, f.subarray(2 + f[1]), `${rid}|${b.id}`);
+				sess = p.slice(1, 9);
+				seq = Math.max(seq, new DataView(p.buffer, p.byteOffset + 9, 4).getUint32(0));
+			} catch {}
+		}
+		expect(seq).toBeGreaterThan(0);
+		seq += 100;
+		const seqB = new Uint8Array(4);
+		new DataView(seqB.buffer).setUint32(0, seq);
 		const ns = utf8(`shelf/${instance}/oplog`);
 		const body = concat(new Uint8Array([0, ns.length]), ns, new Uint8Array([9, 9]));
-		const sig = await b.vault.sign(concat(utf8(`swal-frame/v1|${rid}|${b.id}|`), new Uint8Array([4]), body));
-		const key = await deriveSenderKey(await deriveDocMaterial(b.vault.meshKey!, "fize/data/r1"), "fize/data/r1", b.id);
-		const inner = concat(new Uint8Array([4, sig.length >> 8, sig.length & 0xff]), sig, body);
+		const sig = await b.vault.sign(concat(utf8(`swal-frame/v2|${rid}|${b.id}|`), new Uint8Array([4]), sess, seqB, body));
+		const inner = concat(new Uint8Array([4]), sess, seqB, new Uint8Array([sig.length >> 8, sig.length & 0xff]), sig, body);
 		const id = utf8(b.id);
 		const frame = concat(new Uint8Array([3, id.length]), id, await sealUpdate(key, inner, `${rid}|${b.id}`));
 		bLinks.filter((l) => l.id === a.id).at(-1)!.send(frame);

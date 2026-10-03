@@ -46,6 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   best valid rotation (highest epoch, then lowest `rotId`); a rotation whose issuer was revoked at an epoch <= its own
   is void; afterwards any owner/admin whose key reached a revoked device re-keys at N+1 excluding the union.
   Rotation frames are sealed under the current and recent retired keys, and lagging devices may skip epochs.
+- **S1 frame replay bound a link to the wrong device**: per-link challenge-response (`K_HELLO` / signed `K_AUTH` over
+  the peer's nonce + room + epoch) before a link carries anything; signed frames carry a sender session and sequence
+  (`swal-frame/v2`) and receivers drop duplicates and replays.
 
 ### Added
 - `MeshOptions`: `store`, `authorizeDevice`, `canRotate`, `authorizeUpdate`, `signFrames`, `instance`,

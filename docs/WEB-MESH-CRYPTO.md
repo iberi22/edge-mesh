@@ -11,12 +11,20 @@
 - Nonce = 8-byte random prefix + 4-byte big-endian counter, per sender key. The prefix is regenerated
   before the counter would wrap, so a (key, nonce) pair is never reused, not even by two reloads of the
   same device, and a 64-bit prefix collision between two senders is harmless because their keys differ.
-- Frame (default, `signFrames: true`): `F_SDATA(3) | idLen | deviceId | nonce(12) | AES-GCM(kind | sigLen(u16) |
-  sig | body)`. `sig` is the sender's identity-key signature over
-  `"swal-frame/v1|" + rid + "|" + deviceId + "|" + kind + body`, verified against the identity key of the sender's
-  **admission** (see below). Subkeys alone give nonce separation, not sender authentication (every member can
-  derive every sender key); the signature is what authenticates the sender.
-- A link is bound to the first sender it authenticates; frames claiming another sender on it are rejected.
+- Frame (default, `signFrames: true`): `F_SDATA(3) | idLen | deviceId | nonce(12) | AES-GCM(kind | sess(8) |
+  seq(u32) | sigLen(u16) | sig | body)`. `sig` is the sender's identity-key signature over
+  `"swal-frame/v2|" + rid + "|" + deviceId + "|" + kind + sess + seq + body`, verified against the identity key of the
+  sender's **admission** (see below). Subkeys alone give nonce separation, not sender authentication (every member
+  can derive every sender key); the signature is what authenticates the sender.
+- **Link handshake (S1).** On every new data link each side sends `K_HELLO` with a fresh 16-byte nonce; the peer
+  answers `K_AUTH = nonce | epoch(u32)` in a signed frame (so the answer is bound to the room, the epoch, the sender
+  and this link's challenge). Until a valid `K_AUTH` arrives the link carries nothing else: no data is sent to it
+  and every other frame from it is dropped. The link is then bound to that sender and to the sender session (`sess`)
+  of its `K_AUTH`. A frame captured on one link and replayed on another (even the whole handshake) authenticates
+  nothing (`rejected: "bad link authentication"`).
+- **Replays and duplicates (S1).** `sess` is random per mesh instance (a restart is a new session) and `seq` grows by
+  one per signed message (a broadcast signs once, same `seq` on every link). Receivers accept a `(sender, sess,
+  seq)` once, within a window of 1024 behind the highest `seq` seen, and only with the link's bound session.
 - Unsigned legacy frames (`F_DATA(1)`) are rejected unless `signFrames: false` (must then be off on every device).
 - Signed frames from a sender whose admission has not reached this device yet are held (64 frames / 8 MiB / 30 s
   per link) and replayed when the trust state changes, so a freshly paired device converges with peers that learn
