@@ -32,6 +32,7 @@ import {
 	isRotRecord,
 	rotationId,
 	rotationPreId,
+	rotationSigBytes,
 	wrapsHash,
 	unwrapMeshKey,
 	wrapMeshKey,
@@ -1131,6 +1132,23 @@ export function createMesh(opts: MeshOptions): Mesh {
 	function rotIssuerRevoked(r: { from: string; epoch: number }): boolean {
 		return r.from !== root?.deviceId;
 	}
+	/** The owner's ML-DSA-65 signature over the rotation id (memoized: relays repeat the same record). */
+	const rotSigOk = new Map<string, boolean>();
+	function rotationSigned(r: RotRecord, id: string): boolean {
+		if (!root || r.from !== root.deviceId || typeof r.sig !== "string") return false;
+		const k = `${id}|${r.sig}`;
+		let ok = rotSigOk.get(k);
+		if (ok === undefined) {
+			try {
+				ok = identityVerify(b64uDecode(root.pub), rotationSigBytes(id), b64uDecode(r.sig));
+			} catch {
+				ok = false;
+			}
+			if (rotSigOk.size >= 1024) rotSigOk.clear();
+			rotSigOk.set(k, ok);
+		}
+		return ok;
+	}
 	/** Every device a rotation cuts off has a valid signed revocation of an epoch <= the rotation's (or the hook says so). */
 	async function rotationAuthorized(r: RotRecord): Promise<boolean> {
 		if (r.from !== root?.deviceId) return false;
@@ -1150,11 +1168,15 @@ export function createMesh(opts: MeshOptions): Mesh {
 			emit("rejected", { reason: "rotation not from the owner", from: rot.from, epoch: rot.epoch });
 			return;
 		}
+		const id = await rotationId(rot);
+		if (!rotationSigned(rot, id)) {
+			emit("rejected", { reason: "rotation signature invalid", from: rot.from, epoch: rot.epoch });
+			return;
+		}
 		let added = false;
 		for (const r of rot.revs.slice(0, 16)) added = (await addRecord(r)) || added;
 		if (added && (await recomputeRevoked())) await applyRevoked();
 		const me = vault.deviceId;
-		const id = await rotationId(rot);
 		// finding 5: a wrap map is used (relayed) only if it is exactly the set the owner committed to
 		const mapOk = m.wraps !== undefined && (await wrapsHash(m.wraps)) === rot.wh;
 		if (curRot?.id === id) {
@@ -1317,7 +1339,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 			if (!isRotRecord(rot) || rot.epoch < from || rot.epoch > from + MAX_EPOCH_SKIP || rot.epoch > epoch) continue;
 			if (typeof wrap !== "string" || !rot.to.includes(deviceId)) continue;
 			// SF3: the shared doc is writable by every member: serve only rotations that verify here
-			if (id !== (await rotationId(rot)) || !(await rotationAuthorized(rot))) continue;
+			if (id !== (await rotationId(rot)) || !rotationSigned(rot, id) || !(await rotationAuthorized(rot))) continue;
 			out.push({ rot, to: deviceId, wrap, id });
 		}
 		out.sort((x, y) => (betterRot({ epoch: x.rot.epoch, id: x.id }, { epoch: y.rot.epoch, id: y.id }) ? -1 : 1));
@@ -1616,6 +1638,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 		// (every key in `pubs` passed the ML-KEM input check in peerEcdhPub, so no recipient can make this throw)
 		rec.wh = await wrapsHash(Object.fromEntries(wraps));
 		const id = await rotationId(rec);
+		// the owner signs the id (record + wrap set) with its ML-DSA-65 identity: the rotation does not rest on P-256 alone
+		rec.sig = b64uEncode(await vault.sign(rotationSigBytes(id)));
 		// 1) hand each connected recipient ITS OWN wrap (under every recent key), 2) switch, 3) publish under the NEW key
 		const sends: Promise<void>[] = [];
 		for (const l of [...links]) {
@@ -1751,7 +1775,9 @@ export function createMesh(opts: MeshOptions): Mesh {
 					hostDevice: selfDevice(),
 					root: r,
 					admissions: [adm, ...chainOf(vault.deviceId)],
-					...(curRot ? { rot: curRot } : {}),
+					// receivers only read the first 16 revocations of a rotation (handleRotate); with ML-DSA-65 each is ~4.6 KB,
+					// so a rotation that cut many devices at once would otherwise push the grant past PAIR_MAX
+					...(curRot ? { rot: { ...curRot, revs: curRot.revs.slice(0, 16) } } : {}),
 					...(extra !== undefined ? { extra } : {}),
 				};
 			},
@@ -1896,7 +1922,8 @@ export function createMesh(opts: MeshOptions): Mesh {
 			epoch = g.epoch;
 			// the rotation that produced this key (if any): lets this device take part in tie-breaks of its epoch
 			const gr = g.rot as Rot | undefined;
-			curRot = isRotRecord(gr) && gr.epoch === g.epoch && gr.id === (await rotationId(gr)) ? gr : null;
+			// root is g.root (pinned above): the owner's signature must verify, like for any received rotation
+			curRot = isRotRecord(gr) && gr.epoch === g.epoch && gr.id === (await rotationId(gr)) && rotationSigned(gr, gr.id) ? gr : null;
 			cands.clear();
 			await store.set("rot", curRot);
 			doc.transact(() => {

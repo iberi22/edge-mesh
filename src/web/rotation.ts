@@ -64,7 +64,16 @@ export interface RotRecord {
 	/** finding 5: base64url SHA-256 of the full wrap set (`wrapsHash`): relayers and receivers check a map against it */
 	wh: string;
 	revs: Revocation[];
+	/**
+	 * ML-DSA-65 signature of the owner identity over `rotationSigBytes(rotationId)` (base64url). The id commits to the
+	 * record and the wrap set, so the whole rotation is authenticated post-quantum, not only by the ECDH half of the
+	 * wraps. Optional in the shape only: a rotation without a valid signature is rejected by every device.
+	 */
+	sig?: string;
 }
+
+/** Bytes the owner signs (ML-DSA-65) for a rotation: its id, domain-separated. */
+export const rotationSigBytes = (rotId: string) => utf8(JSON.stringify(["swal-rot-sig/v1", rotId]));
 
 const MAX_ROT_MEMBERS = 1024;
 const isIdList = (x: unknown): x is string[] =>
@@ -87,7 +96,8 @@ export function isRotRecord(x: unknown): x is RotRecord {
 		typeof r.wh === "string" &&
 		r.wh.length <= 64 &&
 		Array.isArray(r.revs) &&
-		r.revs.length <= MAX_ROT_MEMBERS
+		r.revs.length <= MAX_ROT_MEMBERS &&
+		(r.sig === undefined || (typeof r.sig === "string" && r.sig.length <= 4500))
 	);
 }
 

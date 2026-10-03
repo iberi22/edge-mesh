@@ -1,7 +1,11 @@
 // PQC migration (AGENTS.md §2), key exchanges: the pairing session and the rotation wraps combine ML-KEM-768 with
 // ECDH P-256 (HKDF-SHA-256 over ML-KEM secret || ECDH secret); both halves are required, no ECDH-only fallback.
 import { describe, expect, it } from "vitest";
-import { createLoopbackHub } from "../../src/web/index.js";
+import {
+	createLoopbackHub,
+	deriveRoomId,
+	type PeerLink,
+} from "../../src/web/index.js";
 import {
 	createPairOffer,
 	type GrantBody,
@@ -17,11 +21,20 @@ import {
 } from "../../src/web/pq.js";
 import {
 	ecdhSignedBytes,
+	rotationId,
 	rotationPreId,
+	rotationSigBytes,
 	unwrapMeshKey,
 	wrapMeshKey,
+	wrapsHash,
 } from "../../src/web/rotation.js";
-import { b64uDecode, b64uEncode, randomBytes } from "../../src/web/util.js";
+import {
+	b64uDecode,
+	b64uEncode,
+	randomBytes,
+	utf8,
+} from "../../src/web/util.js";
+import { rawPeer, TOPIC } from "./audit-r3-lib.js";
 import {
 	makeDev,
 	makeVault,
@@ -244,5 +257,82 @@ describe("PQC: hybrid ML-KEM-768 + ECDH P-256 key exchanges", () => {
 		await a.mesh.revoke(e.id);
 		await until(() => b.mesh.epoch === 2 && c.mesh.epoch === 2, 8000);
 		for (const x of [a, b, c, d, e]) x.mesh.destroy();
+	}, 30_000);
+});
+
+describe("PQC: rotation records are signed by the owner with ML-DSA-65", () => {
+	it("Q9: a member holding the owner's ECDH key (a broken P-256) cannot push a key: unsigned or wrongly signed rotations are rejected", async () => {
+		const hub = createLoopbackHub();
+		const { a, b, c } = await trio(hub);
+		const all = [a, b, c];
+		await until(
+			() =>
+				all.every((x) => all.every((y) => metaOf(x).has(`ecdh/${y.id}`))) &&
+				c.mesh.devices().length === 3,
+		);
+		const k0 = (b.vault.meshKey as Uint8Array).slice();
+		const instance = a.mesh.namespace.split("/")[1] as string;
+		const ownerEcdh = (await a.vault.getEcdhIdentity!()).privateKey; // what a quantum adversary would compute
+		const cKex = metaOf(a).get(`ecdh/${c.id}`);
+		const rejected: string[] = [];
+		c.mesh.on("rejected", (e) => rejected.push(e.reason));
+		b.mesh.destroy(); // B speaks raw from here on (modified client)
+		const forge = async (sign?: (id: string) => Promise<string>) => {
+			const rec: Record<string, unknown> = {
+				v: 1,
+				epoch: 1,
+				from: a.id,
+				revoked: [],
+				to: [c.id],
+				n: b64uEncode(randomBytes(16)),
+				revs: [],
+				wh: "",
+			};
+			const pid = await rotationPreId(rec as never);
+			const wrap = await wrapMeshKey(
+				ownerEcdh,
+				b64uDecode(cKex.pub),
+				b64uDecode(cKex.kem),
+				pid,
+				a.id,
+				c.id,
+				randomBytes(32),
+			);
+			const wraps = { [c.id]: wrap };
+			rec.wh = await wrapsHash(wraps);
+			if (sign) rec.sig = await sign(await rotationId(rec as never));
+			return utf8(JSON.stringify({ rot: rec, to: c.id, wrap, wraps }));
+		};
+		const t = hub.transport("evil");
+		const lks: PeerLink[] = [];
+		const peers: Array<Promise<Awaited<ReturnType<typeof rawPeer>>>> = [];
+		t.onLink((l) => {
+			lks.push(l);
+			peers.push(rawPeer(b.vault, k0, 0, l, instance));
+		});
+		await t.join(await deriveRoomId(k0, "fize", TOPIC, 0, instance), b.id);
+		await until(() => lks.some((l) => l.id === c.id));
+		const p = await (peers[lks.findIndex((l) => l.id === c.id)] as Promise<
+			Awaited<ReturnType<typeof rawPeer>>
+		>);
+		await until(() => p.isAuthed(), 3000);
+		await p.send(3, await forge()); // no signature
+		await p.send(
+			3,
+			await forge(async (id) =>
+				b64uEncode(await b.vault.sign(rotationSigBytes(id))),
+			),
+		); // B's key
+		await new Promise((r) => setTimeout(r, 1500));
+		expect(c.mesh.epoch).toBe(0);
+		expect(c.vault.meshKey).toEqual(a.vault.meshKey);
+		expect(
+			rejected.filter((r) => r === "rotation signature invalid"),
+		).toHaveLength(2);
+		// the owner's own rotations still go through
+		await a.mesh.revoke(b.id);
+		await until(() => c.mesh.epoch === 1);
+		for (const x of [a, c]) x.mesh.destroy();
+		t.close();
 	}, 30_000);
 });
