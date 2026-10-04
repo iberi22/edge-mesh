@@ -740,6 +740,10 @@ export function createMesh(opts: MeshOptions): Mesh {
 	/** Synchronous: the link leaves `links` right now (the transport's onClose may fire much later). */
 	function closeRec(rec: LinkRec) {
 		rec.closing = true;
+		rec.authed = false;
+		rec.peerSess = undefined;
+		dropHeld(rec);
+		dropEarly(rec);
 		links.delete(rec);
 		try {
 			rec.link.close();
@@ -930,7 +934,12 @@ export function createMesh(opts: MeshOptions): Mesh {
 					equalBytes(body.subarray(0, NONCE_BYTES), rec.nonce) &&
 					new DataView(body.buffer, body.byteOffset + NONCE_BYTES, 4).getUint32(0, false) === ep &&
 					fromUtf8(body.subarray(NONCE_BYTES + 4)) === vault.deviceId;
-				if (!okAuth) return reject("bad link authentication", sender);
+				if (!okAuth) {
+					rec.authed = false;
+					rec.peerSess = undefined;
+					return reject("bad link authentication", sender);
+				}
+				// S1 Invariant: bind negotiated session identity and key material strictly to this link instance
 				rec.common = via;
 				rec.deviceId = sender;
 				rec.authed = true;
