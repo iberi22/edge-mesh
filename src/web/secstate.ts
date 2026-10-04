@@ -26,7 +26,7 @@ import {
 } from "./rotation.js";
 import type { MeshStore } from "./store.js";
 import { canonicalBytes, contentId, sha256B64u } from "./trust/canonical.js";
-import { issueGrant, issueRevocation } from "./trust/docs.js";
+import { checkIntegrity, issueGrant, issueRevocation } from "./trust/docs.js";
 import {
 	isPublicKey,
 	isSignature,
@@ -168,6 +168,7 @@ export class SecurityState {
 	private readonly gone: LruSet;
 	/** hashes of whole documents that failed verification (a forged copy never blocks the genuine one) */
 	private readonly bad = new LruSet(4096);
+	/** R6-B1: documents waiting for their parent/target, by the hash of the WHOLE document (never by the id it claims) */
 	private readonly deferred = new Map<string, SecDoc>();
 	/** R6-S5: bytes held by `deferred` (kept exact: every set and every drop goes through defer/unpark) */
 	private deferredBytesHeld = 0;
@@ -286,31 +287,46 @@ export class SecurityState {
 		)
 			this.bad.add(whole);
 		if (r.status === "pending" && !retry) {
+			// R6-B1: nothing is parked before the id is shown to be the content address of these very bytes. A forged
+			// copy carrying the id of a genuine document (of somebody else) used to be parked under that id and, since a
+			// parked id was never asked for again, it withheld the genuine one for good: the owner never re-keyed and the
+			// revoked member kept the key. The forgery is refused (a failure for its sender) instead of parked.
+			if (doc.t === "grant" || doc.t === "revoke") {
+				const why = await checkIntegrity(doc);
+				if (why) {
+					this.bad.add(whole);
+					return { status: "rejected", id: key, reason: why };
+				}
+			}
 			// R6-S5: parking is bounded by bytes; a document that does not fit is dropped and counts as a failure
 			// (it is not remembered as bad: the genuine one is still asked for)
-			const why = this.defer(key, doc, bytes.length);
+			const why = this.defer(whole, doc, bytes.length);
 			if (why) return { status: "rejected", id: key, reason: why };
 		}
 		return r;
 	}
 
-	/** Park a document until its parent/target arrives. Returns a reason if it was dropped instead. */
-	private defer(key: string, doc: SecDoc, bytes: number): string | undefined {
-		if (this.deferred.has(key)) return undefined;
+	/**
+	 * Park a document until its parent/target arrives. Returns a reason if it was dropped instead.
+	 * R6-B1: keyed by the hash of the WHOLE document received, never by the id it claims, so a forged copy parked under
+	 * somebody else's id can neither shadow the genuine one nor take its key out of `missing()`.
+	 */
+	private defer(whole: string, doc: SecDoc, bytes: number): string | undefined {
+		if (this.deferred.has(whole)) return undefined;
 		if (this.deferredBytesHeld + bytes > MAX_DEFERRED_BYTES)
 			return "deferred budget exhausted";
 		if (this.deferred.size >= MAX_DEFERRED)
 			this.unpark(this.deferred.keys().next().value as string);
-		this.deferred.set(key, doc);
+		this.deferred.set(whole, doc);
 		this.deferredBytesHeld += bytes;
 		return undefined;
 	}
 
 	/** Drop a parked document and give its bytes back. */
-	private unpark(key: string) {
-		const doc = this.deferred.get(key);
+	private unpark(whole: string) {
+		const doc = this.deferred.get(whole);
 		if (!doc) return;
-		this.deferred.delete(key);
+		this.deferred.delete(whole);
 		this.deferredBytesHeld -= canonicalBytes(doc).length;
 	}
 
@@ -322,10 +338,10 @@ export class SecurityState {
 	private async retryDeferred() {
 		for (let pass = 0; pass < 3 && this.deferred.size; pass++) {
 			let progress = false;
-			for (const [k, d] of [...this.deferred]) {
+			for (const [whole, d] of [...this.deferred]) {
 				const r = await this.ingest(d, true);
 				if (r.status !== "pending") {
-					this.unpark(k);
+					this.unpark(whole);
 					progress ||= r.status === "accepted";
 				}
 			}
@@ -769,7 +785,11 @@ export class SecurityState {
 	inventory(): string[] {
 		return [...this.have];
 	}
-	/** Keys among `ids` this device does not hold (nor dropped for good, nor knows to be bad). */
+	/**
+	 * Keys among `ids` this device does not hold (nor dropped for good, nor knows to be bad).
+	 * R6-B1: parked documents do NOT hide a key. Only a VERIFIED (accepted) document with that id stops it from being
+	 * asked for again: otherwise one forged copy parked under an id withholds the genuine one from every peer.
+	 */
 	missing(ids: readonly unknown[]): string[] {
 		return ids.filter(
 			(k): k is string =>
@@ -777,8 +797,7 @@ export class SecurityState {
 				k.length <= 64 &&
 				/^[gkrR]:/.test(k) &&
 				!this.have.has(k) &&
-				!this.gone.has(k) &&
-				!this.deferred.has(k),
+				!this.gone.has(k),
 		);
 	}
 	async get(keys: readonly string[]): Promise<SecDoc[]> {
