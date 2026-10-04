@@ -5,13 +5,11 @@
     ".",
     "packages/*"
   ],
-  "description": "Mesh networking library with CRDT sync, post-quantum identity, and peer-to-peer transport",
-  "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
-  },
+  "description": "Owner-controlled P2P mesh for the browser: Yjs CRDT sync over WebRTC with post-quantum (ML-DSA-65, ML-KEM-768 + ECDH) signed security state",
   "license": "AGPL-3.0-only",
   "type": "module",
   "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -39,7 +37,6 @@
       "default": "./dist/web/merge/index.js"
     }
   },
-  "types": "./dist/index.d.ts",
   "files": [
     "dist",
     "src",
@@ -57,38 +54,86 @@
     "bench": "npm run build && node scripts/bench.js"
   },
   "dependencies": {
-    "@bokuweb/zstd-wasm": "0.0.27",
     "@noble/post-quantum": "^0.6.1",
+    "y-protocols": "^1.0.7",
+    "yjs": "^13.6.32"
+  },
+  "peerDependencies": {
+    "@bokuweb/zstd-wasm": "0.0.27",
     "cbor-x": "1.6.6",
     "ethers": "^6.17.0",
     "idb": "^8.0.3",
     "peerjs": "^1.5.5",
     "ws": "^8.21.3",
-    "y-indexeddb": "9.0.12",
-    "y-protocols": "^1.0.7",
-    "yjs": "^13.6.32"
+    "y-indexeddb": "9.0.12"
+  },
+  "peerDependenciesMeta": {
+    "@bokuweb/zstd-wasm": {
+      "optional": true
+    },
+    "cbor-x": {
+      "optional": true
+    },
+    "ethers": {
+      "optional": true
+    },
+    "idb": {
+      "optional": true
+    },
+    "peerjs": {
+      "optional": true
+    },
+    "ws": {
+      "optional": true
+    },
+    "y-indexeddb": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.3",
+    "@bokuweb/zstd-wasm": "0.0.27",
     "@types/node": "^26.1.1",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@types/ws": "^8.18.1",
+    "cbor-x": "1.6.6",
+    "ethers": "^6.17.0",
+    "idb": "^8.0.3",
+    "peerjs": "^1.5.5",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.9",
+    "ws": "^8.21.3",
+    "y-indexeddb": "9.0.12"
   },
   "keywords": [
-    "mesh",
     "p2p",
+    "mesh",
     "crdt",
     "yjs",
-    "peerjs",
+    "webrtc",
+    "local-first",
     "post-quantum",
-    "webrtc"
+    "ml-dsa",
+    "ml-kem"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iberi22/edge-mesh.git"
+  },
+  "homepage": "https://github.com/iberi22/edge-mesh#readme",
+  "bugs": {
+    "url": "https://github.com/iberi22/edge-mesh/issues"
+  },
+  "sideEffects": false,
   "engines": {
     "node": ">=22.0.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/",
+    "provenance": true
   }
 }
