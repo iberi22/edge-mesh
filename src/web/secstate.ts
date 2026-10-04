@@ -91,9 +91,13 @@ const MAX_REMEMBERED = 8192;
  * and are not remembered as `bad`. `pending overflow` is the waiting set of the trust store being full: in the auditor's
  * proof a REAL grant is turned away that way, so its key must stay in `missing()` and whichever peer offers it again
  * must be served — no sender can keep a genuine document out by filling the room first.
+ *
+ * R6-S2b adds the per-SENDER room: the same refusal, counted on the peer that sent the documents instead of on the
+ * issuers they name, since an attacker signs its junk with fresh random keys and so holds one waiting slot per issuer.
  */
 const CONTEXTUAL_REFUSALS: ReadonlySet<string | undefined> = new Set([
 	"pending overflow",
+	"sender pending overflow",
 	"deferred-overflow",
 	"issuer over its cap",
 ]);
@@ -182,6 +186,8 @@ export class SecurityState {
 	private readonly bad = new LruSet(4096);
 	/** R6-B1: documents waiting for their parent/target, by the hash of the WHOLE document (never by the id it claims) */
 	private readonly deferred = new Map<string, SecDoc>();
+	/** R6-S2b: who sent each parked document, so the retry charges that sender's waiting slots and not the parent's. */
+	private readonly deferredFrom = new Map<string, string>();
 	/** R6-S5: bytes held by `deferred` (kept exact: every set and every drop goes through defer/unpark) */
 	private deferredBytesHeld = 0;
 	private readonly listeners = new Set<() => void>();
@@ -236,12 +242,20 @@ export class SecurityState {
 
 	// ─── ingest ──────────────────────────────────────────────────────────────
 
-	/** Add documents (any order, any source). Serialized; listeners fire once when anything was accepted. */
-	addMany(xs: readonly unknown[]): Promise<AddOutcome[]> {
+/**
+	 * Add documents (any order, any source). Serialized; listeners fire once when anything was accepted.
+	 * `opts.from` (R6-S2b) is the transport-level id of the peer that sent them: the trust store charges the waiting
+	 * slots they park to that sender, so one peer cannot take the whole waiting set by signing with fresh random keys.
+	 * Leave it undefined for local/own documents (a pair's own, ours, restored from storage): no sender is charged.
+	 */
+	addMany(
+		xs: readonly unknown[],
+		opts?: { from?: string },
+	): Promise<AddOutcome[]> {
 		const run = this.queue.then(async () => {
 			const before = this.version;
 			const out: AddOutcome[] = [];
-			for (const x of xs) out.push(await this.ingest(x));
+			for (const x of xs) out.push(await this.ingest(x, opts?.from));
 			if (this.version !== before) {
 				await this.retryDeferred();
 				this.scheduleSave();
@@ -261,7 +275,11 @@ export class SecurityState {
 		return this.addMany([x]).then((r) => r[0] as AddOutcome);
 	}
 
-	private async ingest(x: unknown, retry = false): Promise<AddOutcome> {
+	private async ingest(
+		x: unknown,
+		from?: string,
+		retry = false,
+	): Promise<AddOutcome> {
 		const t = (x as { t?: unknown } | null)?.t;
 		if (t !== "grant" && t !== "revoke" && t !== "kex" && t !== "rot")
 			return { status: "rejected", reason: "unknown document" };
@@ -289,7 +307,7 @@ export class SecurityState {
 			return { status: "rejected", id: key, reason: "known bad" };
 		let r: AddOutcome;
 		if (doc.t === "grant" || doc.t === "revoke")
-			r = await this.ingestTrust(doc, key);
+			r = await this.ingestTrust(doc, key, from);
 		else if (doc.t === "kex") r = await this.ingestKex(doc, key);
 		else r = await this.ingestRot(doc, key);
 		// R6-S2: a context-dependent refusal (the waiting set was full) is NOT a property of the document: it is not
@@ -310,7 +328,7 @@ export class SecurityState {
 			}
 			// R6-S5: parking is bounded by bytes; a document that does not fit is dropped and counts as a failure
 			// (it is not remembered as bad: the genuine one is still asked for)
-			const why = this.defer(whole, doc, bytes.length);
+			const why = this.defer(whole, doc, bytes.length, from);
 			if (why) return { status: "rejected", id: key, reason: why };
 		}
 		return r;
@@ -320,14 +338,21 @@ export class SecurityState {
 	 * Park a document until its parent/target arrives. Returns a reason if it was dropped instead.
 	 * R6-B1: keyed by the hash of the WHOLE document received, never by the id it claims, so a forged copy parked under
 	 * somebody else's id can neither shadow the genuine one nor take its key out of `missing()`.
+	 * R6-S2b: remembers which peer sent it, so the retry charges that sender's waiting slots and not the parent's.
 	 */
-	private defer(whole: string, doc: SecDoc, bytes: number): string | undefined {
+	private defer(
+		whole: string,
+		doc: SecDoc,
+		bytes: number,
+		from?: string,
+	): string | undefined {
 		if (this.deferred.has(whole)) return undefined;
 		if (this.deferredBytesHeld + bytes > MAX_DEFERRED_BYTES)
 			return "deferred budget exhausted";
 		if (this.deferred.size >= MAX_DEFERRED)
 			this.unpark(this.deferred.keys().next().value as string);
 		this.deferred.set(whole, doc);
+		if (from !== undefined) this.deferredFrom.set(whole, from);
 		this.deferredBytesHeld += bytes;
 		return undefined;
 	}
@@ -337,6 +362,7 @@ export class SecurityState {
 		const doc = this.deferred.get(whole);
 		if (!doc) return;
 		this.deferred.delete(whole);
+		this.deferredFrom.delete(whole);
 		this.deferredBytesHeld -= canonicalBytes(doc).length;
 	}
 
@@ -349,7 +375,8 @@ export class SecurityState {
 		for (let pass = 0; pass < 3 && this.deferred.size; pass++) {
 			let progress = false;
 			for (const [whole, d] of [...this.deferred]) {
-				const r = await this.ingest(d, true);
+				// R6-S2b: retried under the sender that sent it, so its waiting slots go back where they came from
+				const r = await this.ingest(d, this.deferredFrom.get(whole), true);
 				if (r.status !== "pending") {
 					this.unpark(whole);
 					progress ||= r.status === "accepted";
@@ -362,6 +389,7 @@ export class SecurityState {
 	private async ingestTrust(
 		doc: Grant | Revocation,
 		key: string,
+		from?: string,
 	): Promise<AddOutcome> {
 		// a grant needs nothing up front (its cap is applied once it is accepted, see `applyCap`); a revocation does:
 		// it counts only against a known grant and from the root or a strict ancestor of it, anything else is not
@@ -382,7 +410,7 @@ export class SecurityState {
 					reason: "issuer cannot revoke this grant",
 				};
 		}
-		const r = await this.trust.add(doc);
+		const r = await this.trust.add(doc, { from });
 		if (r.status === "accepted") {
 			if (this.applyCap(doc)) {
 				// the arriving document sorts last in its bucket: the kept set is already the cap-N smallest ids, so it

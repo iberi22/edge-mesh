@@ -5,8 +5,8 @@
 // - `grants` holds only grants whose signature verified against the root (issuer = root) or against the subject key
 //   of an accepted parent grant, and whose delegation rules hold w.r.t. that parent. So every accepted grant has a
 //   fully verified chain to the root.
-// - Documents whose parent is unknown wait in `pending` (bounded, per sending peer as well as in total, and they expire)
-//   and are re-processed when the parent arrives.
+// - Documents whose parent is unknown wait in `pending` (bounded in total, per issuer AND per sending peer, and they
+//   expire) and are re-processed when the parent arrives.
 // - Revocations are accepted on signature; whether they are *effective* (issuer is the root or a STRICT ancestor of
 //   the target: never the target grant itself) is decided at query time, so the target may arrive later. A
 //   revocation whose issuer grant is its own target is rejected outright: a device cannot retract its own accepted
@@ -55,6 +55,14 @@ export interface TrustStoreOptions {
 	 */
 	maxPendingPerIssuer?: number;
 	/**
+	 * R6-S2b: max documents waiting for a parent that ONE SENDING PEER may hold at once. The per-issuer cap counts
+	 * issuers, so it is worn off by signing with fresh random keys: one member then parks an unlimited number of
+	 * documents, each under an issuer of its own, and fills the waiting set again. Counting senders closes that.
+	 * `from` is the transport-level id of the peer that sent the documents (undefined for local/own documents, which
+	 * are not charged to anybody). Default 32.
+	 */
+	maxPendingPerSender?: number;
+	/**
 	 * R6-S2: how long a parked document waits for its parent before it is dropped (its slots are then reclaimed). It
 	 * bounds what a document that arrives before its parent can hold: without it, orphans waiting for a parent that
 	 * never comes keep their slots for good. Default 10 minutes.
@@ -81,10 +89,18 @@ interface Derived {
 	anchors: Map<string, Anchor[]>; // subject fp -> { seq, id } its ops <= seq must chain to (S3)
 }
 
+/** Who is offering these documents: R6-S2b charges the waiting slots they take to the peer that sent them. */
+export interface IngestOpts {
+	/** transport-level id of the sending peer; undefined for local/own documents (no per-sender quota). */
+	from?: string;
+}
+
 /** A document parked in `pending`: it waits for its parent, and only until `at + pendingTtlMs` (R6-S2). */
 interface Waiting {
 	doc: TrustDoc;
 	at: number;
+	/** R6-S2b: transport id of the peer that sent it — undefined for local/own documents. */
+	from?: string;
 }
 
 /** "The op of this subject at `seq` is `id`" (from an effective revocation): its earlier ops must chain to it. */
@@ -96,6 +112,11 @@ export interface Anchor {
 const MAX_REJECTED = 10_000;
 /** R6-S2: waiting slots one issuer (one sending peer) may hold at once. */
 const DEFAULT_MAX_PENDING_PER_ISSUER = 32;
+/**
+ * R6-S2b: waiting slots one SENDING PEER may hold at once. Counted on the peer that sent the documents, not on the
+ * issuers they name, so fresh random signatures cannot buy more room.
+ */
+const DEFAULT_MAX_PENDING_PER_SENDER = 32;
 /** R6-S2: a parked document whose parent has not arrived by then is dropped and its slot reclaimed. */
 const DEFAULT_PENDING_TTL_MS = 10 * 60 * 1000;
 const DENY_PRIORITY: DenyReason[] = [
@@ -115,6 +136,7 @@ export class TrustStore {
 	private readonly now: () => number;
 	private readonly maxPending: number;
 	private readonly maxPendingPerIssuer: number;
+	private readonly maxPendingPerSender: number;
 	private readonly pendingTtlMs: number;
 	private readonly grants = new Map<string, Grant>();
 	private readonly depth = new Map<string, number>();
@@ -123,6 +145,8 @@ export class TrustStore {
 	private pendingCount = 0;
 	/** R6-S2: parked documents per issuer, so no single peer can take the whole waiting set. */
 	private readonly waitingByIssuer = new Map<string, number>();
+	/** R6-S2b: parked documents per SENDING PEER, so fresh random issuers cannot buy more room. */
+	private readonly waitingBySender = new Map<string, number>();
 	/** R6-S2: last instant the waiting set was swept for expired documents (see `expireWaiting`). */
 	private lastSweepAt = 0;
 	private readonly rejected = new Map<string, string>();
@@ -142,21 +166,27 @@ export class TrustStore {
 		this.maxPending = opts.maxPending ?? 1000;
 		this.maxPendingPerIssuer =
 			opts.maxPendingPerIssuer ?? DEFAULT_MAX_PENDING_PER_ISSUER;
+		this.maxPendingPerSender =
+			opts.maxPendingPerSender ?? DEFAULT_MAX_PENDING_PER_SENDER;
 		this.pendingTtlMs = opts.pendingTtlMs ?? DEFAULT_PENDING_TTL_MS;
 	}
 
 	// ─── ingest ──────────────────────────────────────────────────────────────
 
-	add(doc: unknown): Promise<AddResult> {
-		return this.addMany([doc]).then((r) => r[0] as AddResult);
+	add(doc: unknown, opts?: IngestOpts): Promise<AddResult> {
+		return this.addMany([doc], opts).then((r) => r[0] as AddResult);
 	}
 
-	/** Ingest documents (serialized). Listeners fire once if anything was accepted. */
-	addMany(docs: readonly unknown[]): Promise<AddResult[]> {
+	/**
+	 * Ingest documents (serialized). Listeners fire once if anything was accepted.
+	 * `opts.from` is the transport-level id of the peer that sent them: it is charged the waiting slots they take
+	 * (R6-S2b) and left undefined for local/own documents, which no sender can be blamed for.
+	 */
+	addMany(docs: readonly unknown[], opts?: IngestOpts): Promise<AddResult[]> {
 		const run = this.queue.then(async () => {
 			const before = this.version;
 			const out: AddResult[] = [];
-			for (const d of docs) out.push(await this.ingest(d));
+			for (const d of docs) out.push(await this.ingest(d, opts?.from));
 			if (this.version !== before) this.emit();
 			return out;
 		});
@@ -175,7 +205,7 @@ export class TrustStore {
 		return { status: "rejected", id, reason };
 	}
 
-	private async ingest(x: unknown): Promise<AddResult> {
+	private async ingest(x: unknown, from?: string): Promise<AddResult> {
 		const t = (x as { t?: unknown } | null)?.t;
 		if (t === "grant") {
 			const bad = checkGrantShape(x, this.schema);
@@ -196,7 +226,7 @@ export class TrustStore {
 		const integrity = await checkIntegrity(doc);
 		if (integrity) return { status: "rejected", reason: integrity }; // id is not trustworthy: don't remember it
 
-		const res = await this.verifyAndStore(doc);
+		const res = await this.verifyAndStore(doc, from);
 		if (res.status === "rejected" && this.rejected.has(doc.id))
 			this.rejectWaiting(doc.id);
 		if (res.status !== "accepted") return res;
@@ -209,14 +239,19 @@ export class TrustStore {
 			this.pending.delete(pid);
 			for (const w of waiting.values()) {
 				this.releaseWaiting(w);
-				const r = await this.verifyAndStore(w.doc);
+				// R6-S2b: a document waiting for this parent re-verifies under the peer that sent it, not under
+				// whoever happens to have supplied the parent
+				const r = await this.verifyAndStore(w.doc, w.from);
 				if (r.status === "accepted" && w.doc.t === "grant") work.push(w.doc.id);
 			}
 		}
 		return res;
 	}
 
-	private async verifyAndStore(doc: TrustDoc): Promise<AddResult> {
+	private async verifyAndStore(
+		doc: TrustDoc,
+		from?: string,
+	): Promise<AddResult> {
 		if (this.grants.has(doc.id) || this.revs.has(doc.id))
 			return { status: "duplicate", id: doc.id };
 		let issuerPub: string;
@@ -238,7 +273,7 @@ export class TrustStore {
 			if (!parent) {
 				const pr = this.rejected.get(doc.parent);
 				if (pr) return this.reject(doc.id, "parent grant rejected");
-				return this.park(doc);
+				return this.park(doc, from);
 			}
 			if (parent.subject.fp !== doc.issuer)
 				return this.reject(doc.id, "issuer is not the subject of parent grant");
@@ -304,7 +339,7 @@ export class TrustStore {
 		return dropped;
 	}
 
-	private park(doc: TrustDoc): AddResult {
+	private park(doc: TrustDoc, from?: string): AddResult {
 		const pid = doc.parent as string;
 		const key = `${doc.id}.${doc.sig}`; // by id+sig: a forged copy must not shadow the real one
 		const now = this.now();
@@ -327,13 +362,26 @@ export class TrustStore {
 			this.pendingCount >= this.maxPending
 		)
 			return { status: "rejected", id: doc.id, reason: "pending overflow" };
+		// R6-S2b: same thing one level up, on the SENDER instead of on the issuers they name. A peer that signed
+		// with fresh random keys holds one waiting slot per issuer and got past the check above every time; what it
+		// actually spends is its own quota of slots, so that is what is counted here. Local/own documents (no `from`)
+		// are charged to nobody. Also contextual: not remembered against the id, so it stays askable.
+		const heldBySender =
+			from === undefined ? 0 : (this.waitingBySender.get(from) ?? 0);
+		if (heldBySender >= this.maxPendingPerSender)
+			return {
+				status: "rejected",
+				id: doc.id,
+				reason: "sender pending overflow",
+			};
 		if (!m) {
 			m = new Map();
 			this.pending.set(pid, m);
 		}
-		m.set(key, { doc, at: now });
+		m.set(key, { doc, at: now, from });
 		this.pendingCount++;
 		this.waitingByIssuer.set(doc.issuer, held + 1);
+		if (from !== undefined) this.waitingBySender.set(from, heldBySender + 1);
 		return {
 			status: "pending",
 			id: doc.id,
@@ -360,12 +408,17 @@ export class TrustStore {
 		}
 	}
 
-	/** Give back the global and per-issuer waiting slots of a document that leaves the waiting set. */
+	/** Give back the global, per-issuer and per-sender (R6-S2b) waiting slots of a document that leaves the waiting set. */
 	private releaseWaiting(w: Waiting) {
 		this.pendingCount--;
 		const left = (this.waitingByIssuer.get(w.doc.issuer) ?? 1) - 1;
 		if (left > 0) this.waitingByIssuer.set(w.doc.issuer, left);
 		else this.waitingByIssuer.delete(w.doc.issuer);
+		if (w.from !== undefined) {
+			const l = (this.waitingBySender.get(w.from) ?? 1) - 1;
+			if (l > 0) this.waitingBySender.set(w.from, l);
+			else this.waitingBySender.delete(w.from);
+		}
 	}
 
 	/** Delegation rules of a grant w.r.t. its (accepted) issuer grant; undefined parent = root-issued. */

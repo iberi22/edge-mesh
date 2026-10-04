@@ -1085,9 +1085,14 @@ export function createMesh(opts: MeshOptions): Mesh {
 		}
 	}
 	/** Add documents made or received here, and announce the new ones. */
-	async function addLocal(docs: readonly unknown[], except?: LinkRec) {
+	async function addLocal(
+		docs: readonly unknown[],
+		except?: LinkRec,
+		from?: string,
+	) {
 		if (!sec) return [];
-		const outs = await sec.addMany(docs);
+		// R6-S2b: `from` is the peer that sent these documents, so the trust store can charge its waiting slots to it
+		const outs = await sec.addMany(docs, { from });
 		announce(
 			outs.filter((o) => o.status === "accepted" && o.id).map((o) => o.id as string),
 			except,
@@ -1114,7 +1119,7 @@ export function createMesh(opts: MeshOptions): Mesh {
 			// a sender whose documents keep failing (bad signatures, junk) is cut off for a while: each costs a check
 			for (let i = 0; i < m.docs.length; i += 16) {
 				if (!budget(budgets.fail, sender, 0, TRUST_FAIL_PER_MIN)) return reject("too many bad security documents", sender);
-				const outs = await addLocal(m.docs.slice(i, i + 16), rec);
+				const outs = await addLocal(m.docs.slice(i, i + 16), rec, sender);
 				for (const o of outs) if (o.status === "rejected") reject(o.reason ?? "invalid security document", sender);
 				const bad = outs.filter((o) => o.status === "rejected").length;
 				if (bad && !budget(budgets.fail, sender, bad, TRUST_FAIL_PER_MIN)) return reject("too many bad security documents", sender);

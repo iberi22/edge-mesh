@@ -1,7 +1,8 @@
 // Round-6 security audit regressions (docs/security/audits/2026-10-03-ronda-6.md).
 // Each test is the auditor's proof with the assertion inverted: it FAILS while the attack works.
 // R6-B1 accomplice (withholding an admin's revocation), R6-S1 (verification budget and unrequested documents),
-// R6-S2 (trust-store waiting slots), R6-S3 (catch-up beyond one `want`), R6-S4 (order-independent caps),
+// R6-S2 (trust-store waiting slots), R6-S2b (waiting slots per SENDING PEER), R6-S3 (catch-up beyond one `want`),
+// R6-S4 (order-independent caps),
 // R6-S5 (byte bounds on parked documents), R6-N3 (signature checked before the superseded list).
 import { appendFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
@@ -903,4 +904,183 @@ describe("R6-N3: the superseded list", () => {
 		expect(s.missing([key])).toEqual([key]); // still askable: a real n = 0 could turn up
 		expect(s.keyAgreement(dev.deviceId)?.ecdh).toBe(real.ecdh);
 	}, 60_000);
+});
+
+describe("R6-S2b: waiting slots are limited per SENDING PEER, not only per issuer", () => {
+	/**
+	 * ONE peer, 200 well-formed signed grants, each from a DIFFERENT random issuer and each waiting for a parent that
+	 * never arrives. Every one of them is "well-behaved" as far as the per-issuer cap is concerned (one document per
+	 * issuer) and 200 is far below the global cap (256), so nothing but a limit keyed on the SENDER can hold them back.
+	 */
+	const orphanFlood = async (
+		v: Awaited<ReturnType<typeof makeVault>>,
+		mid: string,
+		n: number,
+	) => {
+		const out: Awaited<ReturnType<typeof issueGrant>>[] = [];
+		for (let i = 0; i < n; i++)
+			out.push(
+				await issueGrant(
+					{
+						alg: "ML-DSA-65" as const,
+						// a fresh random issuer per document: the per-issuer cap sees one document each time
+						fp: rid(),
+						pub: b64uEncode(randomBytes(1952)),
+						// a parked document is not signature-checked, so only `fp` matters here
+						sign: (d: Uint8Array) => v.sign(d),
+					},
+					{
+						subject: { pub: b64uEncode(randomBytes(1952)) },
+						role: "member",
+						permissions: { mesh: "editar" },
+						delegate: 0,
+						issuedAt: i,
+					},
+					{ inst: mid, parent: rid(), now: 0 },
+				),
+			);
+		return out;
+	};
+
+	it("R6-S2b: one sender parks at most its own quota, and a real grant from another sender is still parked", async () => {
+		const v = await makeVault("s2b-root");
+		const root = {
+			mid: "m-s2b",
+			deviceId: v.deviceId,
+			pub: b64uEncode(v.devicePublicKey),
+		};
+		const s = await SecurityState.open({ root, store: memoryStore() });
+		const rootSigner = {
+			alg: "ML-DSA-65" as const,
+			fp: v.deviceId,
+			pub: b64uEncode(v.devicePublicKey),
+			sign: (d: Uint8Array) => v.sign(d),
+		};
+		const adminVault = await makeVault("s2b-adm");
+		const adminGrant = await issueGrant(
+			rootSigner,
+			{
+				subject: { pub: b64uEncode(adminVault.devicePublicKey) },
+				role: "admin",
+				delegate: 1,
+			},
+			{ inst: root.mid },
+		);
+		const memberVault = await makeVault("s2b-good");
+		const goodGrant = await issueGrant(
+			{
+				alg: "ML-DSA-65" as const,
+				fp: adminVault.deviceId,
+				pub: b64uEncode(adminVault.devicePublicKey),
+				sign: (d: Uint8Array) => adminVault.sign(d),
+			},
+			{
+				subject: { pub: b64uEncode(memberVault.devicePublicKey) },
+				role: "member",
+				delegate: 0,
+			},
+			{ inst: root.mid, parent: adminGrant },
+		);
+
+		// one member sends 200 orphans, every one from a different issuer
+		const attacker = await orphanFlood(v, root.mid, 200);
+		const outs = await s.addMany(attacker, { from: "peer-attacker" });
+		const parked = outs.filter(
+			(o: { status: string }) => o.status === "pending",
+		);
+		// the sender's own quota bounds it, however many issuers it wears
+		expect(parked.length).toBe(32);
+		expect(s.trust.pendingIds()).toHaveLength(32);
+		// ... and the rest are turned away, not remembered against their ids
+		expect(
+			outs.filter((o: { status: string }) => o.status === "rejected"),
+		).toHaveLength(200 - 32);
+
+		// a GENUINE grant that arrives before its parent, offered by ANOTHER peer, is parked anyway: the attacker
+		// cannot keep a real document out by sending first
+		const good = await s.addMany([goodGrant], { from: "peer-honest" });
+		expect(good[0].status).toBe("pending");
+		expect(s.trust.pendingIds()).toHaveLength(33);
+		expect(s.trust.pendingIds()).toContain(goodGrant.id);
+		expect(s.roleOf(memberVault.deviceId)).toBeNull();
+
+		// the parent arrives and the real grant is accepted: only the attacker's slots are released
+		expect((await s.add(adminGrant)).status).toBe("accepted");
+		expect(s.roleOf(memberVault.deviceId)).toBe("member");
+		expect(s.trust.pendingIds()).toHaveLength(32);
+		expect(s.trust.pendingIds()).not.toContain(goodGrant.id);
+	}, 300_000);
+
+	it("R6-S2b: a document refused for its sender's quota is not remembered as bad, so it stays askable", async () => {
+		const v = await makeVault("s2bq-root");
+		const root = {
+			mid: "m-s2bq",
+			deviceId: v.deviceId,
+			pub: b64uEncode(v.devicePublicKey),
+		};
+		const s = await SecurityState.open({ root, store: memoryStore() });
+		const adminVault = await makeVault("s2bq-adm");
+		const adminGrant = await issueGrant(
+			{
+				alg: "ML-DSA-65" as const,
+				fp: v.deviceId,
+				pub: b64uEncode(v.devicePublicKey),
+				sign: (d: Uint8Array) => v.sign(d),
+			},
+			{
+				subject: { pub: b64uEncode(adminVault.devicePublicKey) },
+				role: "admin",
+				delegate: 1,
+			},
+			{ inst: root.mid },
+		);
+		const memberVault = await makeVault("s2bq-good");
+		const goodGrant = await issueGrant(
+			{
+				alg: "ML-DSA-65" as const,
+				fp: adminVault.deviceId,
+				pub: b64uEncode(adminVault.devicePublicKey),
+				sign: (d: Uint8Array) => adminVault.sign(d),
+			},
+			{
+				subject: { pub: b64uEncode(memberVault.devicePublicKey) },
+				role: "member",
+				delegate: 0,
+			},
+			{ inst: root.mid, parent: adminGrant },
+		);
+
+		const attacker = await orphanFlood(v, root.mid, 40);
+		const outs = await s.addMany(attacker, { from: "peer-attacker" });
+		expect(
+			outs.filter((o: { status: string }) => o.status === "pending"),
+		).toHaveLength(32);
+		const refused = attacker[39] as { id: string };
+		expect(outs[39]).toMatchObject({
+			status: "rejected",
+			reason: "sender pending overflow",
+		});
+
+		// It is a property of the ROOM (this sender had filled its share), not of the document: the id must stay
+		// askable — NOT be remembered as bad — so whichever peer offers it again is served.
+		const key = `g:${refused.id}`;
+		expect(s.missing([key])).toEqual([key]);
+		const again = await s.addMany([refused], { from: "peer-attacker" });
+		expect(again[0].reason).not.toBe("known bad");
+		expect(again[0].reason).toBe("sender pending overflow");
+		expect(s.missing([key])).toEqual([key]);
+
+		// The same document offered by ANOTHER sender (which still has room) is parked, proof that nothing was decided
+		// about the document itself.
+		const fromOther = await s.addMany([refused], { from: "peer-other" });
+		expect(fromOther[0].status).toBe("pending");
+		expect(s.trust.pendingIds()).toContain(refused.id);
+
+		// And the real grant refused by nobody is unaffected.
+		expect(
+			(await s.addMany([goodGrant], { from: "peer-honest" }))[0].status,
+		).toBe("pending");
+		expect((await s.add(adminGrant)).status).toBe("accepted");
+		expect(s.roleOf(memberVault.deviceId)).toBe("member");
+	}, 300_000);
 });
