@@ -28,4 +28,4 @@ The SWAL architecture empowers individuals and organizations to collaborate, pro
 4. **Decentralized Governance & Autonomy:**
    - On-chain and P2P proposal voting mechanisms.
    - Deterministic authority selection and failover.
-   - Transparent, open-source AGPL-3.0 licensing ensuring software freedom for all node operators.
+   - Transparent, source-available FSL-1.1-ALv2 licensing (Apache-2.0 automatically after two years).

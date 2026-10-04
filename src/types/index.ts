@@ -309,8 +309,8 @@ export interface EdgeMeshConfig {
 	 */
 	readonly requireAuthz?: boolean;
 	/**
-	 * When true, remote SYNC/AUTHZ envelopes must carry a verifiable ML-DSA signature.
-	 * Default false for backward compatibility; enable in hardened deployments/tests.
+	 * When true (default), remote SYNC/AUTHZ envelopes must carry a verifiable ML-DSA signature from a peer
+	 * key registered with `registrarClavePublica`. Set to false only for legacy/unsigned deployments.
 	 */
 	readonly requireSignedEnvelopes?: boolean;
 	/**

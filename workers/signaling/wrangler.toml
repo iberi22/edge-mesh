@@ -1,0 +1,20 @@
+name = "swal-mesh-signaling"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+
+# Route placeholder (enable only when mesh.swal.network is ready; NOT deployed yet):
+# routes = [{ pattern = "mesh.swal.network/*", zone_name = "swal.network" }]
+
+[vars]
+# Comma separated; "*.domain" matches any subdomain. Requests without Origin (native clients) are allowed.
+ALLOWED_ORIGINS = "*.swal.network,http://localhost:*,http://127.0.0.1:*"
+
+# Secret (never in this file): wrangler secret put MESH_ENTITLEMENT_SECRET
+
+[[durable_objects.bindings]]
+name = "MESH_ROOM"
+class_name = "MeshRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["MeshRoom"]

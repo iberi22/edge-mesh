@@ -11,7 +11,7 @@ edge-mesh/
 ├── AGENTS.md                  # Developer & AI agent guidelines (SWAL standard)
 ├── CLA.md                     # Contributor License Agreement
 ├── CONTRIBUTING.md            # Contribution guidelines & code standards (SWAL network)
-├── LICENSE                    # AGPL-3.0-only License
+├── LICENSE                    # FSL-1.1-ALv2 License
 ├── README.md                  # Project overview, quickstart, and features
 ├── SECURITY.md                # Vulnerability reporting & post-quantum security policy
 ├── SRC.md                     # Repository structure map (this document)
