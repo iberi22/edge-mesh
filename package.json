@@ -6,10 +6,14 @@
     "packages/*"
   ],
   "description": "Owner-controlled P2P mesh for the browser: Yjs CRDT sync over WebRTC with post-quantum (ML-DSA-65, ML-KEM-768 + ECDH) signed security state",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/",
+    "provenance": true
+  },
   "license": "AGPL-3.0-only",
   "type": "module",
   "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -37,12 +41,14 @@
       "default": "./dist/web/merge/index.js"
     }
   },
+  "types": "./dist/index.d.ts",
   "files": [
     "dist",
     "src",
     "LICENSE",
     "README.md"
   ],
+  "sideEffects": false,
   "scripts": {
     "build": "tsc",
     "dev": "tsc -w",
@@ -51,10 +57,12 @@
     "lint": "biome check src/",
     "format": "biome format --write src/",
     "check": "npx tsc --noEmit",
-    "bench": "npm run build && node scripts/bench.js"
+    "bench": "npm run build && node scripts/bench.js",
+    "pack:smoke": "node scripts/pack-smoke.mjs"
   },
   "dependencies": {
     "@noble/post-quantum": "^0.6.1",
+    "y-indexeddb": "9.0.12",
     "y-protocols": "^1.0.7",
     "yjs": "^13.6.32"
   },
@@ -64,8 +72,7 @@
     "ethers": "^6.17.0",
     "idb": "^8.0.3",
     "peerjs": "^1.5.5",
-    "ws": "^8.21.3",
-    "y-indexeddb": "9.0.12"
+    "ws": "^8.21.3"
   },
   "peerDependenciesMeta": {
     "@bokuweb/zstd-wasm": {
@@ -85,9 +92,6 @@
     },
     "ws": {
       "optional": true
-    },
-    "y-indexeddb": {
-      "optional": true
     }
   },
   "devDependencies": {
@@ -105,8 +109,7 @@
     "react-dom": "^19.2.8",
     "typescript": "^7.0.2",
     "vitest": "^4.1.9",
-    "ws": "^8.21.3",
-    "y-indexeddb": "9.0.12"
+    "ws": "^8.21.3"
   },
   "keywords": [
     "p2p",
@@ -114,10 +117,10 @@
     "crdt",
     "yjs",
     "webrtc",
-    "local-first",
     "post-quantum",
     "ml-dsa",
-    "ml-kem"
+    "ml-kem",
+    "local-first"
   ],
   "repository": {
     "type": "git",
@@ -127,13 +130,7 @@
   "bugs": {
     "url": "https://github.com/iberi22/edge-mesh/issues"
   },
-  "sideEffects": false,
   "engines": {
     "node": ">=22.0.0"
-  },
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/",
-    "provenance": true
   }
 }
