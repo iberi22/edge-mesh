@@ -333,3 +333,134 @@ describe("web/oplog: catch-up protocol", () => {
 		expect(ids[0]?.length).toBe(4);
 	});
 });
+
+describe("web/oplog: content-address pending caps (R6-S4)", () => {
+	it("same sender rotating N identities targeting the same document address cannot exceed the target pending cap", async () => {
+		const w = await world();
+		const t = await w.trust();
+		await t.addMany(w.docs);
+		const log = await w.log(undefined, t, { maxPendingPerTarget: 5 });
+
+		// Generate 7 unknown author ops targeting the exact same document/entity ("doc-1")
+		const ops = [];
+		for (let i = 1; i <= 7; i++) {
+			ops.push({
+				t: "op",
+				v: 1,
+				alg: "ML-DSA-65",
+				inst: w.inst,
+				author: `rot-author-${i}`, // rotating N author identities
+				seq: 1,
+				prev: null,
+				hlc: formatHlc(1000 + i, 0),
+				module: "pedidos",
+				action: "order.created",
+				entity: "order",
+				entityId: "doc-1", // same content/target address
+				sig: `sig-${i}`,
+			});
+		}
+
+		const results = await log.ingestMany(ops);
+		// First 5 ops are parked as pending
+		expect(results.slice(0, 5).map((r) => r.status)).toEqual([
+			"pending",
+			"pending",
+			"pending",
+			"pending",
+			"pending",
+		]);
+		// 6th and 7th ops exceed the target cap and return pending-overflow
+		expect(results[5]).toMatchObject({
+			status: "quarantined",
+			reason: "pending-overflow",
+		});
+		expect(results[6]).toMatchObject({
+			status: "quarantined",
+			reason: "pending-overflow",
+		});
+	});
+
+	it("two different senders targeting the same document address share the target pending cap", async () => {
+		const w = await world();
+		const t = await w.trust();
+		await t.addMany(w.docs);
+		const log = await w.log(undefined, t, { maxPendingPerTarget: 4 });
+
+		const makeOp = (author: string, seq: number, docId: string) => ({
+			t: "op",
+			v: 1,
+			alg: "ML-DSA-65",
+			inst: w.inst,
+			author,
+			seq,
+			prev: seq === 1 ? null : `prev-${seq - 1}`,
+			hlc: formatHlc(2000 + seq, 0),
+			module: "pedidos",
+			action: "order.created",
+			entity: "order",
+			entityId: docId,
+			sig: `sig-${author}-${seq}`,
+		});
+
+		// Author A sends 3 pending ops targeting "doc-1"
+		const rA1 = await log.ingest(makeOp("author-A", 1, "doc-1"));
+		const rA2 = await log.ingest(makeOp("author-A", 2, "doc-1"));
+		const rA3 = await log.ingest(makeOp("author-A", 3, "doc-1"));
+		expect([rA1.status, rA2.status, rA3.status]).toEqual([
+			"pending",
+			"pending",
+			"pending",
+		]);
+
+		// Author B sends 1 pending op targeting "doc-1" (total 4 = cap reached)
+		const rB1 = await log.ingest(makeOp("author-B", 1, "doc-1"));
+		expect(rB1.status).toBe("pending");
+
+		// Author B sends another pending op targeting "doc-1" -> overflows because A and B share the target cap
+		const rB2 = await log.ingest(makeOp("author-B", 2, "doc-1"));
+		expect(rB2).toMatchObject({
+			status: "quarantined",
+			reason: "pending-overflow",
+		});
+	});
+
+	it("a low-traffic document address is not blocked by heavy traffic on another document address", async () => {
+		const w = await world();
+		const t = await w.trust();
+		await t.addMany(w.docs);
+		const log = await w.log(undefined, t, { maxPendingPerTarget: 3 });
+
+		const makeOp = (author: string, seq: number, docId: string) => ({
+			t: "op",
+			v: 1,
+			alg: "ML-DSA-65",
+			inst: w.inst,
+			author,
+			seq,
+			prev: seq === 1 ? null : `prev-${seq - 1}`,
+			hlc: formatHlc(3000 + seq, 0),
+			module: "pedidos",
+			action: "order.created",
+			entity: "order",
+			entityId: docId,
+			sig: `sig-${author}-${seq}`,
+		});
+
+		// Fill target "heavy-doc" to its cap (3)
+		for (let i = 1; i <= 3; i++) {
+			const r = await log.ingest(makeOp("author-X", i, "heavy-doc"));
+			expect(r.status).toBe("pending");
+		}
+		// 4th op targeting "heavy-doc" overflows
+		const overflowDoc = await log.ingest(makeOp("author-X", 4, "heavy-doc"));
+		expect(overflowDoc).toMatchObject({
+			status: "quarantined",
+			reason: "pending-overflow",
+		});
+
+		// An op targeting a different low-traffic document ("quiet-doc") is NOT blocked
+		const quietOp = await log.ingest(makeOp("author-Y", 1, "quiet-doc"));
+		expect(quietOp.status).toBe("pending");
+	});
+});

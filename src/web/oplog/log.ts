@@ -51,6 +51,8 @@ export interface OpLogOptions {
 	maxPendingBytes?: number;
 	/** max pending ops of one author. Default 1024 */
 	maxPendingPerAuthor?: number;
+	/** max pending ops per target document/entity (content address). Default 1024 */
+	maxPendingPerTarget?: number;
 	/**
 	 * Budget for ops whose author has no known grant yet (signature not checkable, so anyone can produce them):
 	 * count (default maxPending / 10) and bytes (default 1 MiB). When full, the OLDEST unknown-author op is dropped
@@ -98,6 +100,7 @@ const isStr = (x: unknown, max = 256): x is string =>
 	typeof x === "string" && x.length > 0 && x.length <= max;
 const isOptStr = (x: unknown, max = 256) => x === undefined || isStr(x, max);
 const vkey = (author: string, seq: number) => `${author}:${seq}`;
+const targetKey = (op: Op) => `${op.module}:${op.entity}:${op.entityId}`;
 
 function opShape(x: unknown): string | null {
 	if (!isObj(x) || x.t !== "op") return "not an op";
@@ -149,12 +152,13 @@ export class OpLog {
 	private readonly maxPending: number;
 	private readonly maxPendingBytes: number;
 	private readonly maxPendingPerAuthor: number;
+	private readonly maxPendingPerTarget: number;
 	private readonly maxPendingUnknown: number;
 	private readonly maxPendingUnknownBytes: number;
 	private pendingBytes = 0;
 	private unknownCount = 0;
 	private unknownBytes = 0;
-	private readonly pendingPerAuthor = new Map<string, number>();
+	private readonly pendingPerTarget = new Map<string, number>();
 	/** BL2: op id -> pending key of ops parked for an anchor (backward resolution walks `prev` ids) */
 	private readonly anchorIds = new Map<string, string>();
 	/** finding 6: pending keys of ops parked for an anchor, per `author:seq` (at most 2 per seq) */
@@ -190,6 +194,8 @@ export class OpLog {
 		this.maxPending = opts.maxPending ?? 10_000;
 		this.maxPendingBytes = opts.maxPendingBytes ?? 16 * 1024 * 1024;
 		this.maxPendingPerAuthor = opts.maxPendingPerAuthor ?? 1024;
+		this.maxPendingPerTarget =
+			opts.maxPendingPerTarget ?? opts.maxPendingPerAuthor ?? 1024;
 		this.maxPendingUnknown =
 			opts.maxPendingUnknown ?? Math.max(1, Math.floor(this.maxPending / 10));
 		this.maxPendingUnknownBytes = opts.maxPendingUnknownBytes ?? 1024 * 1024;
@@ -432,9 +438,10 @@ export class OpLog {
 		if (!p) return undefined;
 		this.pendingOps.delete(k);
 		this.pendingBytes -= p.size;
-		const n = (this.pendingPerAuthor.get(p.op.author) ?? 1) - 1;
-		if (n > 0) this.pendingPerAuthor.set(p.op.author, n);
-		else this.pendingPerAuthor.delete(p.op.author);
+		const target = targetKey(p.op);
+		const n = (this.pendingPerTarget.get(target) ?? 1) - 1;
+		if (n > 0) this.pendingPerTarget.set(target, n);
+		else this.pendingPerTarget.delete(target);
 		if (p.reason === "unknown-author") {
 			this.unknownCount--;
 			this.unknownBytes -= p.size;
@@ -469,7 +476,7 @@ export class OpLog {
 		reason: PendingReason,
 		size: number,
 		id?: string,
-		authorCap = this.maxPendingPerAuthor,
+		targetCap = this.maxPendingPerTarget,
 	): IngestResult {
 		const k = `${op.author}:${op.seq}:${op.sig}`;
 		if (this.pendingOps.has(k)) return { status: "pending", reason };
@@ -477,7 +484,8 @@ export class OpLog {
 			status: "quarantined",
 			reason: "pending-overflow",
 		};
-		if ((this.pendingPerAuthor.get(op.author) ?? 0) >= authorCap)
+		const target = targetKey(op);
+		if ((this.pendingPerTarget.get(target) ?? 0) >= targetCap)
 			return overflow;
 		const unknown = reason === "unknown-author";
 		if (unknown && size > this.maxPendingUnknownBytes) return overflow;
@@ -499,9 +507,9 @@ export class OpLog {
 			this.anchorBySeq.set(sk, set);
 		}
 		this.pendingBytes += size;
-		this.pendingPerAuthor.set(
-			op.author,
-			(this.pendingPerAuthor.get(op.author) ?? 0) + 1,
+		this.pendingPerTarget.set(
+			target,
+			(this.pendingPerTarget.get(target) ?? 0) + 1,
 		);
 		if (unknown) {
 			this.unknownCount++;
