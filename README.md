@@ -1,7 +1,7 @@
 # Edge Mesh
 
 [![CI](https://github.com/iberi22/edge-mesh/actions/workflows/ci.yml/badge.svg)](https://github.com/iberi22/edge-mesh/actions)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: FSL-1.1-ALv2](https://img.shields.io/badge/License-FSL--1.1--ALv2-blue.svg)](LICENSE)
 [![Rust 2021](https://img.shields.io/badge/rust-2021-orange.svg)](tools/relay)
 
 > P2P mesh networking library with CRDT sync, post-quantum identity, and peer-to-peer transport.
@@ -110,6 +110,89 @@ channel.on("mensaje", (event) => {
 channel.enviarMensaje("Hello from node alpha!");
 ```
 
+### Browser mesh (`@iberi22/edge-mesh/web`)
+
+`createMesh({ appId, topic, doc, vault, signaling })` syncs a `Y.Doc` between paired browser devices over WebRTC,
+end-to-end encrypted. Trust is explicit: the first device that hosts a pairing is the owner; others join through a
+QR pairing confirmed with a 6-digit SAS and receive a signed `web/trust` grant (`member` or `admin`). The security
+state (grants, revocations, key records, owner rotations) is a set of signed documents kept by every device and
+exchanged over an authenticated trust channel; **none of it lives in the shared `Y.Doc`**, so a member can only add
+documents, never squat, overwrite or delete them (`mesh.security`). Membership and authority come from one place, the
+mesh's `web/trust` store: an admin revokes the devices it admitted, revocations cascade, and the owner can re-anchor.
+Frames are signed by the sender's device key, revocation rotates the key for members only, and large messages are
+fragmented. Hooks (`authorizeDevice`, `canRotate`, `authorizeUpdate`) and `mesh.channel(kind)` let a permissions layer
+plug in. Identity signatures are **ML-DSA-65** and key exchanges (pairing session, rotation wraps) are hybrid
+**ML-KEM-768 + ECDH P-256**, as AGENTS.md requires; a device's id is the fingerprint of its ML-DSA-65 key
+(`deviceIdOf(vault.devicePublicKey)`), and a pairing guest proves possession of that key. Membership never depends on
+clocks, only owner devices re-key the mesh (an admin's revocation cuts the device off at once and is executed as a
+re-key by the next owner device online: `mesh.rekeyPending`), and links authenticate each other before carrying data.
+Give the mesh a persistent device-local store (`persist: "idb"`, `store` or `vault.store`). Details and breaking
+changes: [`docs/WEB-MESH-CRYPTO.md`](docs/WEB-MESH-CRYPTO.md).
+
+### Browser permissions: `web/trust`, `web/oplog`, `web/merge`
+
+Browser-pure (WebCrypto only; works in browsers and workerd), app-agnostic building blocks for "every device is a node
+with its own permissions". The core never hard-codes modules or roles: each app passes a schema.
+
+| Entry point | What it does |
+| :--- | :--- |
+| `@iberi22/edge-mesh/web/trust` | Device keys (**ML-DSA-65**, post-quantum; fingerprint = SHA-256 of canonical `{alg, pub}`), signed **grants** (role + per-module `ver`/`editar`/`administrar` + delegation budget + validity + optional seq cut-off + issuer chain) and **revocations** (issued by the root or a strict ancestor of the target grant, cut by the revoker's last-seen `seq`, always cascading). `TrustStore` ingests documents from any source in any order, keeps only chains that reach the configured root, enforces delegation (depth, admins cannot mint admins, permissions ⊆ issuer's) and answers `can(deviceFp, module, level, { seq, time })` |
+| `@iberi22/edge-mesh/web/oplog` | One append-only, signed, hash-chained log per device (`seq`, `prev`, HLC). Receivers verify signature → chain (gap = pending, fork = equivocation evidence) → capability at the op's `seq`/HLC. Rejected ops go to quarantine with a reason; held ops are re-evaluated when grants/revocations arrive. Catch-up protocol (`have` version vector → `want` ranges → `ops` frames ≤ 64 KiB) and a channel adapter |
+| `@iberi22/edge-mesh/web/merge` | Deterministic projections of accepted ops: `lwwField` (per-field LWW by HLC, causal `base`, optional owner precedence, tombstones), `eventLog` (app reducer / state machine, invalid transitions become conflicts), `ledger` (signed movements summed, negative rejected/flagged/allowed) |
+
+Signatures use the same canonical JSON as Fize's `publicMenuSignature.ts` (`canonicalJson` is byte-identical), signed
+with **ML-DSA-65** (base64url signature, base64url public key), as AGENTS.md requires for identity signatures. Apps
+migrate with `signCanonical` / `verifyCanonical` / `keyFingerprint` from `web/trust`; ES256 documents are rejected
+(Fize migrates its signed public-menu snapshots separately). Yjs stays for presence and the device list only.
+
+Integration sketch (Fize as the example app; the module list lives in the app, not in the core):
+
+```typescript
+import { createTrustStore, generateSigner, issueGrant, issueRevocation, rolePreset } from "@iberi22/edge-mesh/web/trust";
+import { attachOpLogSync, openOpLog } from "@iberi22/edge-mesh/web/oplog";
+import { createProjector, eventLog, ledger, lwwField } from "@iberi22/edge-mesh/web/merge";
+
+const schema = {
+  modules: ["carta", "pedidos", "cocina", "caja", "inventario", "recetas", "costos", "compras",
+            "analitica", "ajustes", "personal", "publicar", "copias"],
+  roles: {
+    admin:  { permissions: { carta: "administrar", pedidos: "administrar", personal: "ver" /* … */ }, delegate: 1 },
+    mesero: { permissions: { carta: "ver", pedidos: "editar", cocina: "editar" } },
+    cocina: { permissions: { carta: "ver", pedidos: "ver", cocina: "editar", inventario: "ver", recetas: "ver" } },
+  },
+  actionLevel: (module, action) => (action.endsWith(".void") ? "administrar" : "editar"),
+  maxDepth: 2, // root (owner) -> admin -> staff
+};
+
+// Owner device: the restaurant root key signs a grant for a newly paired device (pub key from the SAS-confirmed pairing).
+const trust = await createTrustStore({ inst: "local-<fp>", root: rootPublicJwk, schema });
+const grant = await issueGrant(rootSigner, { subject: { pub: guestPub }, name: "Ana", ...rolePreset(schema, "mesero") },
+  { inst: trust.inst });
+await trust.add(grant); // replicate trust.docs() to every node; they re-add them on boot
+
+// Every device: its own non-extractable key signs its own log.
+const device = await generateSigner(); // keep device.keyPair in IndexedDB
+const log = await openOpLog({ trust, signer: device /*, store: idbOpStore, quarantine: idbQuarantine */ });
+attachOpLogSync(log, meshChannel); // T2: the provider's channel("oplog")
+await log.append({ module: "pedidos", action: "order.created", entity: "order", entityId: id, payload: { table: 4 } });
+
+// Projections: recompute a module on "change" (late grants, revocations or forks can retract ops).
+const projector = createProjector({ carta: lwwField({ rank }), pedidos: eventLog(orderMachine), inventario: ledger() });
+log.on("change", async ({ modules }) => {
+  for (const m of modules) render(m, projector.project(m, await log.accepted(m)));
+});
+
+// Revoking a device: cut by what this device has already seen from it (and from devices it added). `headIds()` also
+// anchors that history (seq + op id): the revoked key cannot later fork it to replicas that had not seen it.
+await trust.add(await issueRevocation(rootSigner, trust.prepareRevocation(grant.id, await log.headIds()), { inst: trust.inst }));
+```
+
+Transport contract expected by `attachOpLogSync` (wired to `web/provider.ts` in T2): `send(to | null, bytes)`,
+`onMessage((from, bytes) => …)` and optional `onPeer(peer => …)`. The provider should also call
+`trust.isMember(deviceFp)` to admit devices and `trust.can(fp, "personal", "administrar")` before honouring a rotation.
+Pruning/checkpoints are an interface only (`CheckpointHook`, `OpStore.prune`); an IndexedDB `OpStore` lives in the app
+for now.
+
 ---
 
 ## Feature Matrix
@@ -208,4 +291,8 @@ npm run bench
 
 ## License
 
-[MIT](LICENSE)
+[FSL-1.1-ALv2](LICENSE) — Functional Source License 1.1, ALv2 Future License.
+
+Source-available: internal use, non-commercial education and research, and professional services are permitted.
+Competing Use (shipping it as a substitute product or service) is not. On the second anniversary of each
+release the license for that version becomes **Apache-2.0** automatically.

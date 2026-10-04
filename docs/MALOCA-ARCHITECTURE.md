@@ -258,4 +258,4 @@ Maloca no es solo el core de SWAL. Es pensado como **protocolo mesh libre** para
 - Reputación portable entre proyectos
 - Identidad post-quantum auto-soberana
 
-El kernel es AGPL. Los adapters pueden ser MIT.
+El kernel sigue la licencia del repo (FSL-1.1-ALv2). Los adapters pueden ir bajo otra.

@@ -9,7 +9,7 @@
   "publishConfig": {
     "registry": "https://npm.pkg.github.com"
   },
-  "license": "AGPL-3.0-only",
+  "license": "FSL-1.1-ALv2",
   "type": "module",
   "main": "./dist/index.js",
   "exports": {
@@ -17,6 +17,26 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./web": {
+      "types": "./dist/web/index.d.ts",
+      "import": "./dist/web/index.js",
+      "default": "./dist/web/index.js"
+    },
+    "./web/trust": {
+      "types": "./dist/web/trust/index.d.ts",
+      "import": "./dist/web/trust/index.js",
+      "default": "./dist/web/trust/index.js"
+    },
+    "./web/oplog": {
+      "types": "./dist/web/oplog/index.d.ts",
+      "import": "./dist/web/oplog/index.js",
+      "default": "./dist/web/oplog/index.js"
+    },
+    "./web/merge": {
+      "types": "./dist/web/merge/index.d.ts",
+      "import": "./dist/web/merge/index.js",
+      "default": "./dist/web/merge/index.js"
     }
   },
   "types": "./dist/index.d.ts",
@@ -44,6 +64,7 @@
     "idb": "^8.0.3",
     "peerjs": "^1.5.5",
     "ws": "^8.21.3",
+    "y-indexeddb": "9.0.12",
     "y-protocols": "^1.0.7",
     "yjs": "^13.6.32"
   },
