@@ -86,6 +86,18 @@ export const MAX_DOC_BYTES = 512 * 1024;
 export const MAX_DEFERRED_BYTES = 8 * 1024 * 1024;
 const MAX_REMEMBERED = 8192;
 
+/**
+ * R6-S2: refusals that are a property of THIS device's context, not of the document, so they are not permanent failures
+ * and are not remembered as `bad`. `pending overflow` is the waiting set of the trust store being full: in the auditor's
+ * proof a REAL grant is turned away that way, so its key must stay in `missing()` and whichever peer offers it again
+ * must be served — no sender can keep a genuine document out by filling the room first.
+ */
+const CONTEXTUAL_REFUSALS: ReadonlySet<string | undefined> = new Set([
+	"pending overflow",
+	"deferred-overflow",
+	"issuer over its cap",
+]);
+
 /** Bounded set that forgets the least recently used entry. */
 class LruSet {
 	private m = new Map<string, true>();
@@ -280,11 +292,9 @@ export class SecurityState {
 			r = await this.ingestTrust(doc, key);
 		else if (doc.t === "kex") r = await this.ingestKex(doc, key);
 		else r = await this.ingestRot(doc, key);
-		if (
-			r.status === "rejected" &&
-			r.reason !== "deferred-overflow" &&
-			r.reason !== "issuer over its cap"
-		)
+		// R6-S2: a context-dependent refusal (the waiting set was full) is NOT a property of the document: it is not
+		// remembered as bad, so the id stays in `missing()` and the peer that offers it again is served
+		if (r.status === "rejected" && !CONTEXTUAL_REFUSALS.has(r.reason))
 			this.bad.add(whole);
 		if (r.status === "pending" && !retry) {
 			// R6-B1: nothing is parked before the id is shown to be the content address of these very bytes. A forged

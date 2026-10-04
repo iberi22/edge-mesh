@@ -5,7 +5,8 @@
 // - `grants` holds only grants whose signature verified against the root (issuer = root) or against the subject key
 //   of an accepted parent grant, and whose delegation rules hold w.r.t. that parent. So every accepted grant has a
 //   fully verified chain to the root.
-// - Documents whose parent is unknown wait in `pending` (bounded) and are re-processed when the parent arrives.
+// - Documents whose parent is unknown wait in `pending` (bounded, per sending peer as well as in total, and they expire)
+//   and are re-processed when the parent arrives.
 // - Revocations are accepted on signature; whether they are *effective* (issuer is the root or a STRICT ancestor of
 //   the target: never the target grant itself) is decided at query time, so the target may arrive later. A
 //   revocation whose issuer grant is its own target is rejected outright: a device cannot retract its own accepted
@@ -43,10 +44,22 @@ export interface TrustStoreOptions {
 	/** Optional cross-check: must equal keyFingerprint(root). */
 	rootFingerprint?: string;
 	schema: TrustSchema;
-	/** clock used only when `At.time` is omitted (UI checks). Default Date.now */
+	/** clock used only when `At.time` is omitted (UI checks) and to expire parked documents. Default Date.now */
 	now?: () => number;
-	/** max documents waiting for a parent. Default 1000 */
+	/** max documents waiting for a parent, every issuer together. Default 1000 */
 	maxPending?: number;
+	/**
+	 * R6-S2: max documents waiting for a parent that ONE issuer may hold at once (the peer that sent them), so a single
+	 * member cannot take the whole waiting set and turn away documents that are waiting for a parent of their own.
+	 * Default 32.
+	 */
+	maxPendingPerIssuer?: number;
+	/**
+	 * R6-S2: how long a parked document waits for its parent before it is dropped (its slots are then reclaimed). It
+	 * bounds what a document that arrives before its parent can hold: without it, orphans waiting for a parent that
+	 * never comes keep their slots for good. Default 10 minutes.
+	 */
+	pendingTtlMs?: number;
 }
 
 export async function createTrustStore(
@@ -68,6 +81,12 @@ interface Derived {
 	anchors: Map<string, Anchor[]>; // subject fp -> { seq, id } its ops <= seq must chain to (S3)
 }
 
+/** A document parked in `pending`: it waits for its parent, and only until `at + pendingTtlMs` (R6-S2). */
+interface Waiting {
+	doc: TrustDoc;
+	at: number;
+}
+
 /** "The op of this subject at `seq` is `id`" (from an effective revocation): its earlier ops must chain to it. */
 export interface Anchor {
 	seq: number;
@@ -75,6 +94,10 @@ export interface Anchor {
 }
 
 const MAX_REJECTED = 10_000;
+/** R6-S2: waiting slots one issuer (one sending peer) may hold at once. */
+const DEFAULT_MAX_PENDING_PER_ISSUER = 32;
+/** R6-S2: a parked document whose parent has not arrived by then is dropped and its slot reclaimed. */
+const DEFAULT_PENDING_TTL_MS = 10 * 60 * 1000;
 const DENY_PRIORITY: DenyReason[] = [
 	"revoked",
 	"expired",
@@ -91,11 +114,17 @@ export class TrustStore {
 	private readonly root: string;
 	private readonly now: () => number;
 	private readonly maxPending: number;
+	private readonly maxPendingPerIssuer: number;
+	private readonly pendingTtlMs: number;
 	private readonly grants = new Map<string, Grant>();
 	private readonly depth = new Map<string, number>();
 	private readonly revs = new Map<string, Revocation>();
-	private readonly pending = new Map<string, Map<string, TrustDoc>>(); // parent id -> docs
+	private readonly pending = new Map<string, Map<string, Waiting>>(); // parent id -> docs
 	private pendingCount = 0;
+	/** R6-S2: parked documents per issuer, so no single peer can take the whole waiting set. */
+	private readonly waitingByIssuer = new Map<string, number>();
+	/** R6-S2: last instant the waiting set was swept for expired documents (see `expireWaiting`). */
+	private lastSweepAt = 0;
 	private readonly rejected = new Map<string, string>();
 	private readonly listeners = new Set<() => void>();
 	private derived: Derived | null = null;
@@ -111,6 +140,9 @@ export class TrustStore {
 		this.maxDepth = opts.schema.maxDepth ?? 2;
 		this.now = opts.now ?? Date.now;
 		this.maxPending = opts.maxPending ?? 1000;
+		this.maxPendingPerIssuer =
+			opts.maxPendingPerIssuer ?? DEFAULT_MAX_PENDING_PER_ISSUER;
+		this.pendingTtlMs = opts.pendingTtlMs ?? DEFAULT_PENDING_TTL_MS;
 	}
 
 	// ─── ingest ──────────────────────────────────────────────────────────────
@@ -175,10 +207,10 @@ export class TrustStore {
 			const waiting = this.pending.get(pid);
 			if (!waiting) continue;
 			this.pending.delete(pid);
-			this.pendingCount -= waiting.size;
-			for (const child of waiting.values()) {
-				const r = await this.verifyAndStore(child);
-				if (r.status === "accepted" && child.t === "grant") work.push(child.id);
+			for (const w of waiting.values()) {
+				this.releaseWaiting(w);
+				const r = await this.verifyAndStore(w.doc);
+				if (r.status === "accepted" && w.doc.t === "grant") work.push(w.doc.id);
 			}
 		}
 		return res;
@@ -243,10 +275,10 @@ export class TrustStore {
 			const waiting = this.pending.get(pid);
 			if (!waiting) continue;
 			this.pending.delete(pid);
-			this.pendingCount -= waiting.size;
-			for (const child of waiting.values()) {
-				this.reject(child.id, "parent grant rejected");
-				work.push(child.id);
+			for (const w of waiting.values()) {
+				this.releaseWaiting(w);
+				this.reject(w.doc.id, "parent grant rejected");
+				work.push(w.doc.id);
 			}
 		}
 	}
@@ -275,6 +307,10 @@ export class TrustStore {
 	private park(doc: TrustDoc): AddResult {
 		const pid = doc.parent as string;
 		const key = `${doc.id}.${doc.sig}`; // by id+sig: a forged copy must not shadow the real one
+		const now = this.now();
+		// R6-S2: before anything else, give back the slots held by documents whose parent never arrived, so an orphan
+		// flood cannot make the waiting set unusable for good
+		this.expireWaiting(now);
 		let m = this.pending.get(pid);
 		if (m?.has(key))
 			return {
@@ -282,19 +318,54 @@ export class TrustStore {
 				id: doc.id,
 				reason: "waiting for parent grant",
 			};
-		if (this.pendingCount >= this.maxPending)
+		const held = this.waitingByIssuer.get(doc.issuer) ?? 0;
+		// R6-S2: the room was full (globally, or for this issuer alone), a property of this device and not of the
+		// document: it is NOT remembered against this id, so a peer offering it again is served and it is asked for
+		// again (`missing()` keeps it), and a single member cannot take more than its share of the waiting set
+		if (
+			held >= this.maxPendingPerIssuer ||
+			this.pendingCount >= this.maxPending
+		)
 			return { status: "rejected", id: doc.id, reason: "pending overflow" };
 		if (!m) {
 			m = new Map();
 			this.pending.set(pid, m);
 		}
-		m.set(key, doc);
+		m.set(key, { doc, at: now });
 		this.pendingCount++;
+		this.waitingByIssuer.set(doc.issuer, held + 1);
 		return {
 			status: "pending",
 			id: doc.id,
 			reason: "waiting for parent grant",
 		};
+	}
+
+	/**
+	 * R6-S2: drop every parked document that has been waiting longer than the TTL. Its parent may still arrive later
+	 * (the document is not remembered as bad, so it is asked for again), but the slot it held is reclaimed now.
+	 */
+	private expireWaiting(now: number) {
+		// every stamp is the clock at insertion, so nothing can have expired since the last sweep at the same instant:
+		// a whole batch parks with one sweep instead of one per document
+		if (this.pendingCount === 0 || now <= this.lastSweepAt) return;
+		this.lastSweepAt = now;
+		for (const [pid, m] of [...this.pending]) {
+			for (const [key, w] of [...m]) {
+				if (now - w.at <= this.pendingTtlMs) continue;
+				m.delete(key);
+				this.releaseWaiting(w);
+			}
+			if (m.size === 0) this.pending.delete(pid);
+		}
+	}
+
+	/** Give back the global and per-issuer waiting slots of a document that leaves the waiting set. */
+	private releaseWaiting(w: Waiting) {
+		this.pendingCount--;
+		const left = (this.waitingByIssuer.get(w.doc.issuer) ?? 1) - 1;
+		if (left > 0) this.waitingByIssuer.set(w.doc.issuer, left);
+		else this.waitingByIssuer.delete(w.doc.issuer);
 	}
 
 	/** Delegation rules of a grant w.r.t. its (accepted) issuer grant; undefined parent = root-issued. */
@@ -545,7 +616,7 @@ export class TrustStore {
 		return [
 			...new Set(
 				[...this.pending.values()].flatMap((m) =>
-					[...m.values()].map((d) => d.id),
+					[...m.values()].map((w) => w.doc.id),
 				),
 			),
 		];
