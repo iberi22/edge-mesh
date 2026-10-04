@@ -50,7 +50,7 @@ All contributions follow the standard SWAL GitCore workflow to ensure quality, s
 
 ## Contributor License Agreement (CLA) & Licensing
 
-All contributions are subject to the [Contributor License Agreement (CLA)](./CLA.md) and distributed under the [AGPL-3.0-only License](./LICENSE). By submitting a Pull Request, you agree to license your code under these terms.
+All contributions are subject to the [Contributor License Agreement (CLA)](./CLA.md) and distributed under the [FSL-1.1-ALv2 License](./LICENSE). By submitting a Pull Request, you agree to license your code under these terms.
 
 ---
 

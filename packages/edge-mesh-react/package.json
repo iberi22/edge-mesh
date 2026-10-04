@@ -3,6 +3,7 @@
 	"version": "1.0.0",
 	"description": "React bindings for Edge Mesh (Provider + useEdgeMesh + useCollection)",
 	"type": "module",
+	"license": "FSL-1.1-ALv2",
 	"main": "./dist/index.js",
 	"exports": {
 		".": {
