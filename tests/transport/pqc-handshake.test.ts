@@ -17,7 +17,8 @@ vi.mock("idb", () => ({
 	}),
 }));
 
-describe("PQC Handshake and Dual-Ready SYNC Encryption", () => {
+// ML-KEM + ML-DSA (now signing every SYNC by default) are CPU-bound: ~0.5 s alone, much more on a loaded CI runner
+describe("PQC Handshake and Dual-Ready SYNC Encryption", { timeout: 20_000 }, () => {
 	const roomId = "pqc-handshake-test-room";
 
 	beforeEach(() => {
@@ -281,7 +282,8 @@ describe("PQC Handshake and Dual-Ready SYNC Encryption", () => {
 
 		let errorTriggered = false;
 		nodeB.on("error", (ev) => {
-			if (ev.detail.mensaje.includes("Error descifrando SYNC")) {
+			// with signed envelopes on (default) the tampered envelope is already rejected by the signature gate
+			if (ev.detail.mensaje.includes("Error descifrando SYNC") || ev.detail.mensaje.includes("Firma invalida")) {
 				errorTriggered = true;
 			}
 		});
