@@ -1,7 +1,7 @@
 # Edge Mesh
 
 [![CI](https://github.com/iberi22/edge-mesh/actions/workflows/ci.yml/badge.svg)](https://github.com/iberi22/edge-mesh/actions)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: FSL-1.1-ALv2](https://img.shields.io/badge/License-FSL--1.1--ALv2-blue.svg)](LICENSE)
 [![Rust 2021](https://img.shields.io/badge/rust-2021-orange.svg)](tools/relay)
 
 > P2P mesh networking library with CRDT sync, post-quantum identity, and peer-to-peer transport.
@@ -291,4 +291,8 @@ npm run bench
 
 ## License
 
-[MIT](LICENSE)
+[FSL-1.1-ALv2](LICENSE) — Functional Source License 1.1, ALv2 Future License.
+
+Source-available: internal use, non-commercial education and research, and professional services are permitted.
+Competing Use (shipping it as a substitute product or service) is not. On the second anniversary of each
+release the license for that version becomes **Apache-2.0** automatically.
