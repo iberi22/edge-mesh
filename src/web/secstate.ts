@@ -73,13 +73,17 @@ export interface AddOutcome {
 
 /** Members an admin's grants can make (its lowest grant ids count; R5-S3: an admin cannot flood the recipient list). */
 export const MAX_MEMBERS_PER_ADMIN = 256;
-/** Grants of one non-root issuer kept at all (beyond: refused). */
-const MAX_STORED_PER_ISSUER = 4 * MAX_MEMBERS_PER_ADMIN;
-/** Revocations of one target grant by one issuer kept (beyond: refused; one is enough to cut). */
-const MAX_REVS_PER_ISSUER_TARGET = 4;
+/** Grants of one non-root issuer kept at all (beyond: the cap-N smallest ids are kept, see `applyCap`). */
+export const MAX_STORED_PER_ISSUER = 4 * MAX_MEMBERS_PER_ADMIN;
+/** Revocations of one target grant by one issuer kept (beyond: the cap-N smallest ids are kept, see `applyCap`). */
+export const MAX_REVS_PER_ISSUER_TARGET = 4;
 /** Recent owner rotations kept in full (with their wraps) to serve stragglers; their cuts are kept for good. */
 export const MAX_ROTATIONS_KEPT = 32;
 const MAX_DEFERRED = 512;
+/** R6-S5: a count alone does not bound memory: one deferred document may carry a large `upTo`/wrap list. */
+export const MAX_DOC_BYTES = 512 * 1024;
+/** R6-S5: total bytes held by deferred documents (the auditor measured 126 MiB from 64 deferred revocations). */
+export const MAX_DEFERRED_BYTES = 8 * 1024 * 1024;
 const MAX_REMEMBERED = 8192;
 
 /** Bounded set that forgets the least recently used entry. */
@@ -165,6 +169,8 @@ export class SecurityState {
 	/** hashes of whole documents that failed verification (a forged copy never blocks the genuine one) */
 	private readonly bad = new LruSet(4096);
 	private readonly deferred = new Map<string, SecDoc>();
+	/** R6-S5: bytes held by `deferred` (kept exact: every set and every drop goes through defer/unpark) */
+	private deferredBytesHeld = 0;
 	private readonly listeners = new Set<() => void>();
 	private queue: Promise<unknown> = Promise.resolve();
 	private capIndex: Map<string, Set<string>> | null = null;
@@ -261,7 +267,11 @@ export class SecurityState {
 		if (this.have.has(key)) return { status: "duplicate", id: key };
 		if (this.gone.has(key))
 			return { status: "duplicate", id: key, reason: "superseded" };
-		const whole = await sha256B64u(canonicalBytes(doc));
+		const bytes = canonicalBytes(doc);
+		// R6-S5: bounded before any crypto, so an oversize document costs nothing and is never parked
+		if (bytes.length > MAX_DOC_BYTES)
+			return { status: "rejected", id: key, reason: "oversize document" };
+		const whole = await sha256B64u(bytes);
 		if (this.bad.has(whole))
 			return { status: "rejected", id: key, reason: "known bad" };
 		let r: AddOutcome;
@@ -275,15 +285,38 @@ export class SecurityState {
 			r.reason !== "issuer over its cap"
 		)
 			this.bad.add(whole);
-		if (r.status === "pending" && !retry) this.defer(key, doc);
+		if (r.status === "pending" && !retry) {
+			// R6-S5: parking is bounded by bytes; a document that does not fit is dropped and counts as a failure
+			// (it is not remembered as bad: the genuine one is still asked for)
+			const why = this.defer(key, doc, bytes.length);
+			if (why) return { status: "rejected", id: key, reason: why };
+		}
 		return r;
 	}
 
-	private defer(key: string, doc: SecDoc) {
-		if (this.deferred.has(key)) return;
+	/** Park a document until its parent/target arrives. Returns a reason if it was dropped instead. */
+	private defer(key: string, doc: SecDoc, bytes: number): string | undefined {
+		if (this.deferred.has(key)) return undefined;
+		if (this.deferredBytesHeld + bytes > MAX_DEFERRED_BYTES)
+			return "deferred budget exhausted";
 		if (this.deferred.size >= MAX_DEFERRED)
-			this.deferred.delete(this.deferred.keys().next().value as string);
+			this.unpark(this.deferred.keys().next().value as string);
 		this.deferred.set(key, doc);
+		this.deferredBytesHeld += bytes;
+		return undefined;
+	}
+
+	/** Drop a parked document and give its bytes back. */
+	private unpark(key: string) {
+		const doc = this.deferred.get(key);
+		if (!doc) return;
+		this.deferred.delete(key);
+		this.deferredBytesHeld -= canonicalBytes(doc).length;
+	}
+
+	/** Bytes held by parked documents (R6-S5 accounting). */
+	deferredBytes(): number {
+		return this.deferredBytesHeld;
 	}
 
 	private async retryDeferred() {
@@ -292,7 +325,7 @@ export class SecurityState {
 			for (const [k, d] of [...this.deferred]) {
 				const r = await this.ingest(d, true);
 				if (r.status !== "pending") {
-					this.deferred.delete(k);
+					this.unpark(k);
 					progress ||= r.status === "accepted";
 				}
 			}
@@ -304,17 +337,10 @@ export class SecurityState {
 		doc: Grant | Revocation,
 		key: string,
 	): Promise<AddOutcome> {
-		if (doc.t === "grant") {
-			if (doc.issuer !== this.root.deviceId) {
-				const n = this.trust
-					.docs()
-					.filter((g) => g.t === "grant" && g.issuer === doc.issuer).length;
-				if (n >= MAX_STORED_PER_ISSUER)
-					return { status: "rejected", id: key, reason: "issuer over its cap" };
-			}
-		} else {
-			// a revocation counts only against a known grant and from the root or a strict ancestor of it: anything else
-			// is not stored (no member can fill anybody's storage with revocations that can never apply)
+		// a grant needs nothing up front (its cap is applied once it is accepted, see `applyCap`); a revocation does:
+		// it counts only against a known grant and from the root or a strict ancestor of it, anything else is not
+		// stored (no member can fill anybody's storage with revocations that can never apply)
+		if (doc.t === "revoke") {
 			const target = this.trust.getGrant(doc.target);
 			if (!target)
 				return { status: "pending", id: key, reason: "unknown target" };
@@ -329,16 +355,14 @@ export class SecurityState {
 					id: key,
 					reason: "issuer cannot revoke this grant",
 				};
-			const same = this.trust
-				.revocations()
-				.filter(
-					(v) => v.issuer === doc.issuer && v.target === doc.target,
-				).length;
-			if (same >= MAX_REVS_PER_ISSUER_TARGET)
-				return { status: "rejected", id: key, reason: "issuer over its cap" };
 		}
 		const r = await this.trust.add(doc);
 		if (r.status === "accepted") {
+			if (this.applyCap(doc)) {
+				// the arriving document sorts last in its bucket: the kept set is already the cap-N smallest ids, so it
+				// goes straight back out (nothing better is held yet, and none is lost: it is asked for again)
+				return { status: "rejected", id: key, reason: "issuer over its cap" };
+			}
 			this.have.add(key);
 			this.version++;
 			return { status: "accepted", id: key };
@@ -352,6 +376,39 @@ export class SecurityState {
 		return { status: "rejected", id: key, reason: r.reason };
 	}
 
+	/**
+	 * R6-S4 (order-independent caps). A cap used to be "the first N that arrive are kept", so two devices holding the
+	 * same documents concluded different things: different revocations kept give a different seq cut-off, and different
+	 * grants kept give a different membership. The rule is now on the set, not on the arrival order: for each bucket
+	 * (grants per issuer, revocations per (issuer, target)) the kept documents are the cap-N ones with the SMALLEST
+	 * content address, and a document arriving with a smaller address evicts the largest kept one. Keeping the smallest
+	 * ids is incremental (each arrival leaves the cap-N smallest of everything seen so far), so every device ends with
+	 * the same set whatever the order, and it agrees with the existing `withinCap` rule for members.
+	 * Returns true when the document just accepted is itself the one pushed out.
+	 */
+	private applyCap(doc: Grant | Revocation): boolean {
+		const cap =
+			doc.t === "grant"
+				? MAX_STORED_PER_ISSUER
+				: MAX_REVS_PER_ISSUER_TARGET;
+		if (cap <= 0) return false;
+		if (doc.t === "grant" && doc.issuer === this.root.deviceId) return false; // the root's own grants are not capped
+		const bucket: string[] = [];
+		for (const d of this.trust.docs()) {
+			if (d.issuer !== doc.issuer) continue;
+			if (doc.t === "grant" ? d.t === "grant" : d.t === "revoke" && d.target === doc.target)
+				bucket.push(d.id);
+		}
+		if (bucket.length <= cap) return false;
+		const worst = bucket.reduce((a, b) => (a > b ? a : b));
+		this.trust.dropAccepted([worst]);
+		const evicted = `${doc.t === "grant" ? "g" : "r"}:${worst}`;
+		this.have.delete(evicted);
+		// the same cap pushes it out on every device, so it is never asked for again (like a pruned rotation)
+		this.gone.add(evicted);
+		return worst === doc.id;
+	}
+
 	/** Identity key of a device: the root's, or the subject key of any of its grants (revoked ones too). */
 	identityOf(dev: string): string | undefined {
 		return dev === this.root.deviceId ? this.root.pub : this.trust.keyOf(dev);
@@ -362,13 +419,15 @@ export class SecurityState {
 			return { status: "rejected", reason: "malformed key record" };
 		const pub = this.identityOf(doc.dev);
 		if (!pub) return { status: "pending", id: key, reason: "unknown device" };
+		// N3: the signature is verified BEFORE anything is written to the persistent superseded list, so a forged record
+		// can never retire a real one for good (it would then never be asked for again)
+		if (!(await verifyCanonical(pub, kexBody(doc), doc.sig)))
+			return { status: "rejected", id: key, reason: "bad signature" };
 		const cur = this.kex.get(doc.dev);
 		if (cur && (cur.n > doc.n || (cur.n === doc.n && cur.key < key))) {
 			this.gone.add(key); // superseded: never asked for again
 			return { status: "duplicate", id: key, reason: "superseded" };
 		}
-		if (!(await verifyCanonical(pub, kexBody(doc), doc.sig)))
-			return { status: "rejected", id: key, reason: "bad signature" };
 		try {
 			const kem = b64uDecode(doc.kem);
 			if (

@@ -251,6 +251,27 @@ export class TrustStore {
 		}
 	}
 
+	/**
+	 * R6-S4: forget accepted documents (`ids`) so a per-issuer cap can be applied as a rule on the SET held instead
+	 * of on the arrival order (web/secstate keeps the cap-N smallest ids of each bucket and evicts the rest).
+	 * Documents are still only ever ADDED from the network: nothing here reads the wire, and the only caller is the
+	 * cap enforcement, which evicts one document per accepted one, so the store never loses ground.
+	 * Returns the ids that were actually dropped.
+	 */
+	dropAccepted(ids: readonly string[]): string[] {
+		const dropped: string[] = [];
+		for (const id of ids) {
+			if (this.grants.delete(id)) this.depth.delete(id);
+			else if (!this.revs.delete(id)) continue;
+			dropped.push(id);
+		}
+		if (dropped.length) {
+			this.version++;
+			this.derived = null;
+		}
+		return dropped;
+	}
+
 	private park(doc: TrustDoc): AddResult {
 		const pid = doc.parent as string;
 		const key = `${doc.id}.${doc.sig}`; // by id+sig: a forged copy must not shadow the real one
