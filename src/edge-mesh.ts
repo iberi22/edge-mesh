@@ -337,7 +337,8 @@ export class EdgeMesh {
 		this.peerPublicKeys = new Map();
 		this.sybilRegistry = new Map();
 		this.requireAuthz = config.requireAuthz !== false;
-		this.requireSignedEnvelopes = config.requireSignedEnvelopes === true;
+		// Secure by default: SYNC/AUTHZ envelopes must be signed by a registered peer key (opt out explicitly).
+		this.requireSignedEnvelopes = config.requireSignedEnvelopes !== false;
 		this.defaultSyncNamespace = config.defaultSyncNamespace ?? "global";
 		this.sharesExternalDoc = config.yDoc !== undefined;
 		// Host-owned doc (dbSync) already broadcasts via p2pManager YJS_UPDATE — avoid double relay.
@@ -827,6 +828,22 @@ export class EdgeMesh {
 			void this.iniciarPqcHandshake(envolvente.origen);
 		}
 
+		// Signature gate for sensitive message types. The sender signs the envelope as sent (with the encrypted
+		// payload when a PQC channel is up), so verify it as received, BEFORE decrypting.
+		if (
+			this.requireSignedEnvelopes &&
+			(envolvente.tipo === TIPO_MENSAJE.SYNC ||
+				envolvente.tipo === TIPO_MENSAJE.AUTHZ)
+		) {
+			const ok = await this.verificarFirmaEnvelope(envolvente);
+			if (!ok) {
+				this.emit("error", {
+					mensaje: `Firma invalida o ausente de ${envolvente.origen} (${envolvente.tipo})`,
+				});
+				return;
+			}
+		}
+
 		let processedEnvelope = envolvente;
 		if (
 			envolvente.tipo === TIPO_MENSAJE.SYNC &&
@@ -868,21 +885,6 @@ export class EdgeMesh {
 			} else {
 				this.emit("error", {
 					mensaje: `SYNC cifrado recibido de ${envolvente.origen} pero no hay canal seguro listo`,
-				});
-				return;
-			}
-		}
-
-		// Signature gate for sensitive message types
-		if (
-			this.requireSignedEnvelopes &&
-			(processedEnvelope.tipo === TIPO_MENSAJE.SYNC ||
-				processedEnvelope.tipo === TIPO_MENSAJE.AUTHZ)
-		) {
-			const ok = await this.verificarFirmaEnvelope(processedEnvelope);
-			if (!ok) {
-				this.emit("error", {
-					mensaje: `Firma invalida o ausente de ${processedEnvelope.origen} (${processedEnvelope.tipo})`,
 				});
 				return;
 			}
