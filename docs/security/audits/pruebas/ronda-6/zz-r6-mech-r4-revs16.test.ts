@@ -5,7 +5,7 @@
 // forever ("rotation not authorized") and stays on the old key.
 import { describe, expect, it } from "vitest";
 import { createLoopbackHub } from "../../../../../src/web/index.js";
-import { type Dev, makeDev, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
+import { type Dev, makeDev, kexKnown, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
 
 const settle = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -31,7 +31,7 @@ describe("R4-1: >16 revocations in one owner rotation strand an offline member",
 		await until(
 			() =>
 				all.every((d) => d.mesh.devices().length === all.length) &&
-				[a, x, b, s].every((d) => all.every((y) => metaOf(d).has(`ecdh/${y.id}`))),
+				[a, x, b, s].every((d) => all.every((y) => kexKnown(d, y.id))),
 			60_000,
 		);
 		// the 17 old tablets, the straggler and the owner go offline

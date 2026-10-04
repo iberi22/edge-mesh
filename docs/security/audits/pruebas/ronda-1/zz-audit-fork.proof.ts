@@ -1,6 +1,6 @@
 import { it } from "vitest";
-import { createLoopbackHub } from "../../src/web/index.js";
-import { makeDev, metaOf, pair, until } from "./helpers.js";
+import { createLoopbackHub } from "../../../../../src/web/index.js";
+import { makeDev, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
 const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
 it("P6: concurrent revocations by two admins fork the mesh", async () => {
 	const hub = createLoopbackHub();

@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { signRevocation } from "../../../../../src/web/admission.js";
 import { createLoopbackHub } from "../../../../../src/web/index.js";
 import { b64uEncode, randomBytes } from "../../../../../src/web/util.js";
-import { makeDev, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
+import { makeDev, kexKnown, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
 
 const settle = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -23,7 +23,7 @@ describe("R4-2: an admin makes the owner's re-key unreadable for everybody else"
 		const b = await makeDev("b", g);
 		await pair(a, b);
 		await until(() => [a, x, b].every((d) => d.mesh.peers.length === 2), 10_000);
-		await until(() => [a, x, b].every((d) => [a, x, b].every((y) => metaOf(d).has(`ecdh/${y.id}`))), 10_000);
+		await until(() => [a, x, b].every((d) => [a, x, b].every((y) => kexKnown(d, y.id))), 10_000);
 		const mid = (a.mesh.root as { mid: string }).mid;
 		const t0 = Date.now();
 		const recs = [];

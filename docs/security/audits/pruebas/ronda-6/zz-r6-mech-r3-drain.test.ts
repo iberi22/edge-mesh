@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { LinkTransport, PeerLink } from "../../../../../src/web/index.js";
 import { createLoopbackHub } from "../../../../../src/web/index.js";
 import { randomBytes, b64uEncode } from "../../../../../src/web/util.js";
-import { makeDev, makeVault, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
+import { makeDev, makeVault, kexKnown, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
 
 const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
 
@@ -80,7 +80,7 @@ describe("R3 drain", () => {
 		await pair(a, m);
 		const all = [a, b, c, m];
 		await until(
-			() => all.every((x) => all.every((y) => metaOf(x).has(`ecdh/${y.id}`))) && all.every((x) => x.mesh.devices().length === 4),
+			() => all.every((x) => all.every((y) => kexKnown(x, y.id))) && all.every((x) => x.mesh.devices().length === 4),
 			20_000,
 		);
 		await until(() => a.mesh.peers.includes(m.id), 5000);

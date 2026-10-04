@@ -22,7 +22,7 @@ async function forge(signer: Signer, body: OpBody): Promise<Op> {
 	return { ...body, sig: await signCanonical(signer, body) };
 }
 
-describe("AUDIT T1", () => {
+describe("R6 adapted AUDIT T1", () => {
 	it("A1: a member self-revokes with lastSeq 0 and retroactively erases its own accepted history", async () => {
 		const w = await world();
 		const author = await ready(w, w.waiter);
@@ -48,7 +48,7 @@ describe("AUDIT T1", () => {
 		const ops: Op[] = [];
 		for (let seq = 1; seq <= 2; seq++) {
 			const body: OpBody = {
-				t: "op", v: 1, alg: "ES256", inst: "local-test", author: w.cook.fp, seq, prev,
+				t: "op", v: 1, alg: "ML-DSA-65", inst: "local-test", author: w.cook.fp, seq, prev,
 				hlc: `00${T0 + seq}-00000`.padStart(21, "0").slice(-21),
 				...op(`inv${seq}`, { module: "inventario", action: "stock.adjust", payload: { amount: -1000 } }),
 			};
@@ -80,7 +80,7 @@ describe("AUDIT T1", () => {
 		const author = await ready(w, w.waiter);
 		const real = [];
 		for (let i = 0; i < 3; i++) real.push(await author.log.append(op(`real${i}`)));
-		const rev = await w.revoke(w.root, { target: w.g.waiter.id, lastSeq: 3 });
+		const rev = await w.revoke(w.root, author.trust.prepareRevocation(w.g.waiter.id, await author.log.headIds()));
 		// replica X knows the revocation but never saw the waiter's real ops
 		const x = await ready(w);
 		await x.trust.add(rev);
@@ -105,7 +105,7 @@ describe("AUDIT T1", () => {
 		const log = await w.log(undefined, trust, { maxPending: 100 });
 		for (let i = 0; i < 100; i++) {
 			await log.ingest({
-				t: "op", v: 1, alg: "ES256", inst: "local-test", author: `junk${i}`, seq: 1, prev: null,
+				t: "op", v: 1, alg: "ML-DSA-65", inst: "local-test", author: `junk${i}`, seq: 1, prev: null,
 				hlc: `${String(T0).padStart(15, "0")}-00000`, ...op("j"), sig: "AAAA",
 			});
 		}

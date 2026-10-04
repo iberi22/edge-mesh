@@ -1,9 +1,9 @@
 // AUDIT PoC (untracked, delete after): attacks on web/provider
 import { describe, expect, it } from "vitest";
-import type { LinkTransport, PeerLink } from "../../src/web/index.js";
-import { createLoopbackHub } from "../../src/web/index.js";
-import { b64uEncode } from "../../src/web/util.js";
-import { idOf, makeDev, makeVault, metaOf, pair, trio, until } from "./helpers.js";
+import type { LinkTransport, PeerLink } from "../../../../../src/web/index.js";
+import { createLoopbackHub } from "../../../../../src/web/index.js";
+import { b64uEncode } from "../../../../../src/web/util.js";
+import { idOf, makeDev, makeVault, metaOf, pair, trio, until } from "../../../../../tests/web/helpers.js";
 
 const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
 

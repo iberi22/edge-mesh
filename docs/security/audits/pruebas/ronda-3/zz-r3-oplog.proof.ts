@@ -1,6 +1,6 @@
 // ROUND-3 AUDIT PoC (untracked, delete after): BL2 anchored span budget vs a revoked author's fork sent first.
 import { describe, expect, it } from "vitest";
-import { world } from "./trust-fixtures.js";
+import { world } from "../../../../../tests/web/trust-fixtures.js";
 
 const op = (entityId: string) => ({ module: "pedidos", action: "order.created", entity: "order", entityId, payload: { table: 1 } });
 

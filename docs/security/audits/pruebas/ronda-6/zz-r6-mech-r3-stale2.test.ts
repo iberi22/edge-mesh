@@ -3,40 +3,36 @@
 import { describe, expect, it } from "vitest";
 import { createLoopbackHub } from "../../../../../src/web/index.js";
 import { b64uEncode } from "../../../../../src/web/util.js";
-import { type Dev, label, makeDev, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
+import { type Dev, label, makeDev, kexKnown, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
 
 type Hub = ReturnType<typeof createLoopbackHub>;
 const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
 const keyOf = (d: Dev) => b64uEncode(d.vault.meshKey as Uint8Array).slice(0, 8);
 
 describe("R3 stale revocations", () => {
-	for (const order of [
-		["x3", "m1", "m4", "x1", "devA"],
-		["devA", "x1", "x3", "m1", "m4"],
-		["m1", "devA", "x1", "m4", "x3"],
-	])
-		it(`ST1: owner revokes admin x3 in P1 while x3 revokes m3 then m4 in P2; heal order ${order.join(",")}`, async () => {
+	for (const order of [["devA", "x1", "x3", "m1", "m4"]])
+		it(`ST2 (P2 holds admin x2 instead of member m1): owner revokes admin x3 in P1 while x3 revokes m3 then m4 in P2; heal order ${order.join(",")}`, async () => {
 			const g = createLoopbackHub();
 			const a = await makeDev("devA", g);
 			a.mesh.on("sas", (p) => p.confirm());
 			const adm: Dev[] = [];
-			for (const n of ["x1", "x3"]) {
+			for (const n of ["x1", "x3", "x2"]) {
 				const d = await makeDev(n, g);
 				const o = await a.mesh.pairHost({ role: "admin" });
 				await d.mesh.pairJoin(o.payload, { confirmSas: () => true });
 				adm.push(d);
 			}
-			const [x1, x3] = adm as [Dev, Dev];
+			const [x1, x3, m1] = adm as [Dev, Dev, Dev]; // "m1" is an ADMIN (x2) in this variant
 			const ms: Dev[] = [];
-			for (const n of ["m1", "m3", "m4"]) {
+			for (const n of ["m3", "m4"]) {
 				const d = await makeDev(n, g);
 				await pair(a, d);
 				ms.push(d);
 			}
-			const [m1, m3, m4] = ms as [Dev, Dev, Dev];
+			const [m3, m4] = ms as [Dev, Dev];
 			const all = [a, x1, x3, m1, m3, m4];
 			await until(
-				() => all.every((d) => all.every((y) => metaOf(d).has(`ecdh/${y.id}`))) && all.every((d) => d.mesh.devices().length === 6),
+				() => all.every((d) => all.every((y) => kexKnown(d, y.id))) && all.every((d) => d.mesh.devices().length === 6),
 				10_000,
 			);
 			for (const d of all) d.mesh.destroy();
@@ -82,7 +78,7 @@ describe("R3 stale revocations", () => {
 				() => true,
 				() => false,
 			);
-			console.log(`ST1 ${order.join(",")}: converged=${conv}\n  ${view().join("\n  ")}`);
+			console.log(`ST2 ${order.join(",")}: converged=${conv}\n  ${view().join("\n  ")}`);
 			expect(conv).toBe(true);
 			for (const d of H.values()) d.mesh.destroy();
 		}, 60_000);

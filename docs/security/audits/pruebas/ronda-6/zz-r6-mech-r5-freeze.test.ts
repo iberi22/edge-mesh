@@ -7,7 +7,7 @@ import { signAdmission } from "../../../../../src/web/admission.js";
 import { deviceIdOf, kemKeygen } from "../../../../../src/web/pq.js";
 import { ecdhSignedBytes, generateEcdhIdentity } from "../../../../../src/web/rotation.js";
 import { b64uEncode } from "../../../../../src/web/util.js";
-import { createLoopbackHub, type Dev, makeDev, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
+import { createLoopbackHub, type Dev, makeDev, kexKnown, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
 
 const settle = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const keyOf = (d: Dev) => b64uEncode(d.vault.meshKey as Uint8Array);
@@ -26,7 +26,7 @@ describe("R5 admin freezes re-keying", () => {
 		const b = await makeDev("b", g);
 		await pair(a, b);
 		const all = [a, x, b];
-		await until(() => all.every((d) => d.mesh.devices().length === 3) && all.every((d) => all.every((y) => metaOf(d).has(`ecdh/${y.id}`))), 20_000);
+		await until(() => all.every((d) => d.mesh.devices().length === 3) && all.every((d) => all.every((y) => kexKnown(d, y.id))), 20_000);
 		const mid = (a.mesh.root as { mid: string }).mid;
 		const ec = b64uEncode((await generateEcdhIdentity()).publicKey);
 		const kem = b64uEncode(kemKeygen().publicKey);

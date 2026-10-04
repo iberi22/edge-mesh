@@ -8,7 +8,7 @@ import { signAdmission, signRevocation } from "../../../../../src/web/admission.
 import { deviceIdOf, kemKeygen } from "../../../../../src/web/pq.js";
 import { ecdhSignedBytes, generateEcdhIdentity } from "../../../../../src/web/rotation.js";
 import { b64uEncode, randomBytes } from "../../../../../src/web/util.js";
-import { createLoopbackHub, type Dev, makeDev, metaOf, pair, stable, until } from "../../../../../tests/web/helpers.js";
+import { createLoopbackHub, type Dev, makeDev, kexKnown, metaOf, pair, stable, until } from "../../../../../tests/web/helpers.js";
 
 const settle = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const keyOf = (d: Dev) => b64uEncode(d.vault.meshKey as Uint8Array);
@@ -38,7 +38,7 @@ describe("R5 adversarial liveness", () => {
 			const h3 = await mk("h3");
 			const M = await mk("M");
 			let devs = [o, H, X, h1, h2, h3, M];
-			await until(() => devs.every((d) => d.mesh.devices().length === 7) && devs.every((d) => devs.every((y) => metaOf(d).has(`ecdh/${y.id}`))), 30_000);
+			await until(() => devs.every((d) => d.mesh.devices().length === 7) && devs.every((d) => devs.every((y) => kexKnown(d, y.id))), 30_000);
 			const mid = (o.mesh.root as { mid: string }).mid;
 			const ownerOff = async () => {
 				o.mesh.destroy();

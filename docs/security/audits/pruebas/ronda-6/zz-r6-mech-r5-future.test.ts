@@ -3,7 +3,7 @@
 // owner revokes the admin.
 import { describe, expect, it } from "vitest";
 import { signRevocation } from "../../../../../src/web/admission.js";
-import { createLoopbackHub, type Dev, makeDev, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
+import { createLoopbackHub, type Dev, makeDev, kexKnown, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
 
 const settle = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const has = (d: Dev, t: Dev) => d.mesh.devices().some((y) => y.deviceId === t.id);
@@ -19,7 +19,7 @@ describe("R5 far-future revocation epoch", () => {
 		const h = await makeDev("h", g);
 		await pair(a, h);
 		const all = [a, x, h];
-		await until(() => all.every((d) => d.mesh.devices().length === 3) && all.every((d) => all.every((y) => metaOf(d).has(`ecdh/${y.id}`))), 20_000);
+		await until(() => all.every((d) => d.mesh.devices().length === 3) && all.every((d) => all.every((y) => kexKnown(d, y.id))), 20_000);
 		const mid = (a.mesh.root as { mid: string }).mid;
 		const r = await signRevocation(x.vault, { mid, target: h.id, by: x.id, epoch: 1_000_000 });
 		metaOf(x).set(`rev/${h.id}:1000000`, r);

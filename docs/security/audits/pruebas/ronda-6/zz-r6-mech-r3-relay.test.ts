@@ -5,7 +5,7 @@ import type { LinkTransport, PeerLink } from "../../../../../src/web/index.js";
 import { createLoopbackHub, deriveRoomId } from "../../../../../src/web/index.js";
 import { deriveDocMaterial } from "../../../../../src/web/crypto.js";
 import { b64uEncode, fromUtf8, utf8 } from "../../../../../src/web/util.js";
-import { type Dev, makeDev, makeVault, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
+import { type Dev, makeDev, makeVault, kexKnown, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
 import { TOPIC, craft, openFrame } from "../ronda-3/zz-r3-lib.js";
 
 const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
@@ -87,7 +87,7 @@ describe("R3 relay", () => {
 			for (const d of [h, v, md, x]) await pair(a, d);
 			const all = [a, h, v, md, x];
 			await until(
-				() => all.every((p) => all.every((q) => metaOf(p).has(`ecdh/${q.id}`))) && all.every((p) => p.mesh.devices().length === 5),
+				() => all.every((p) => all.every((q) => kexKnown(p, q.id))) && all.every((p) => p.mesh.devices().length === 5),
 				8000,
 			);
 			instance = a.mesh.namespace.split("/")[1] as string;

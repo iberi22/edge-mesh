@@ -3,7 +3,7 @@
 // "set aside" on every device: the device it revokes is not cut anywhere but on the admin itself.
 import { describe, expect, it } from "vitest";
 import { b64uEncode } from "../../../../../src/web/util.js";
-import { createLoopbackHub, type Dev, makeDev, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
+import { createLoopbackHub, type Dev, makeDev, kexKnown, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
 
 const settle = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const keyOf = (d: Dev) => b64uEncode(d.vault.meshKey as Uint8Array);
@@ -24,7 +24,7 @@ async function mesh(labels: string[]) {
 	}
 	const all = [a, x, ...ms];
 	await until(
-		() => all.every((d) => d.mesh.devices().length === all.length) && all.every((d) => all.every((y) => metaOf(d).has(`ecdh/${y.id}`))),
+		() => all.every((d) => d.mesh.devices().length === all.length) && all.every((d) => all.every((y) => kexKnown(d, y.id))),
 		30_000,
 	);
 	return { g, a, x, ms, all };
@@ -89,7 +89,7 @@ describe("R5 malleable signature encodings fill an admin's pending pool", () => 
 		await until(() => [x, m1, m2].every((d) => d.mesh.epoch === 1), 20_000);
 		const d = await makeDev("d", g);
 		await pair(a, d);
-		await until(() => [a, x, m1, m2].every((y) => has(y, d)) && [a, x, m1, m2, d].every((y) => [a, x, m1, m2, d].every((z) => metaOf(y).has(`ecdh/${z.id}`))), 30_000);
+		await until(() => [a, x, m1, m2].every((y) => has(y, d)) && [a, x, m1, m2, d].every((y) => [a, x, m1, m2, d].every((z) => kexKnown(y, z.id))), 30_000);
 		await x.mesh.revoke(d.id); // request; the owner does not re-key for it (R5-B1) so it stays pending for good
 		const k = `rev/${d.id}:2`;
 		await until(() => metaOf(m1).has(k) && metaOf(a).has(k), 10_000);

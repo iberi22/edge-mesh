@@ -1,9 +1,9 @@
 // ROUND-3 AUDIT PoC (untracked, delete after): a revoked admin keeps revoking in its partition; after the heal,
 // revocations verified BEFORE its own revocation was known are never re-evaluated (and void rotations strand devices).
 import { describe, expect, it } from "vitest";
-import { createLoopbackHub } from "../../src/web/index.js";
-import { b64uEncode } from "../../src/web/util.js";
-import { type Dev, label, makeDev, metaOf, pair, until } from "./helpers.js";
+import { createLoopbackHub } from "../../../../../src/web/index.js";
+import { b64uEncode } from "../../../../../src/web/util.js";
+import { type Dev, label, makeDev, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
 
 type Hub = ReturnType<typeof createLoopbackHub>;
 const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));

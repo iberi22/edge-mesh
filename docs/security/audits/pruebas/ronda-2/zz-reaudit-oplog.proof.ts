@@ -1,6 +1,6 @@
 // RE-AUDIT proof (untracked): S3 anchor x S4 per-author cap.
 import { describe, expect, it } from "vitest";
-import { world } from "./trust-fixtures.js";
+import { world } from "../../../../../tests/web/trust-fixtures.js";
 
 const op = (entityId: string) => ({
 	module: "pedidos",

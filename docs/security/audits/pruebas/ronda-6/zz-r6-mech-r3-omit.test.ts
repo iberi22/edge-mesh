@@ -6,7 +6,7 @@ import type { PeerLink } from "../../../../../src/web/index.js";
 import { createLoopbackHub } from "../../../../../src/web/index.js";
 import { rotationId, wrapMeshKey } from "../../../../../src/web/rotation.js";
 import { b64uDecode, b64uEncode, randomBytes, utf8 } from "../../../../../src/web/util.js";
-import { type Dev, makeDev, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
+import { type Dev, makeDev, kexKnown, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
 import { rawPeer } from "../ronda-3/zz-r3-lib.js";
 
 const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
@@ -31,7 +31,7 @@ describe("R3 omission", () => {
 		await pair(a, c);
 		const all = [a, x1, x2, m1, c];
 		await until(
-			() => all.every((d) => all.every((y) => metaOf(d).has(`ecdh/${y.id}`))) && all.every((d) => d.mesh.devices().length === 5),
+			() => all.every((d) => all.every((y) => kexKnown(d, y.id))) && all.every((d) => d.mesh.devices().length === 5),
 			8000,
 		);
 		const k0 = (x1.vault.meshKey as Uint8Array).slice();

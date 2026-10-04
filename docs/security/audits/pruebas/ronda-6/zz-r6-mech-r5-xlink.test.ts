@@ -6,7 +6,7 @@ import { deriveDocMaterial } from "../../../../../src/web/crypto.js";
 import { deriveRoomId, type PeerLink } from "../../../../../src/web/index.js";
 import { b64uEncode, randomBytes } from "../../../../../src/web/util.js";
 import { craft, TOPIC } from "../ronda-3/zz-r3-lib.js";
-import { createLoopbackHub, type Dev, makeDev, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
+import { createLoopbackHub, type Dev, makeDev, kexKnown, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
 
 const verified = vi.hoisted(() => ({ n: 0 }));
 vi.mock("../../../../../src/web/pq.js", async (importOriginal) => {
@@ -23,7 +23,7 @@ describe("R5 cross-link handshake replay", () => {
 		const r = await makeDev("r", g);
 		await pair(a, b);
 		await pair(a, r);
-		await until(() => [a, b, r].every((d) => [a, b, r].every((x) => metaOf(d).has(`ecdh/${x.id}`))), 20_000);
+		await until(() => [a, b, r].every((d) => [a, b, r].every((x) => kexKnown(d, x.id))), 20_000);
 		const k0 = r.vault.meshKey as Uint8Array; // the revoked device keeps the old key
 		await a.mesh.revoke(r.id);
 		await until(() => a.mesh.epoch === 1 && b.mesh.epoch === 1, 20_000);

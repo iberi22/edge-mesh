@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { PeerLink } from "../../../../../src/web/index.js";
 import { createLoopbackHub, deriveRoomId } from "../../../../../src/web/index.js";
 import { b64uEncode, utf8 } from "../../../../../src/web/util.js";
-import { type Dev, makeDev, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
+import { type Dev, makeDev, kexKnown, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
 import { TOPIC, rawPeer } from "../ronda-3/zz-r3-lib.js";
 
 const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
@@ -20,7 +20,7 @@ describe("R3 negative-cache poisoning", () => {
 			for (const d of [b, m, x]) await pair(a, d);
 			const all = [a, b, m, x];
 			await until(
-				() => all.every((p) => all.every((q) => metaOf(p).has(`ecdh/${q.id}`))) && all.every((p) => p.mesh.devices().length === 4),
+				() => all.every((p) => all.every((q) => kexKnown(p, q.id))) && all.every((p) => p.mesh.devices().length === 4),
 				8000,
 			);
 			const k0 = (m.vault.meshKey as Uint8Array).slice();

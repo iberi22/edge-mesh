@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { LinkTransport, PeerLink } from "../../../../../src/web/index.js";
 import { createLoopbackHub } from "../../../../../src/web/index.js";
 import { b64uEncode } from "../../../../../src/web/util.js";
-import { makeDev, makeVault, metaOf, pair, trio, until } from "../../../../../tests/web/helpers.js";
+import { idOf, makeDev, makeVault, kexKnown, metaOf, pair, trio, until } from "../../../../../tests/web/helpers.js";
 
 const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
 
@@ -15,16 +15,16 @@ describe("AUDIT T0", () => {
 		const evil = await makeDev("devB", hub, undefined, { vault: evilVault });
 		await pair(a, evil); // the owner confirms the SAS of "a new tablet"
 		const evilPub = b64uEncode(evilVault.devicePublicKey);
-		await until(() => c.mesh.devices().find((d) => d.deviceId === "devB")?.pub === evilPub);
+		await until(() => c.mesh.devices().find((d) => d.deviceId === idOf("devB"))?.pub === evilPub);
 		const rejected: string[] = [];
 		c.mesh.on("rejected", (e) => rejected.push(`${e.reason}:${e.from}`));
 		const got: string[] = [];
 		c.mesh.channel("x").onMessage((d, from) => got.push(`${from}:${new TextDecoder().decode(d)}`));
 		await b.mesh.channel("x").send(new TextEncoder().encode("from-real-B")).catch(() => {});
 		await settle(300);
-		console.log("P1 C's view of devB pub == attacker:", c.mesh.devices().find((d) => d.deviceId === "devB")?.pub === evilPub);
+		console.log("P1 C's view of devB pub == attacker:", c.mesh.devices().find((d) => d.deviceId === idOf("devB"))?.pub === evilPub);
 		console.log("P1 C rejected:", rejected, "C got:", got);
-		expect(c.mesh.devices().find((d) => d.deviceId === "devB")?.pub).toBe(evilPub);
+		expect(c.mesh.devices().find((d) => d.deviceId === idOf("devB"))?.pub).toBe(evilPub);
 		for (const x of [a, b, c, evil]) x.mesh.destroy();
 	});
 
@@ -47,13 +47,13 @@ describe("AUDIT T0", () => {
 		const a = await makeDev("devA", hub);
 		const b = await makeDev("devB", hub);
 		await pair(a, b);
-		await until(() => b.mesh.peers.includes("devA"));
+		await until(() => b.mesh.peers.includes(idOf("devA")));
 		a.doc.getMap("secret").set("x-recipe", "mesh X private data");
 		await until(() => b.doc.getMap("secret").get("x-recipe") !== undefined);
 		const e = await makeDev("devE", hub);
 		const f = await makeDev("devF", hub);
 		await pair(e, f);
-		await until(() => f.mesh.peers.includes("devE"));
+		await until(() => f.mesh.peers.includes(idOf("devE")));
 		await pair(e, b); // B (still in X, online) joins Y
 		await settle(800);
 		console.log("P3 Y member F sees X data:", f.doc.getMap("secret").get("x-recipe"), "| B peers:", b.mesh.peers);
@@ -81,15 +81,15 @@ describe("AUDIT T0", () => {
 		await pair(a, c);
 		skew = sk;
 		await pair(x, m);
-		await until(() => c.mesh.devices().some((d) => d.deviceId === "devM") && a.mesh.devices().some((d) => d.deviceId === "devM"));
-		await until(() => ["devA", "adm", "devC", "devM"].every((id) => metaOf(a).has(`ecdh/${id}`)));
-		const saved = metaOf(c).get("adm/devM");
-		await a.mesh.revoke("devM");
+		await until(() => c.mesh.devices().some((d) => d.deviceId === idOf("devM")) && a.mesh.devices().some((d) => d.deviceId === idOf("devM")));
+		await until(() => ["devA", "adm", "devC", "devM"].every((id) => kexKnown(a, idOf(id))));
+		const saved = metaOf(c).get(`adm/${idOf("devM")}`);
+		await a.mesh.revoke(idOf("devM"));
 		await until(() => c.mesh.epoch === 1 && x.mesh.epoch === 1);
 		await settle(1000);
-		const view = () => [a, x, c].map((d) => d.mesh.role("devM"));
-		console.log(`P4[skew=${sk}] role(devM) on A,adm,C after revoke (no replay):`, view(), "meta adm/devM on C:", metaOf(c).has("adm/devM"));
-		metaOf(c).set("adm/devM", saved);
+		const view = () => [a, x, c].map((d) => d.mesh.role(idOf("devM")));
+		console.log(`P4[skew=${sk}] role(devM) on A,adm,C after revoke (no replay):`, view(), "meta adm/devM on C:", metaOf(c).has(`adm/${idOf("devM")}`));
+		metaOf(c).set(`adm/${idOf("devM")}`, saved);
 		await settle(500);
 		console.log(`P4[skew=${sk}] role(devM) on A,adm,C after insider replays old adm/:`, view());
 		for (const y of [a, x, c, m]) y.mesh.destroy();
@@ -141,7 +141,7 @@ describe("AUDIT T0", () => {
 		const a = await makeDev("devA", hub);
 		const b = await makeDev("devB", hub, undefined, { signaling: [sniff(hub.transport()), evil] });
 		await pair(a, b);
-		await until(() => b.mesh.peers.includes("devA") && a.mesh.peers.includes("devB"));
+		await until(() => b.mesh.peers.includes(idOf("devA")) && a.mesh.peers.includes(idOf("devB")));
 		const got: string[] = [];
 		b.mesh.channel("orders").onMessage((d, from) => got.push(`${from}:${new TextDecoder().decode(d)}`));
 		capture = true;

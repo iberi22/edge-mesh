@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { MeshOptions } from "../../../../../src/web/index.js";
 import { createLoopbackHub } from "../../../../../src/web/index.js";
 import { b64uEncode } from "../../../../../src/web/util.js";
-import { type Dev, label, makeDev, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
+import { type Dev, label, makeDev, kexKnown, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
 
 type Hub = ReturnType<typeof createLoopbackHub>;
 const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
@@ -53,7 +53,7 @@ describe("R3 liveness fuzz", () => {
 			}
 			const all = [a, ...admins, ...members];
 			await until(
-				() => all.every((d) => all.every((y) => metaOf(d).has(`ecdh/${y.id}`))) && all.every((d) => d.mesh.devices().length === all.length),
+				() => all.every((d) => all.every((y) => kexKnown(d, y.id))) && all.every((d) => d.mesh.devices().length === all.length),
 				10_000,
 			);
 			for (const d of all) d.mesh.destroy();

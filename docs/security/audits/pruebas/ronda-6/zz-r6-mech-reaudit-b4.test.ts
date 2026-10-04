@@ -5,7 +5,7 @@ import { deriveDocMaterial, deriveSenderKey, sealUpdate } from "../../../../../s
 import type { PeerLink } from "../../../../../src/web/index.js";
 import { createLoopbackHub, deriveRoomId } from "../../../../../src/web/index.js";
 import { b64uEncode, concat, randomBytes, utf8 } from "../../../../../src/web/util.js";
-import { type Dev, makeDev, makeVault, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
+import { type Dev, makeDev, makeVault, kexKnown, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
 
 const TOPIC = "fize/data/r1";
 const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
@@ -44,7 +44,7 @@ async function mesh(hub: Hub, admins: string[], members: string[]) {
 		ms.push(d);
 	}
 	const all = [a, ...xs, ...ms];
-	await until(() => all.every((d) => all.every((y) => metaOf(d).has(`ecdh/${y.id}`))) && all.every((d) => d.mesh.devices().length === all.length), 8000);
+	await until(() => all.every((d) => all.every((y) => kexKnown(d, y.id))) && all.every((d) => d.mesh.devices().length === all.length), 8000);
 	return { a, xs, ms, all };
 }
 

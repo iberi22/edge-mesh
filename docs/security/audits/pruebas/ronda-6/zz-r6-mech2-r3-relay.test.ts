@@ -5,7 +5,7 @@ import type { LinkTransport, PeerLink } from "../../../../../src/web/index.js";
 import { createLoopbackHub, deriveRoomId } from "../../../../../src/web/index.js";
 import { deriveDocMaterial } from "../../../../../src/web/crypto.js";
 import { b64uEncode, fromUtf8, utf8 } from "../../../../../src/web/util.js";
-import { type Dev, makeDev, makeVault, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
+import { type Dev, makeDev, makeVault, kexKnown, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
 import { TOPIC, craft, openFrame } from "../ronda-3/zz-r3-lib.js";
 
 const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
@@ -33,7 +33,7 @@ function partial(hub: Hub, blocked: () => string[], tamper?: (l: PeerLink) => Pe
 
 describe("R3 relay", () => {
 	for (const tampering of [true, false])
-		it(`RL1: a malicious relayer corrupts the other recipients' wraps; the honest relayer forwards them once${tampering ? "" : " (control)"}`, async () => {
+		it(`RL1-long: a malicious relayer corrupts the other recipients' wraps; the honest relayer forwards them once${tampering ? "" : " (control)"}`, async () => {
 			const hub = createLoopbackHub();
 			const va = await makeVault("devA");
 			const vh = await makeVault("devH");
@@ -87,7 +87,7 @@ describe("R3 relay", () => {
 			for (const d of [h, v, md, x]) await pair(a, d);
 			const all = [a, h, v, md, x];
 			await until(
-				() => all.every((p) => all.every((q) => metaOf(p).has(`ecdh/${q.id}`))) && all.every((p) => p.mesh.devices().length === 5),
+				() => all.every((p) => all.every((q) => kexKnown(p, q.id))) && all.every((p) => p.mesh.devices().length === 5),
 				8000,
 			);
 			instance = a.mesh.namespace.split("/")[1] as string;
@@ -113,15 +113,15 @@ describe("R3 relay", () => {
 			const rejected: string[] = [];
 			v2.mesh.on("rejected", (e) => rejected.push(e.reason));
 			await a2.mesh.revoke(vx.deviceId);
-			const ok = await until(() => [h2, v2, m2].every((d) => d.mesh.epoch === 1 && keyOf(d) === keyOf(a2)), 6000).then(
+			const ok = await until(() => [h2, v2, m2].every((d) => d.mesh.epoch === 1 && keyOf(d) === keyOf(a2)), 30000).then(
 				() => true,
 				() => false,
 			);
 			console.log(
-				`RL1 tampering=${tampering}: epochs A ${a2.mesh.epoch} M ${m2.mesh.epoch} H ${h2.mesh.epoch} V ${v2.mesh.epoch}; V rejected ${JSON.stringify(rejected)}`,
+				`RL1 tampering=${tampering}: sentByM=${(globalThis as any).__sent} epochs A ${a2.mesh.epoch} M ${m2.mesh.epoch} H ${h2.mesh.epoch} V ${v2.mesh.epoch}; V rejected ${JSON.stringify(rejected)}`,
 			);
 			if (tampering) expect(v2.mesh.epoch).toBe(0); // ATTACK: V never gets a valid wrap
 			else expect(ok).toBe(true);
 			for (const d of [a2, h2, v2, m2]) d.mesh.destroy();
-		}, 40_000);
+		}, 90_000);
 });

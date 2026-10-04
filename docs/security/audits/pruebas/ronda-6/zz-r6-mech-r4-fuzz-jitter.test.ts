@@ -32,7 +32,7 @@ function createLoopbackHub() {
 	return h;
 }
 import { b64uEncode } from "../../../../../src/web/util.js";
-import { type Dev, label, makeDev, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
+import { type Dev, label, makeDev, kexKnown, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
 
 type Hub = ReturnType<typeof createLoopbackHub>;
 const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
@@ -85,7 +85,7 @@ describe.skipIf(process.env.FUZZ_SEEDS === "")(
 				const all = [a, ...admins, ...members];
 				await until(
 					() =>
-						all.every((d) => all.every((y) => metaOf(d).has(`ecdh/${y.id}`))) &&
+						all.every((d) => all.every((y) => kexKnown(d, y.id))) &&
 						all.every((d) => d.mesh.devices().length === all.length),
 					10_000,
 				);

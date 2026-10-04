@@ -3,7 +3,7 @@
 // revocation then never leaves the admin's device. Nobody else cuts it, the owner never re-keys.
 import { describe, expect, it } from "vitest";
 import { b64uEncode } from "../../../../../src/web/util.js";
-import { createLoopbackHub, type Dev, makeDev, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
+import { createLoopbackHub, type Dev, makeDev, kexKnown, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
 
 const settle = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const keyOf = (d: Dev) => b64uEncode(d.vault.meshKey as Uint8Array);
@@ -21,7 +21,7 @@ async function run(squat: boolean) {
 	await pair(a, m);
 	await pair(a, h);
 	const all = [a, x, m, h];
-	await until(() => all.every((d) => d.mesh.devices().length === 4) && all.every((d) => all.every((y) => metaOf(d).has(`ecdh/${y.id}`))), 20_000);
+	await until(() => all.every((d) => d.mesh.devices().length === 4) && all.every((d) => all.every((y) => kexKnown(d, y.id))), 20_000);
 	if (squat) {
 		m.doc.transact(() => {
 			for (let e = 1; e <= 20; e++) metaOf(m).set(`rev/${m.id}:${e}`, { junk: e });

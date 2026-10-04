@@ -7,7 +7,7 @@ import type { LinkTransport, MeshOptions, PeerLink } from "../../../../../src/we
 import { createLoopbackHub, deriveRoomId } from "../../../../../src/web/index.js";
 import { b64uEncode, concat, randomBytes, utf8 } from "../../../../../src/web/util.js";
 import { dataChannelLink } from "../../../../../src/web/webrtc.js";
-import { type Dev, makeDev, makeVault, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
+import { type Dev, makeDev, makeVault, kexKnown, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
 
 const TOPIC = "fize/data/r1";
 const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
@@ -43,7 +43,7 @@ async function adminMesh(hub: ReturnType<typeof createLoopbackHub>, members: str
 	}
 	const all = [a, x1, ...ms];
 	await until(
-		() => all.every((d) => all.every((y) => metaOf(d).has(`ecdh/${y.id}`))) && all.every((d) => d.mesh.devices().length === all.length),
+		() => all.every((d) => all.every((y) => kexKnown(d, y.id))) && all.every((d) => d.mesh.devices().length === all.length),
 		5000,
 	);
 	return { a, x1, ms, all };
@@ -133,7 +133,7 @@ describe("re-audit", () => {
 		const d = await makeDev("devD", hub);
 		for (const x of [b, c, d]) await pair(a, x);
 		const all = [a, b, c, d];
-		await until(() => all.every((x) => all.every((y) => metaOf(x).has(`ecdh/${y.id}`))) && all.every((x) => x.mesh.devices().length === 4), 5000);
+		await until(() => all.every((x) => all.every((y) => kexKnown(x, y.id))) && all.every((x) => x.mesh.devices().length === 4), 5000);
 		d.mesh.destroy(); // D offline (keeps doc + vault)
 		await a.mesh.revoke(c.id);
 		await until(() => b.mesh.epoch === 1 && keyOf(b) === keyOf(a));

@@ -2,7 +2,7 @@
 // those entries strands every device that was offline during the rotation, even with the owner online.
 import { describe, expect, it } from "vitest";
 import { b64uEncode } from "../../../../../src/web/util.js";
-import { createLoopbackHub, type Dev, makeDev, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
+import { createLoopbackHub, type Dev, makeDev, kexKnown, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
 
 const settle = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const keyOf = (d: Dev) => b64uEncode(d.vault.meshKey as Uint8Array);
@@ -15,7 +15,7 @@ async function run(del: boolean) {
 	const s = await makeDev("s", g);
 	for (const d of [b, m, s]) await pair(a, d);
 	const all = [a, b, m, s];
-	await until(() => all.every((d) => all.every((y) => metaOf(d).has(`ecdh/${y.id}`))), 20_000);
+	await until(() => all.every((d) => all.every((y) => kexKnown(d, y.id))), 20_000);
 	s.mesh.destroy(); // offline
 	await a.mesh.revoke(b.id);
 	await until(() => a.mesh.epoch === 1 && m.mesh.epoch === 1, 20_000);
@@ -49,7 +49,7 @@ describe("R5 strand stragglers by deleting rotation entries", () => {
 		const c = await makeDev("c", g);
 		for (const d of [b, m, s, c]) await pair(a, d);
 		const all = [a, b, m, s, c];
-		await until(() => all.every((d) => all.every((y) => metaOf(d).has(`ecdh/${y.id}`))), 30_000);
+		await until(() => all.every((d) => all.every((y) => kexKnown(d, y.id))), 30_000);
 		s.mesh.destroy();
 		await a.mesh.revoke(b.id);
 		await until(() => a.mesh.epoch === 1 && m.mesh.epoch === 1 && c.mesh.epoch === 1, 20_000);

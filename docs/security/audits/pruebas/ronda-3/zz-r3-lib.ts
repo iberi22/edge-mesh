@@ -1,9 +1,9 @@
 // ROUND-3 AUDIT helpers (untracked, delete after)
-import { deriveDocMaterial, deriveSenderKey, openUpdate, sealUpdate } from "../../src/web/crypto.js";
-import type { PeerLink } from "../../src/web/index.js";
-import { deriveRoomId } from "../../src/web/index.js";
-import { concat, fromUtf8, randomBytes, utf8 } from "../../src/web/util.js";
-import type { makeVault } from "./helpers.js";
+import { deriveDocMaterial, deriveSenderKey, openUpdate, sealUpdate } from "../../../../../src/web/crypto.js";
+import type { PeerLink } from "../../../../../src/web/index.js";
+import { deriveRoomId } from "../../../../../src/web/index.js";
+import { concat, fromUtf8, randomBytes, utf8 } from "../../../../../src/web/util.js";
+import type { makeVault } from "../../../../../tests/web/helpers.js";
 
 export const TOPIC = "fize/data/r1";
 type Vault = Awaited<ReturnType<typeof makeVault>>;
