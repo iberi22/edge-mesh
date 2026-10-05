@@ -1,4 +1,5 @@
 import type { EdgeMesh } from "../../edge-mesh.js";
+import { base64ToBytes, bytesToBase64 } from "../../identity/index.js";
 import type { NodoId } from "../../types/index.js";
 import type {
 	Contrato,
@@ -9,42 +10,27 @@ import type {
 /**
  * Un Y.Map no puede contener un `Uint8Array`.
  *
- * `Y.Map.set` mete el valor en un `ContentAny`, y `ContentAny` llama a
- * `deepFreeze` sobre lo que almacena. `Object.freeze` —que es lo que hay bajo
- * — lanza `TypeError: Cannot freeze array buffer views with elements` en
- * cuanto el typed array tiene elementos. Medido con yjs 13.6.32 / lib0 0.2.117:
+ * `Y.Map.set` envuelve el valor en un `ContentAny`, y `ContentAny` le pasa
+ * `deepFreeze`. `Object.freeze` —que es lo que hay bajo— lanza `TypeError:
+ * Cannot freeze array buffer views with elements` en cuanto el typed array
+ * tiene elementos. Medido con yjs 13.6.32 / lib0 0.2.117:
  *
  *     NODE_ENV=development
  *       Uint8Array([1,2,3])  -> THROWS  Cannot freeze array buffer views…
  *       [1,2,3]             -> OK
  *       "AQID"  (base64)     -> OK
  *
- * Es decir: el fallo depende del entorno, no del codigo. Con `NODE_ENV` sin
- * definir o en `production` la suite pasa en verde y el defecto queda invisible;
- * en `development` (como corre el gate documentado de este repo) revienta. Un
- * contrato con firma es el caso normal, no el borde, asi que esto estaba a un
- * `NODE_ENV` de romperse en produccion.
+ * El fallo depende del entorno: con `NODE_ENV` sin definir o en `production` la
+ * suite pasa en verde y el defecto queda invisible, mientras que en
+ * `development` —como corre el gate documentado de este repo— revienta. Un
+ * contrato con firma es el caso normal, no el borde.
  *
- * La firma se guarda como base64 en el mapa y se rehidrata al leer. El tipo
- * `Contrato` sigue exponiendo `Uint8Array` porque es lo que el resto del codigo
- * consume; el cambio queda en la frontera de la persistencia, que es donde
- * pertenece.
+ * Se codifica en la frontera de la persistencia, no en el tipo de dominio:
+ * `Contrato.firma` sigue siendo `Uint8Array` porque es lo que firman y
+ * verifican; solo lo que se guarda va en base64, y `getContract` lo rehidrata.
  */
 type ContratoEnMapa = Omit<Contrato, "firmas"> & {
 	firmas: { nodoId: NodoId; firma: string }[];
-};
-
-const aBase64 = (bytes: Uint8Array): string => {
-	let bin = "";
-	for (const b of bytes) bin += String.fromCharCode(b);
-	return btoa(bin);
-};
-
-const deBase64 = (texto: string): Uint8Array => {
-	const bin = atob(texto);
-	const out = new Uint8Array(bin.length);
-	for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
-	return out;
 };
 
 export class ContractBridge {
@@ -84,7 +70,7 @@ export class ContractBridge {
 			...contratoFirmado,
 			firmas: contratoFirmado.firmas.map((f) => ({
 				nodoId: f.nodoId,
-				firma: aBase64(f.firma),
+				firma: bytesToBase64(f.firma),
 			})),
 		};
 		contratosMap.set(contratoFirmado.hash, paraElMapa);
@@ -120,7 +106,7 @@ export class ContractBridge {
 			...guardada,
 			firmas: (guardada.firmas ?? []).map((f) => ({
 				nodoId: f.nodoId,
-				firma: deBase64(f.firma),
+				firma: base64ToBytes(f.firma),
 			})),
 		} as Contrato;
 	}
