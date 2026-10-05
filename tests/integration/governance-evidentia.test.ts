@@ -33,8 +33,12 @@ describe("Integration: Governance + Evidentia (Notarized Proposals)", () => {
 		const keypair = generateKeypair("maestra");
 		identity = createPostQuantumIdentity(idNode, keypair);
 
-		// Mock firmar for stable and fast ML-DSA test execution
-		vi.spyOn(identity, "firmar").mockResolvedValue(new Uint8Array(64).fill(1));
+		// NOTE: `firmar` is deliberately NOT mocked here. `EvidentiaManager.verify()`
+		// now really verifies the ML-DSA-65 signature against the registered issuer
+		// key, so a stubbed 64-byte "signature" is rejected — correctly. An earlier
+		// version of this file mocked `firmar` and only passed because `verify()`
+		// ended in `return true`, i.e. it asserted nothing. Using the real signer
+		// makes these assertions meaningful.
 
 		mesh = new MeshManager({ nodoId: idNode }, {} as EdgeMesh);
 		vi.spyOn(mesh, "transmitirConGossip").mockResolvedValue(undefined);
