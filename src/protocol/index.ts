@@ -7,6 +7,47 @@ import type {
 } from "../types/index.js";
 import { TIPO_MENSAJE } from "../types/index.js";
 
+// ─── CAPA DE CIFRADO (re-exportada) ────────────────────────────────────────
+//
+// `cifrarPayload` / `abrirPayload` / `iniciarSesionCifrada` y el guardia
+// anti-replay `GuardiaReplay` viven en `./crypto.ts`. Se re-exportan aqui para que
+// el modulo de protocolo siga siendo la unica superficie de importacion para los
+// llamadores, y para que `canonicalEnvelopeBytes` conserve su definicion exacta
+// actual: un payload sellado se firma siendo el ciphertext que es, y las firmas
+// existentes sobre payloads en plano siguen verificando byte a byte.
+
+export type {
+	ClavesSesion,
+	Direccion,
+	HandshakeSesion,
+	MedicionOverhead,
+	PayloadCifrado,
+	SesionCifrada,
+} from "./crypto.js";
+export {
+	abrirPayload,
+	aceptarSesionCifrada,
+	ALGORITMO_CIFRADO,
+	BYTES_CIPHERTEXT_KEM_768,
+	cifrarPayload,
+	cifrarYSiguiente,
+	DIRECCION,
+	derivarClavesSesion,
+	derivarClavesSesionAsync,
+	derivarNonce,
+	ErrorPayloadCifrado,
+	ErrorReplayDetectado,
+	ErrorReusoDeNonce,
+	esEnvolventeCifrado,
+	GuardiaReplay,
+	iniciarSesionCifrada,
+	marcarEnviado,
+	MAX_MENSAJES_POR_SESION,
+	medirOverhead,
+	rotarSesion,
+	VERSION_PAYLOAD_CIFRADO,
+} from "./crypto.js";
+
 // ─── ENVELOPE CREATION ─────────────────────────────────────────────────────
 
 let contadorGlobal = 0;
