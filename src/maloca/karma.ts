@@ -116,7 +116,9 @@ export class KarmaManager {
 	private readonly oplog: OpLog;
 	private readonly identity: PostQuantumIdentity;
 	private cache: Map<string, Karma> = new Map();
-	private readonly resolvePublicKey?: (nodeId: NodoId) => ParPublico | undefined;
+	private readonly resolvePublicKey?: (
+		nodeId: NodoId,
+	) => ParPublico | undefined;
 	/** Claves públicas de pares conocidas por este nodo. */
 	private readonly clavesConocidas: Map<string, ParPublico> = new Map();
 	/** Ids de transacciones ya aplicadas, para reenvío idempotente del OpLog. */
@@ -232,7 +234,9 @@ export class KarmaManager {
 	 *
 	 * Esta es la entrada que la capa de replicación debe usar para avales remotos.
 	 */
-	async aplicarTransaccion(tx: TransaccionKarma): Promise<MotivoRechazo | null> {
+	async aplicarTransaccion(
+		tx: TransaccionKarma,
+	): Promise<MotivoRechazo | null> {
 		return this.applyTransaction(tx);
 	}
 
@@ -286,7 +290,8 @@ export class KarmaManager {
 	 * Verifica una firma de transacción contra una clave pública.
 	 */
 	async verify(tx: TransaccionKarma, publicKey?: ParPublico): Promise<boolean> {
-		if (!tx || !ArrayBuffer.isView(tx.firma) || tx.firma.length === 0) return false;
+		if (!tx || !ArrayBuffer.isView(tx.firma) || tx.firma.length === 0)
+			return false;
 		const pub =
 			publicKey ??
 			(this.resolvePublicKey

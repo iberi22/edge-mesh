@@ -96,7 +96,11 @@ export {
 	EvidentiaManager,
 } from "./maloca/evidentia.js";
 export type { MotivoRechazo } from "./maloca/karma.js";
-export { DELTA_MAX_ABS, FACTOR_DECAY_MIN, KarmaManager } from "./maloca/karma.js";
+export {
+	DELTA_MAX_ABS,
+	FACTOR_DECAY_MIN,
+	KarmaManager,
+} from "./maloca/karma.js";
 export { MalocaKernel } from "./maloca/kernel.js";
 export { MetadataManager } from "./maloca/metadata.js";
 export type { Perfil } from "./maloca/perfil.js";

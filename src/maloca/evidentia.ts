@@ -178,7 +178,9 @@ export class EvidentiaManager extends EventTarget {
 		};
 
 		// Firmar con PQC el cuerpo canonico completo (contenido + procedencia)
-		const firmaBytes = await this.identity.firmar(canonicalEvidentiaBytes(cuerpo));
+		const firmaBytes = await this.identity.firmar(
+			canonicalEvidentiaBytes(cuerpo),
+		);
 		const firmaPQC = bytesAHex(firmaBytes);
 
 		// Crear hash de la notarización completa
@@ -259,7 +261,8 @@ export class EvidentiaManager extends EventTarget {
 		if (typeof ev.firmaPQC !== "string" || ev.firmaPQC.length === 0) {
 			return { valido: false, motivo: "firma ausente" };
 		}
-		if (!ev.procedencia) return { valido: false, motivo: "procedencia ausente" };
+		if (!ev.procedencia)
+			return { valido: false, motivo: "procedencia ausente" };
 
 		// 1. Identidad del propio registro: el hash debe coincidir con sus
 		//    componentes, si no un par podria mutar tipo/contenidoHash/emisor en
@@ -269,14 +272,18 @@ export class EvidentiaManager extends EventTarget {
 			ev.firmaPQC,
 			ev.emisor,
 		);
-		if (esperado !== ev.hash) return { valido: false, motivo: "hash inconsistente" };
+		if (esperado !== ev.hash)
+			return { valido: false, motivo: "hash inconsistente" };
 
 		// 2. Coherencia de la procedencia: quien, cuando, que.
 		const proc = ev.procedencia;
 		if (proc.emisor !== ev.emisor) {
 			return { valido: false, motivo: "procedencia con emisor distinto" };
 		}
-		if (typeof proc.queRespalda !== "string" || proc.queRespalda.trim().length === 0) {
+		if (
+			typeof proc.queRespalda !== "string" ||
+			proc.queRespalda.trim().length === 0
+		) {
 			return { valido: false, motivo: "procedencia sin queRespalda" };
 		}
 		if (!Number.isFinite(proc.fechaEmision) || proc.fechaEmision <= 0) {
@@ -287,7 +294,10 @@ export class EvidentiaManager extends EventTarget {
 			proc.fechaEmision - ahora > TOLERANCIA_RELOJ_MS ||
 			ahora - proc.fechaEmision > TOLERANCIA_RELOJ_MS
 		) {
-			return { valido: false, motivo: "procedencia fuera de la ventana temporal" };
+			return {
+				valido: false,
+				motivo: "procedencia fuera de la ventana temporal",
+			};
 		}
 		if (!Number.isFinite(ev.timestamp) || ev.timestamp <= 0) {
 			return { valido: false, motivo: "timestamp invalido" };

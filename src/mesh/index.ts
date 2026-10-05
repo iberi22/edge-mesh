@@ -306,7 +306,8 @@ function normalizarFirma(firma: unknown): Uint8Array | null {
 		if (firma.length === 0) return null;
 		if (
 			!firma.every(
-				(b) => typeof b === "number" && Number.isInteger(b) && b >= 0 && b <= 255,
+				(b) =>
+					typeof b === "number" && Number.isInteger(b) && b >= 0 && b <= 255,
 			)
 		)
 			return null;
@@ -669,7 +670,7 @@ export class MeshManager extends EventTarget {
 
 	// ─── PROCESAR GOSSIP ─────────────────────────────────────────────────
 
-/**
+	/**
 	 * EL CAMINO DE REPLICACIÓN DE LA REPUTACIÓN.
 	 *
 	 * ─── POR QUÉ EXISTE ESTE GANCHO ────────────────────────────────────────
@@ -872,9 +873,7 @@ export class MeshManager extends EventTarget {
 				this.divergencias.length - MAX_DIVERGENCIAS_REGISTRADAS,
 			);
 		}
-		this.dispatchEvent(
-			new CustomEvent("karmaDivergente", { detail: detalle }),
-		);
+		this.dispatchEvent(new CustomEvent("karmaDivergente", { detail: detalle }));
 	}
 
 	/** Lee la clave pública de un par del registro de EdgeMesh (verificada en handshake). */
@@ -914,10 +913,13 @@ export class MeshManager extends EventTarget {
 		tx: TransaccionKarma,
 		namespace?: string,
 	): Promise<void> {
-		await this.transmitirConGossip(namespace ?? this.config.namespacePorDefecto, {
-			tipo: PAYLOAD_KARMA_TIPO,
-			tx,
-		});
+		await this.transmitirConGossip(
+			namespace ?? this.config.namespacePorDefecto,
+			{
+				tipo: PAYLOAD_KARMA_TIPO,
+				tx,
+			},
+		);
 	}
 
 	/**
