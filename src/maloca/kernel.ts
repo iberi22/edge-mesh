@@ -21,6 +21,12 @@ export class MalocaKernel extends EdgeMesh {
 			this.obtenerClavePublica(nodeId),
 		);
 
+		// El MeshManager se construyo en el constructor de EdgeMesh, antes de que
+		// existiera este motor. Conectarlo aqui es lo que hace que un aval remoto
+		// llegue al unico motor que sabe verificarlo: sin esto, `procesarGossip`
+		// receive el aval y lo ignora, y la reputacion nunca sale del disco local.
+		this.meshGossip.setConsumidorKarma(this.karma);
+
 		const metadataOpLog = this.obtenerOLog("maloca_metadata");
 		this.metadata = new MetadataManager(
 			this.yjsAdapter,
