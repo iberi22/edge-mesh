@@ -25,9 +25,9 @@ export type {
 	SesionCifrada,
 } from "./crypto.js";
 export {
+	ALGORITMO_CIFRADO,
 	abrirPayload,
 	aceptarSesionCifrada,
-	ALGORITMO_CIFRADO,
 	BYTES_CIPHERTEXT_KEM_768,
 	cifrarPayload,
 	cifrarYSiguiente,
@@ -41,8 +41,8 @@ export {
 	esEnvolventeCifrado,
 	GuardiaReplay,
 	iniciarSesionCifrada,
-	marcarEnviado,
 	MAX_MENSAJES_POR_SESION,
+	marcarEnviado,
 	medirOverhead,
 	rotarSesion,
 	VERSION_PAYLOAD_CIFRADO,

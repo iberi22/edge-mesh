@@ -159,7 +159,7 @@ export class ErrorReplayDetectado extends Error {
 	readonly counter: string;
 
 	constructor(counter: string, motivo: string) {
-		super(`Replay rechazado: contador ${counter} (${motivo})`);
+		super(`Replay rejected: counter ${counter} (${motivo})`);
 		this.name = "ErrorReplayDetectado";
 		this.counter = counter;
 	}
@@ -177,8 +177,8 @@ export class ErrorPayloadCifrado extends Error {
 export class ErrorReusoDeNonce extends Error {
 	constructor(counter: string) {
 		super(
-			`Reuso de nonce rechazado: el contador ${counter} ya se uso en esta sesion. ` +
-				"Rota la clave de sesion en vez de repetir un contador.",
+			`Nonce reuse refused: counter ${counter} already used in this session. ` +
+				"Rotate the session key instead of repeating a counter.",
 		);
 		this.name = "ErrorReusoDeNonce";
 	}

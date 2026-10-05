@@ -88,7 +88,7 @@ String constant (`"mutation-guard-revert"`) used as transaction origin when reve
 
 ### `TIPO_MENSAJE`
 Standard packet identifiers:
-`SYNC`, `ACK`, `HEARTBEAT`, `HALLazGO`, `VOTACION`, `SNAPSHOT`, `OP_LOG`, `AUTHZ`, `NAMESPACE`, `GOVERNANCE`, `IDENTITY`, `ERROR`, `PQC_HANDSHAKE`, `KEM_REPLY`, `PQC_ACK`.
+`SYNC`, `ACK`, `HEARTBEAT`, `HALLAZGO`, `VOTACION`, `SNAPSHOT`, `OP_LOG`, `AUTHZ`, `NAMESPACE`, `GOVERNANCE`, `IDENTITY`, `ERROR`, `CREDENCIAL`, `AVAL`, `REGISTRO`, `PQC_HANDSHAKE`, `KEM_REPLY`, `PQC_ACK`.
 
 ### `ESTADO_NODO`
 Active states: `offline`, `conectando`, `online`, `suspendido`, `reconectando`, `eliminado`.
