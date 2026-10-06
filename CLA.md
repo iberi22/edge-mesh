@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing to `@iberi22/edge-mesh` and SouthWest AI Labs ("SWAL").
 
-This Contributor License Agreement ("Agreement") documents the rights granted by contributors to SWAL to ensure that all contributions remain open, free, and protected under open-source software licenses (specifically GNU AGPL v3.0).
+This Contributor License Agreement ("Agreement") documents the rights granted by contributors to SWAL to ensure that all contributions remain open, free, and protected under open-source software licenses (specifically the Functional Source License 1.1, ALv2 Future License).
 
 ---
 
@@ -31,9 +31,3 @@ Subject to the terms and conditions of this Agreement, You hereby grant to SWAL 
 1. You are legally entitled to grant the above license. If your employer has rights to intellectual property that you create, you represent that you have received permission to make Contributions on behalf of that employer.
 2. Each of Your Contributions is Your original creation.
 3. Your Contribution submissions include accurate details of any third-party license or other restriction (including, but not limited to, related patents and trademarks) of which you are aware.
-
----
-
-## 5. Software Freedom & AGPL Compliance
-
-All Contributions accepted into `@iberi22/edge-mesh` will be distributed under the **GNU Affero General Public License v3.0 (AGPL-3.0-only)**. SWAL guarantees that core user freedoms and source code availability will be preserved.
