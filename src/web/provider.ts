@@ -1189,9 +1189,10 @@ export function createMesh(opts: MeshOptions): Mesh {
 				return;
 			}
 			if (kind === K_AUTH) {
-				if (rec.authed || !rec.nonce || !via) return;
+				if (rec.authed || !via) return;
 				const ep = via.epoch;
 				const okAuth =
+					rec.nonce !== undefined &&
 					body.length > NONCE_BYTES + 4 &&
 					equalBytes(body.subarray(0, NONCE_BYTES), rec.nonce) &&
 					new DataView(body.buffer, body.byteOffset + NONCE_BYTES, 4).getUint32(
