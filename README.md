@@ -26,7 +26,7 @@ npm install @iberi22/edge-mesh yjs
 ```
 
 `yjs` is the CRDT layer and a peer of this package; `@noble/post-quantum` comes with it. ESM only (`import`), no
-CommonJS build. License: [MIT](LICENSE).
+CommonJS build. License: [FSL-1.1-ALv2](LICENSE).
 
 ---
 
