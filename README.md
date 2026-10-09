@@ -6,7 +6,164 @@
 
 > P2P mesh networking library with CRDT sync, post-quantum identity, and peer-to-peer transport.
 
-Edge Mesh serves as the primary interconnection protocol for the SWAL ecosystem, connecting distributed browser nodes, Progressive Web Apps (PWAs), and edge services. It provides zero-cost, secure data persistence and state replication across peers without relying on centralized server infrastructure.
+`@iberi22/edge-mesh` is the interconnection layer of the SWAL ecosystem: distributed browsers, Progressive Web Apps and
+edge nodes that replicate state with no central server.
+
+Its browser entry point, **`@iberi22/edge-mesh/web`**, is an **owner-controlled P2P mesh for PWAs**. The first device
+that hosts a pairing owns the mesh; every other device joins with a QR pairing confirmed by a 6-digit code. Everything
+on the wire is encrypted and signed with **post-quantum ML-DSA-65** identities and **hybrid ML-KEM-768 + ECDH P-256**
+key exchange, and the security state (grants, revocations, key records, rotations) is a set of signed documents kept
+by each device, never by the shared `Y.Doc`.
+
+The Node side of the package (relay client, governance, presence, agent memory) is documented further down.
+
+---
+
+## Install
+
+```bash
+npm install @iberi22/edge-mesh yjs
+```
+
+`yjs` is the CRDT layer and a peer of this package; `@noble/post-quantum` comes with it. ESM only (`import`), no
+CommonJS build. License: [MIT](LICENSE).
+
+---
+
+## Quick start — the browser mesh
+
+Two devices, one owner, one pairing, one encrypted `Y.Doc`. `examples/web-basic.ts` is this exact code (typechecked by
+`tsc`), executed by `tests/web/public-api.test.ts`.
+
+```ts
+import * as Y from "yjs";
+import {
+	createLoopbackHub,
+	createMesh,
+	deviceIdOf,
+	identityKeygen,
+	identitySign,
+	memoryStore,
+} from "@iberi22/edge-mesh/web";
+import type { Mesh, VaultClient } from "@iberi22/edge-mesh/web";
+
+export interface QuickStart {
+	/** The device that hosted the pairing: the owner of the mesh. */
+	owner: Mesh;
+	/** The paired guest. */
+	guest: Mesh;
+	/** Its device id: the fingerprint of its ML-DSA-65 identity key. */
+	guestId: string;
+	/** The two documents, so you can watch them replicate: [owner's, guest's]. */
+	docs: [Y.Doc, Y.Doc];
+}
+
+/** What your app provides: this device's ML-DSA-65 identity plus the mesh key, kept in IndexedDB. */
+async function makeVault(): Promise<VaultClient> {
+	const kp = identityKeygen();
+	let meshKey: Uint8Array = crypto.getRandomValues(new Uint8Array(32));
+	return {
+		deviceId: await deviceIdOf(kp.publicKey),
+		devicePublicKey: kp.publicKey,
+		getOrCreateMeshKey: async () => meshKey,
+		setMeshKey: async (raw) => void (meshKey = raw),
+		sign: async (data) => identitySign(kp.secretKey, data),
+	};
+}
+
+export async function quickStart(): Promise<QuickStart> {
+	// 1. In-memory links, so this runs with no signaling server.
+	//    In a browser: signaling: [wsTransport("wss://signal.example/ws")] (docs/SIGNALING-PROTOCOL.md).
+	const hub = createLoopbackHub();
+	const mk = async (name: string) => {
+		const doc = new Y.Doc();
+		const vault = await makeVault();
+		const mesh = createMesh({
+			appId: "acme",
+			topic: "acme/data",
+			doc,
+			vault,
+			deviceName: name,
+			store: memoryStore(), // device-local security state; nothing of it lives in the shared doc
+			signaling: [hub.transport()],
+		});
+		await mesh.ready;
+		return { doc, vault, mesh };
+	};
+
+	// 2. The first device that hosts a pairing is the owner; until then the mesh is off (no network at all).
+	const owner = await mk("owner");
+	const guest = await mk("guest");
+	owner.doc.getMap("state").set("hello", "world"); // replicates to every member, encrypted and signed
+
+	// 3. Pair: the guest scans the offer as a QR and both sides confirm the same 6-digit SAS.
+	owner.mesh.on("sas", (p) => p.confirm());
+	await guest.mesh.pairJoin((await owner.mesh.pairHost()).payload, { confirmSas: () => true });
+	return {
+		owner: owner.mesh,
+		guest: guest.mesh,
+		guestId: guest.vault.deviceId,
+		docs: [owner.doc, guest.doc],
+	};
+}
+```
+
+The example uses the in-memory loopback transport so it runs with no signaling server; a browser app passes
+`wsTransport("wss://signal.example/ws")` (self-hosted, see [`docs/SIGNALING-PROTOCOL.md`](docs/SIGNALING-PROTOCOL.md))
+or its own `LinkTransport` instead. The owner controls the mesh from there:
+
+```ts
+const { owner, guest, guestId } = await quickStart();
+owner.devices();                                             // this device, the owner, every member (role, admittedBy)
+owner.security?.trust.can(guestId, "mesh", "administrar");  // false: only admins may administer the mesh module
+await owner.revoke(guestId);                                 // signed revocations, then a re-key for the remaining members
+```
+
+---
+
+## Subpaths
+
+| Subpath | What you get |
+| :--- | :--- |
+| `@iberi22/edge-mesh/web` | The mesh: `createMesh`, pairing (QR + SAS), encrypted `Y.Doc` sync, revocation, re-key, channels, signaling transports, ML-DSA-65 / ML-KEM-768 primitives and the stores |
+| `@iberi22/edge-mesh/web/trust` | Signed **grants** and **revocations** with a delegation budget, a root-anchored `TrustStore` and `can(device, module, level)` |
+| `@iberi22/edge-mesh/web/oplog` | One append-only, signed, hash-chained log per device, gated by the grants, with quarantine and a catch-up protocol |
+| `@iberi22/edge-mesh/web/merge` | Deterministic projections of accepted ops: `lwwField`, `eventLog`, `ledger` |
+
+Details of each one, and how an app plugs them together: [Browser permissions](#browser-permissions-webtrust-weboplog-webmerge).
+
+---
+
+## Security model
+
+- **The owner is the root.** The first device that hosts a pairing pins its ML-DSA-65 key as the trust root of the
+  mesh; until then the mesh is off (it opens no connection). A device id is the fingerprint of its identity key, so
+  membership cannot be claimed by copying an id.
+- **The security state is signed documents, not the shared doc.** Grants, revocations, key-agreement records and
+  owner rotations are content-addressed signed documents kept in a device-local store (`store`, `vault.store` or
+  `persist: "idb"`) and exchanged over an authenticated channel. A member can only add documents: there is no slot to
+  squat, overwrite or delete.
+- **Revocation is a signed document, and only owner devices re-key.** The owner revokes any grant, an admin the ones
+  it issued (revocations cascade); a revoked device is cut at once everywhere, and the new mesh key reaches the rest
+  pairwise, wrapped with hybrid ML-KEM-768 + ECDH P-256 (both secrets required) and signed with ML-DSA-65.
+- **Admins are tier 2.** `owner -> admins -> members`: an admin may admit members but not admins, may not grant
+  permissions it does not hold itself, and revoking it revokes what it admitted (the owner can `reanchor` them).
+- **Links authenticate before they carry data.** Every frame is signed by the sender's identity key and encrypted
+  under a per-sender AES-256-GCM subkey; a link only becomes usable after a signed `K_HELLO`/`K_AUTH` handshake, and
+  membership never depends on a device clock.
+
+Design and audit history: [`docs/WEB-MESH-CRYPTO.md`](docs/WEB-MESH-CRYPTO.md),
+[`docs/security/audits/`](docs/security/audits/README.md) (rounds 1-5, each finding with its regression test).
+Vulnerability reports: [`SECURITY.md`](SECURITY.md) (never a public issue).
+
+---
+
+## Browser and Node support
+
+| Target | Support |
+| :--- | :--- |
+| Browsers (PWA) | Any browser with WebCrypto and WebRTC. The `./web*` subpaths are browser-pure: WebCrypto only, no Node built-ins, so they also run under workerd. |
+| Node | **>= 22**, **ESM only** (`"type": "module"`, no CommonJS entry). `./web` runs in Node too: the loopback and WebSocket transports need no browser, and the whole `tests/web` suite exercises them there. |
 
 ---
 
@@ -25,7 +182,10 @@ Edge Mesh serves as the primary interconnection protocol for the SWAL ecosystem,
 
 ---
 
-## Quickstart
+## Quickstart (Node and Rust)
+
+The browser mesh is the [quick start](#quick-start--the-browser-mesh) above. This section covers the Rust relay server
+and the Node-side mesh.
 
 ### Rust Relay Server (`swal-relay`)
 
@@ -112,22 +272,23 @@ channel.enviarMensaje("Hello from node alpha!");
 
 ### Browser mesh (`@iberi22/edge-mesh/web`)
 
-`createMesh({ appId, topic, doc, vault, signaling })` syncs a `Y.Doc` between paired browser devices over WebRTC,
-end-to-end encrypted. Trust is explicit: the first device that hosts a pairing is the owner; others join through a
-QR pairing confirmed with a 6-digit SAS and receive a signed `web/trust` grant (`member` or `admin`). The security
-state (grants, revocations, key records, owner rotations) is a set of signed documents kept by every device and
-exchanged over an authenticated trust channel; **none of it lives in the shared `Y.Doc`**, so a member can only add
-documents, never squat, overwrite or delete them (`mesh.security`). Membership and authority come from one place, the
-mesh's `web/trust` store: an admin revokes the devices it admitted, revocations cascade, and the owner can re-anchor.
-Frames are signed by the sender's device key, revocation rotates the key for members only, and large messages are
-fragmented. Hooks (`authorizeDevice`, `canRotate`, `authorizeUpdate`) and `mesh.channel(kind)` let a permissions layer
-plug in. Identity signatures are **ML-DSA-65** and key exchanges (pairing session, rotation wraps) are hybrid
-**ML-KEM-768 + ECDH P-256**, as AGENTS.md requires; a device's id is the fingerprint of its ML-DSA-65 key
-(`deviceIdOf(vault.devicePublicKey)`), and a pairing guest proves possession of that key. Membership never depends on
-clocks, only owner devices re-key the mesh (an admin's revocation cuts the device off at once and is executed as a
-re-key by the next owner device online: `mesh.rekeyPending`), and links authenticate each other before carrying data.
-Give the mesh a persistent device-local store (`persist: "idb"`, `store` or `vault.store`). Details and breaking
-changes: [`docs/WEB-MESH-CRYPTO.md`](docs/WEB-MESH-CRYPTO.md).
+`createMesh({ appId, topic, doc, vault, signaling })` syncs a `Y.Doc` between paired devices over WebRTC, end-to-end
+encrypted: see the [quick start](#quick-start--the-browser-mesh) and the [security model](#security-model) above for the
+code and the guarantees. The rest of the surface, in one place:
+
+- **Hooks for a permissions layer**: `authorizeDevice(deviceId, pub)`, `canRotate(issuer, target)` and
+  `authorizeUpdate(sender, update)` gate membership, rotation wraps and every incoming Yjs update;
+  `mesh.channel(kind)` is a private encrypted message stream per kind.
+- **Membership and authority** live in one place, the mesh's `web/trust` store (`mesh.security.trust`); an admin
+  revokes the devices it admitted, revocations cascade and the owner can `reanchor` them. `mesh.security.add(doc)` /
+  `addMany(docs)` ingest app-issued documents, `issueGrant(subjectPub, { role })` signs one with this device's
+  identity.
+- **Large messages are fragmented** (64 KiB per frame, 64 MiB per message), and a re-key is executed by the next owner
+  device online (`mesh.rekeyPending`) after an admin's revocation cut a device off.
+- **Give the mesh a persistent device-local store** (`persist: "idb"`, `store` or `vault.store`): with the in-memory
+  fallback a reloaded device has to be paired again.
+
+Details and breaking changes: [`docs/WEB-MESH-CRYPTO.md`](docs/WEB-MESH-CRYPTO.md).
 
 ### Browser permissions: `web/trust`, `web/oplog`, `web/merge`
 
