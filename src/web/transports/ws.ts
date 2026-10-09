@@ -17,28 +17,58 @@ export interface WsTransportOptions {
  * No default URL on purpose: there are no public signaling defaults.
  */
 /** Map server frames (docs/SIGNALING-PROTOCOL.md) to the transport-neutral SigMessage. */
-function fromServer(m: Record<string, any>, rid: string, self: string): SigMessage[] {
+function fromServer(
+	m: Record<string, any>,
+	rid: string,
+	self: string,
+): SigMessage[] {
 	switch (m.type) {
 		case "peers":
-			return Array.isArray(m.peers) ? m.peers.map((id: string) => ({ type: "join" as const, rid, from: id, to: self })) : [];
+			return Array.isArray(m.peers)
+				? m.peers.map((id: string) => ({
+						type: "join" as const,
+						rid,
+						from: id,
+						to: self,
+					}))
+				: [];
 		case "peer-joined":
 			return [{ type: "join", rid, from: m.id, to: self }];
 		case "peer-left":
 			return [{ type: "leave", rid, from: m.id, to: self }];
 		case "signal":
-			return [{ type: "signal", rid, from: m.from, to: self, payload: m.payload }];
+			return [
+				{ type: "signal", rid, from: m.from, to: self, payload: m.payload },
+			];
 		default:
 			return []; // "error" frames are followed by a close; join() rejects/reconnect handles it
 	}
 }
 
-export function wsTransport(url: string, opts: WsTransportOptions = {}): SignalingChannel {
-	if (!url) throw new Error("wsTransport requires an explicit url (no public defaults)");
+export function wsTransport(
+	url: string,
+	opts: WsTransportOptions = {},
+): SignalingChannel {
+	if (!url)
+		throw new Error(
+			"wsTransport requires an explicit url (no public defaults)",
+		);
 	const base = url.replace(/\/+$/, "");
-	const WS = opts.WebSocketImpl ?? (globalThis as { WebSocket?: typeof WebSocket }).WebSocket;
+	const WS =
+		opts.WebSocketImpl ??
+		(globalThis as { WebSocket?: typeof WebSocket }).WebSocket;
 	if (!WS) throw new Error("WebSocket is not available in this runtime");
 	const cbs = new Set<(m: SigMessage) => void>();
-	const rooms = new Map<string, { ws: WebSocket | null; selfId: string; joined: boolean; retry: number; timer?: ReturnType<typeof setTimeout> }>();
+	const rooms = new Map<
+		string,
+		{
+			ws: WebSocket | null;
+			selfId: string;
+			joined: boolean;
+			retry: number;
+			timer?: ReturnType<typeof setTimeout>;
+		}
+	>();
 	let closed = false;
 
 	const open = (rid: string): Promise<void> => {
@@ -49,7 +79,11 @@ export function wsTransport(url: string, opts: WsTransportOptions = {}): Signali
 			let settled = false;
 			ws.addEventListener("open", () => {
 				room.retry = 0;
-				const join: Record<string, unknown> = { type: "join", rid, from: room.selfId };
+				const join: Record<string, unknown> = {
+					type: "join",
+					rid,
+					from: room.selfId,
+				};
 				if (opts.token && !rid.startsWith("p_")) join.token = opts.token;
 				ws.send(JSON.stringify(join));
 				settled = true;
@@ -57,8 +91,13 @@ export function wsTransport(url: string, opts: WsTransportOptions = {}): Signali
 			});
 			ws.addEventListener("message", (ev: MessageEvent) => {
 				try {
-					const m = JSON.parse(typeof ev.data === "string" ? ev.data : new TextDecoder().decode(ev.data)) as Record<string, any>;
-					for (const out of fromServer(m, rid, room.selfId)) for (const cb of cbs) cb(out);
+					const m = JSON.parse(
+						typeof ev.data === "string"
+							? ev.data
+							: new TextDecoder().decode(ev.data),
+					) as Record<string, any>;
+					for (const out of fromServer(m, rid, room.selfId))
+						for (const cb of cbs) cb(out);
 				} catch {}
 			});
 			ws.addEventListener("close", () => {
@@ -66,7 +105,13 @@ export function wsTransport(url: string, opts: WsTransportOptions = {}): Signali
 					settled = true;
 					reject(new Error("signaling connection failed"));
 				}
-				if (closed || !room.joined || opts.reconnect === false || rooms.get(rid) !== room) return;
+				if (
+					closed ||
+					!room.joined ||
+					opts.reconnect === false ||
+					rooms.get(rid) !== room
+				)
+					return;
 				const delay = Math.min(30000, 500 * 2 ** room.retry++);
 				room.timer = setTimeout(() => void open(rid).catch(() => {}), delay);
 			});
@@ -84,10 +129,18 @@ export function wsTransport(url: string, opts: WsTransportOptions = {}): Signali
 			const ws = rooms.get(msg.rid)?.ws;
 			// the server addresses by `to` and fans out joins itself: only signals go out
 			if (msg.type === "signal" && ws && ws.readyState === 1) {
-				const frame = JSON.stringify({ type: "signal", rid: msg.rid, from: msg.from, to: msg.to, payload: msg.payload });
+				const frame = JSON.stringify({
+					type: "signal",
+					rid: msg.rid,
+					from: msg.from,
+					to: msg.to,
+					payload: msg.payload,
+				});
 				const size = new TextEncoder().encode(frame).length;
 				if (size > WS_MAX_MESSAGE_BYTES) {
-					throw new Error(`signaling message too large: ${size} bytes > ${WS_MAX_MESSAGE_BYTES} (server limit "too-large")`);
+					throw new Error(
+						`signaling message too large: ${size} bytes > ${WS_MAX_MESSAGE_BYTES} (server limit "too-large")`,
+					);
 				}
 				ws.send(frame);
 			}
@@ -102,7 +155,10 @@ export function wsTransport(url: string, opts: WsTransportOptions = {}): Signali
 			room.joined = false;
 			clearTimeout(room.timer);
 			try {
-				if (room.ws && room.ws.readyState === 1) room.ws.send(JSON.stringify({ type: "leave", rid, from: room.selfId }));
+				if (room.ws && room.ws.readyState === 1)
+					room.ws.send(
+						JSON.stringify({ type: "leave", rid, from: room.selfId }),
+					);
 				room.ws?.close();
 			} catch {}
 			rooms.delete(rid);

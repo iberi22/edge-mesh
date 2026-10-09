@@ -1,5 +1,5 @@
-import { topic } from "./rooms.js";
 import type { Mesh } from "./provider.js";
+import { topic } from "./rooms.js";
 
 export const HEALTH_SCHEMA_PREFIX = "swal.health/v1";
 
@@ -19,7 +19,8 @@ export function isHealthRecord(r: unknown): r is HealthRecord {
 }
 
 /** Topic carrying cross-app health records for one subject (`subj_<ULID>`). */
-export const exchangeTopic = (subject: string) => topic("health", "exchange", subject);
+export const exchangeTopic = (subject: string) =>
+	topic("health", "exchange", subject);
 
 export interface Exchange {
 	topic: string;
@@ -33,14 +34,23 @@ export interface Exchange {
  * Records live in an append-only Y.Array 'records'; receivers see only entries added remotely
  * (or by any writer after subscription), de-duplicated by record id.
  */
-export function exchange(mesh: Mesh, doc: import("yjs").Doc, subject: string): Exchange {
+export function exchange(
+	mesh: Mesh,
+	doc: import("yjs").Doc,
+	subject: string,
+): Exchange {
 	const arr = doc.getArray<{ id: string; record: HealthRecord }>("records");
 	const cbs = new Set<(r: HealthRecord) => void>();
 	const seen = new Set<string>();
-	const obs = (ev: import("yjs").YArrayEvent<{ id: string; record: HealthRecord }>) => {
+	const obs = (
+		ev: import("yjs").YArrayEvent<{ id: string; record: HealthRecord }>,
+	) => {
 		if (ev.transaction.local) return;
 		for (const item of ev.changes.added) {
-			for (const e of item.content.getContent() as Array<{ id: string; record: HealthRecord }>) {
+			for (const e of item.content.getContent() as Array<{
+				id: string;
+				record: HealthRecord;
+			}>) {
 				if (seen.has(e.id) || !isHealthRecord(e.record)) continue;
 				seen.add(e.id);
 				for (const cb of cbs) cb(e.record);
@@ -51,7 +61,10 @@ export function exchange(mesh: Mesh, doc: import("yjs").Doc, subject: string): E
 	return {
 		topic: exchangeTopic(subject),
 		send(record) {
-			if (!isHealthRecord(record)) throw new Error(`record.schema must start with "${HEALTH_SCHEMA_PREFIX}"`);
+			if (!isHealthRecord(record))
+				throw new Error(
+					`record.schema must start with "${HEALTH_SCHEMA_PREFIX}"`,
+				);
 			const id = crypto.randomUUID();
 			seen.add(id);
 			arr.push([{ id, record }]);

@@ -7,7 +7,9 @@ export async function hkdf(
 	info: string,
 	salt: Uint8Array = new Uint8Array(32),
 ): Promise<Uint8Array> {
-	const k = await crypto.subtle.importKey("raw", bs(ikm), "HKDF", false, ["deriveBits"]);
+	const k = await crypto.subtle.importKey("raw", bs(ikm), "HKDF", false, [
+		"deriveBits",
+	]);
 	const bits = await crypto.subtle.deriveBits(
 		{ name: "HKDF", hash: "SHA-256", salt: bs(salt), info: bs(utf8(info)) },
 		k,
@@ -17,21 +19,36 @@ export async function hkdf(
 }
 
 export async function importAesKey(raw: Uint8Array): Promise<CryptoKey> {
-	return crypto.subtle.importKey("raw", bs(raw), "AES-GCM", false, ["encrypt", "decrypt"]);
+	return crypto.subtle.importKey("raw", bs(raw), "AES-GCM", false, [
+		"encrypt",
+		"decrypt",
+	]);
 }
 
 /** Doc material = HKDF(meshKey, "swal-doc/v1|" + topic) (32 raw bytes). Never used directly to seal. */
-export async function deriveDocMaterial(meshKey: Uint8Array, topicName: string): Promise<Uint8Array> {
+export async function deriveDocMaterial(
+	meshKey: Uint8Array,
+	topicName: string,
+): Promise<Uint8Array> {
 	return hkdf(meshKey, `swal-doc/v1|${topicName}`);
 }
 
 /** Sender key = HKDF(docMaterial, "swal-doc/v1|" + topic + "|sender|" + deviceId) -> AES-256-GCM. Each sender seals under its own key. */
-export async function deriveSenderKey(docMaterial: Uint8Array, topicName: string, deviceId: string): Promise<CryptoKey> {
-	return importAesKey(await hkdf(docMaterial, `swal-doc/v1|${topicName}|sender|${deviceId}`));
+export async function deriveSenderKey(
+	docMaterial: Uint8Array,
+	topicName: string,
+	deviceId: string,
+): Promise<CryptoKey> {
+	return importAesKey(
+		await hkdf(docMaterial, `swal-doc/v1|${topicName}|sender|${deviceId}`),
+	);
 }
 
 /** Convenience (single-writer use / tests): the topic-level key without a sender component. */
-export async function deriveDocKey(meshKey: Uint8Array, topicName: string): Promise<CryptoKey> {
+export async function deriveDocKey(
+	meshKey: Uint8Array,
+	topicName: string,
+): Promise<CryptoKey> {
 	return importAesKey(await deriveDocMaterial(meshKey, topicName));
 }
 
@@ -60,7 +77,10 @@ function nextNonce(key: CryptoKey): Uint8Array {
 /** Test hook: position the counter of `key` (e.g. right before the wrap). */
 export function __setNonceCounter(key: CryptoKey, n: number): void {
 	let st = counters.get(key);
-	if (!st) counters.set(key, (st = { prefix: randomBytes(8), n: 0 }));
+	if (!st) {
+		st = { prefix: randomBytes(8), n: 0 };
+		counters.set(key, st);
+	}
 	st.n = n;
 }
 
@@ -86,10 +106,15 @@ export async function openUpdate(
 	sealed: Uint8Array,
 	aad: Uint8Array | string = new Uint8Array(0),
 ): Promise<Uint8Array> {
-	if (sealed.length < NONCE_LEN + 16) throw new Error("sealed payload too short");
+	if (sealed.length < NONCE_LEN + 16)
+		throw new Error("sealed payload too short");
 	const additionalData = typeof aad === "string" ? utf8(aad) : aad;
 	const pt = await crypto.subtle.decrypt(
-		{ name: "AES-GCM", iv: bs(sealed.subarray(0, NONCE_LEN)), additionalData: bs(additionalData) },
+		{
+			name: "AES-GCM",
+			iv: bs(sealed.subarray(0, NONCE_LEN)),
+			additionalData: bs(additionalData),
+		},
 		docKey,
 		bs(sealed.subarray(NONCE_LEN)),
 	);

@@ -242,7 +242,7 @@ export class SecurityState {
 
 	// ─── ingest ──────────────────────────────────────────────────────────────
 
-/**
+	/**
 	 * Add documents (any order, any source). Serialized; listeners fire once when anything was accepted.
 	 * `opts.from` (R6-S2b) is the transport-level id of the peer that sent them: the trust store charges the waiting
 	 * slots they park to that sender, so one peer cannot take the whole waiting set by signing with fresh random keys.
@@ -442,15 +442,17 @@ export class SecurityState {
 	 */
 	private applyCap(doc: Grant | Revocation): boolean {
 		const cap =
-			doc.t === "grant"
-				? MAX_STORED_PER_ISSUER
-				: MAX_REVS_PER_ISSUER_TARGET;
+			doc.t === "grant" ? MAX_STORED_PER_ISSUER : MAX_REVS_PER_ISSUER_TARGET;
 		if (cap <= 0) return false;
 		if (doc.t === "grant" && doc.issuer === this.root.deviceId) return false; // the root's own grants are not capped
 		const bucket: string[] = [];
 		for (const d of this.trust.docs()) {
 			if (d.issuer !== doc.issuer) continue;
-			if (doc.t === "grant" ? d.t === "grant" : d.t === "revoke" && d.target === doc.target)
+			if (
+				doc.t === "grant"
+					? d.t === "grant"
+					: d.t === "revoke" && d.target === doc.target
+			)
 				bucket.push(d.id);
 		}
 		if (bucket.length <= cap) return false;

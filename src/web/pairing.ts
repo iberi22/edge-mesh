@@ -1,9 +1,24 @@
 import { idMatchesPub, type TrustRoot } from "./admission.js";
 import { hkdf, importAesKey, openUpdate, sealUpdate } from "./crypto.js";
-import { hybridSecret, identityVerify, kemDecapsulate, kemEncapsulate, kemKeygen } from "./pq.js";
+import {
+	hybridSecret,
+	identityVerify,
+	kemDecapsulate,
+	kemEncapsulate,
+	kemKeygen,
+} from "./pq.js";
 import { hmac } from "./rooms.js";
 import type { Device, VaultClient } from "./types.js";
-import { b64uDecode, b64uEncode, bs, concat, equalBytes, fromUtf8, randomBytes, utf8 } from "./util.js";
+import {
+	b64uDecode,
+	b64uEncode,
+	bs,
+	concat,
+	equalBytes,
+	fromUtf8,
+	randomBytes,
+	utf8,
+} from "./util.js";
 
 export const PAIR_TTL_MS = 5 * 60_000;
 const ECDH = { name: "ECDH", namedCurve: "P-256" } as const;
@@ -49,7 +64,21 @@ export interface GrantBody {
 }
 
 export function encodePairPayload(p: PairPayload): string {
-	return b64uEncode(utf8(JSON.stringify([p.v, p.mid, p.appId, p.topic, p.hostPub, p.hostId, p.pairSecret, p.exp, p.root])));
+	return b64uEncode(
+		utf8(
+			JSON.stringify([
+				p.v,
+				p.mid,
+				p.appId,
+				p.topic,
+				p.hostPub,
+				p.hostId,
+				p.pairSecret,
+				p.exp,
+				p.root,
+			]),
+		),
+	);
 }
 
 export function decodePairPayload(s: string): PairPayload {
@@ -59,16 +88,25 @@ export function decodePairPayload(s: string): PairPayload {
 	} catch {
 		throw new Error("invalid pairing payload");
 	}
-	if (!Array.isArray(a) || a.length !== 9 || a[0] !== 4) throw new Error("unsupported pairing payload");
+	if (!Array.isArray(a) || a.length !== 9 || a[0] !== 4)
+		throw new Error("unsupported pairing payload");
 	const [v, mid, appId, topic, hostPub, hostId, pairSecret, exp, root] = a;
-	if (![mid, appId, topic, hostPub, hostId, pairSecret, root].every((x) => typeof x === "string") || typeof exp !== "number") {
+	if (
+		![mid, appId, topic, hostPub, hostId, pairSecret, root].every(
+			(x) => typeof x === "string",
+		) ||
+		typeof exp !== "number"
+	) {
 		throw new Error("malformed pairing payload");
 	}
-	if (b64uDecode(pairSecret).length !== 16) throw new Error("malformed pairing secret");
+	if (b64uDecode(pairSecret).length !== 16)
+		throw new Error("malformed pairing secret");
 	return { v, mid, root, appId, topic, hostPub, hostId, pairSecret, exp };
 }
 
-export async function derivePairKey(pairSecret: Uint8Array): Promise<CryptoKey> {
+export async function derivePairKey(
+	pairSecret: Uint8Array,
+): Promise<CryptoKey> {
 	return importAesKey(await hkdf(pairSecret, "swal-pair/v1"));
 }
 
@@ -85,9 +123,18 @@ export interface PairOfferState {
 
 export async function createPairOffer(
 	vault: VaultClient,
-	o: { mid: string; root: string; appId: string; topic: string; now: number; ttlMs?: number },
+	o: {
+		mid: string;
+		root: string;
+		appId: string;
+		topic: string;
+		now: number;
+		ttlMs?: number;
+	},
 ): Promise<PairOfferState> {
-	const hostKeys = (await crypto.subtle.generateKey(ECDH, false, ["deriveBits"])) as CryptoKeyPair;
+	const hostKeys = (await crypto.subtle.generateKey(ECDH, false, [
+		"deriveBits",
+	])) as CryptoKeyPair;
 	const pairSecret = randomBytes(16);
 	const payload: PairPayload = {
 		v: 4,
@@ -95,7 +142,9 @@ export async function createPairOffer(
 		root: o.root,
 		appId: o.appId,
 		topic: o.topic,
-		hostPub: b64uEncode(new Uint8Array(await crypto.subtle.exportKey("raw", hostKeys.publicKey))),
+		hostPub: b64uEncode(
+			new Uint8Array(await crypto.subtle.exportKey("raw", hostKeys.publicKey)),
+		),
 		hostId: vault.deviceId,
 		pairSecret: b64uEncode(pairSecret),
 		exp: o.now + (o.ttlMs ?? PAIR_TTL_MS),
@@ -104,16 +153,31 @@ export async function createPairOffer(
 }
 
 /** What the host signs with its identity key: the transcript, its id and key (inside the encrypted grant). */
-export const hostProofBytes = (transcript: Uint8Array, hostId: string, pub: string) =>
-	utf8(JSON.stringify(["swal-pair-host/v1", b64uEncode(transcript), hostId, pub]));
+export const hostProofBytes = (
+	transcript: Uint8Array,
+	hostId: string,
+	pub: string,
+) =>
+	utf8(
+		JSON.stringify(["swal-pair-host/v1", b64uEncode(transcript), hostId, pub]),
+	);
 
 /** Guest-side check of the host's identity proof: hostId (from the QR) = fingerprint(pub) and a valid ML-DSA-65 signature. */
-export async function verifyHostProof(p: PairPayload, transcript: Uint8Array, proof: unknown): Promise<boolean> {
+export async function verifyHostProof(
+	p: PairPayload,
+	transcript: Uint8Array,
+	proof: unknown,
+): Promise<boolean> {
 	const h = proof as { pub?: unknown; sig?: unknown } | null;
-	if (!h || typeof h.pub !== "string" || typeof h.sig !== "string") return false;
+	if (!h || typeof h.pub !== "string" || typeof h.sig !== "string")
+		return false;
 	if (!(await idMatchesPub(p.hostId, h.pub))) return false;
 	try {
-		return identityVerify(b64uDecode(h.pub), hostProofBytes(transcript, p.hostId, h.pub), b64uDecode(h.sig));
+		return identityVerify(
+			b64uDecode(h.pub),
+			hostProofBytes(transcript, p.hostId, h.pub),
+			b64uDecode(h.sig),
+		);
 	} catch {
 		return false;
 	}
@@ -153,15 +217,32 @@ export async function pairTranscript(
  * 6-digit Short Authentication String: HKDF(ikm = ML-KEM secret || ECDH secret, salt = transcript hash), 40 bits
  * mod 10^6. A man in the middle must replace the ECDH key or the KEM ciphertext, which changes the code.
  */
-export async function sasCode(shared: Uint8Array, transcript: Uint8Array): Promise<string> {
+export async function sasCode(
+	shared: Uint8Array,
+	transcript: Uint8Array,
+): Promise<string> {
 	const b = await hkdf(shared, "swal-sas/v3", transcript);
-	const n = (b[0] * 2 ** 32 + new DataView(b.buffer, b.byteOffset).getUint32(1, false)) % 1_000_000;
+	const n =
+		(b[0] * 2 ** 32 +
+			new DataView(b.buffer, b.byteOffset).getUint32(1, false)) %
+		1_000_000;
 	return String(n).padStart(6, "0");
 }
 
 /** Hybrid session (AGENTS.md §2): HKDF-SHA-256(ML-KEM-768 secret || ECDH P-256 secret, salt = transcript). */
-async function session(kemSecret: Uint8Array, ecdhSecret: Uint8Array, transcript: Uint8Array) {
-	const key = await importAesKey(await hybridSecret(kemSecret, ecdhSecret, "swal-pair-session/v3", transcript));
+async function session(
+	kemSecret: Uint8Array,
+	ecdhSecret: Uint8Array,
+	transcript: Uint8Array,
+) {
+	const key = await importAesKey(
+		await hybridSecret(
+			kemSecret,
+			ecdhSecret,
+			"swal-pair-session/v3",
+			transcript,
+		),
+	);
 	return { key, sas: await sasCode(concat(kemSecret, ecdhSecret), transcript) };
 }
 
@@ -169,8 +250,21 @@ async function session(kemSecret: Uint8Array, ecdhSecret: Uint8Array, transcript
  * What the guest signs with its IDENTITY key inside the ack: proof of possession of the key it asks to be admitted
  * with, bound to this pairing session (transcript) so it cannot be replayed into another one.
  */
-export const ackSignedBytes = (transcript: Uint8Array, deviceId: string, pub: string, name: string) =>
-	utf8(JSON.stringify(["swal-pair-ack/v1", b64uEncode(transcript), deviceId, pub, name]));
+export const ackSignedBytes = (
+	transcript: Uint8Array,
+	deviceId: string,
+	pub: string,
+	name: string,
+) =>
+	utf8(
+		JSON.stringify([
+			"swal-pair-ack/v1",
+			b64uEncode(transcript),
+			deviceId,
+			pub,
+			name,
+		]),
+	);
 
 export interface PairAck {
 	deviceId: string;
@@ -181,21 +275,42 @@ export interface PairAck {
 
 /** Host-side check of a guest ack: deviceId = fingerprint(pub) and a valid signature by that key over the transcript. */
 export async function verifyPairAck(
-	verify: (pub: Uint8Array, data: Uint8Array, sig: Uint8Array) => boolean | Promise<boolean>,
+	verify: (
+		pub: Uint8Array,
+		data: Uint8Array,
+		sig: Uint8Array,
+	) => boolean | Promise<boolean>,
 	transcript: Uint8Array,
 	a: Partial<PairAck>,
 ): Promise<string | null> {
-	if (typeof a.deviceId !== "string" || typeof a.pub !== "string" || typeof a.sig !== "string") return "malformed ack";
-	if (!(await idMatchesPub(a.deviceId, a.pub))) return "deviceId is not the fingerprint of the guest key";
+	if (
+		typeof a.deviceId !== "string" ||
+		typeof a.pub !== "string" ||
+		typeof a.sig !== "string"
+	)
+		return "malformed ack";
+	if (!(await idMatchesPub(a.deviceId, a.pub)))
+		return "deviceId is not the fingerprint of the guest key";
 	const name = typeof a.name === "string" ? a.name : "";
 	try {
-		if (await verify(b64uDecode(a.pub), ackSignedBytes(transcript, a.deviceId, a.pub, name), b64uDecode(a.sig))) return null;
+		if (
+			await verify(
+				b64uDecode(a.pub),
+				ackSignedBytes(transcript, a.deviceId, a.pub, name),
+				b64uDecode(a.sig),
+			)
+		)
+			return null;
 	} catch {}
 	return "guest did not prove possession of its identity key";
 }
 
-const helloProof = async (secret: Uint8Array, e: string, n: string, k: string) =>
-	hmac(await pairMacKey(secret), utf8(`hello/v3|${e}|${n}|${k}`));
+const helloProof = async (
+	secret: Uint8Array,
+	e: string,
+	n: string,
+	k: string,
+) => hmac(await pairMacKey(secret), utf8(`hello/v3|${e}|${n}|${k}`));
 
 type Msg =
 	/** e: guest ephemeral ECDH key, n: guest nonce, k: guest ephemeral ML-KEM-768 encapsulation key, p: proof */
@@ -233,7 +348,11 @@ export class HostPairing {
 		private hooks: {
 			now(): number;
 			/** identity-signature check (the host vault's verify) for the guest's proof of possession */
-			verify(pub: Uint8Array, data: Uint8Array, sig: Uint8Array): boolean | Promise<boolean>;
+			verify(
+				pub: Uint8Array,
+				data: Uint8Array,
+				sig: Uint8Array,
+			): boolean | Promise<boolean>;
 			/** the host's identity proof over the transcript (see `hostProofBytes`) */
 			prove(transcript: Uint8Array): Promise<{ pub: string; sig: string }>;
 			onSas(p: SasPrompt): void;
@@ -279,7 +398,12 @@ export class HostPairing {
 		const secret = this.offer.pairSecret;
 		let got: Uint8Array;
 		try {
-			if (typeof msg.e !== "string" || typeof msg.n !== "string" || typeof msg.k !== "string" || b64uDecode(msg.n).length !== 16)
+			if (
+				typeof msg.e !== "string" ||
+				typeof msg.n !== "string" ||
+				typeof msg.k !== "string" ||
+				b64uDecode(msg.n).length !== 16
+			)
 				throw new Error();
 			got = b64uDecode(msg.p);
 		} catch {
@@ -290,11 +414,29 @@ export class HostPairing {
 		if (this.burned) return send({ t: "err", e: "used" }); // re-check: another hello may have won during the awaits above
 		this.burned = true; // single use, enforced by the host (no await between check and set)
 		this.send = send;
-		const guestPub = await crypto.subtle.importKey("raw", bs(b64uDecode(msg.e)), ECDH, false, []);
-		const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: guestPub }, this.offer.hostKeys.privateKey, 256));
+		const guestPub = await crypto.subtle.importKey(
+			"raw",
+			bs(b64uDecode(msg.e)),
+			ECDH,
+			false,
+			[],
+		);
+		const shared = new Uint8Array(
+			await crypto.subtle.deriveBits(
+				{ name: "ECDH", public: guestPub },
+				this.offer.hostKeys.privateKey,
+				256,
+			),
+		);
 		const kem = kemEncapsulate(b64uDecode(msg.k)); // throws on a malformed key: the hello is refused
 		const c = b64uEncode(kem.cipherText);
-		this.transcript = await pairTranscript(this.offer.payload, msg.e, msg.n, msg.k, c);
+		this.transcript = await pairTranscript(
+			this.offer.payload,
+			msg.e,
+			msg.n,
+			msg.k,
+			c,
+		);
 		this.sess = await session(kem.sharedSecret, shared, this.transcript);
 		send({ t: "ready", c });
 		this.hooks.onSas({
@@ -312,15 +454,37 @@ export class HostPairing {
 
 	private async onAck(msg: Extract<Msg, { t: "ack" }>) {
 		if (!this.sess || !this.transcript || this.guestDevice) return;
-		const body = parse<Partial<PairAck>>(await openUpdate(this.sess.key, b64uDecode(msg.ct), "swal-pair/ack"));
-		const bad = await verifyPairAck(this.hooks.verify, this.transcript, body ?? {});
-		if (bad || typeof body.deviceId !== "string" || typeof body.pub !== "string") throw new Error(bad ?? "malformed ack");
-		this.guestDevice = { deviceId: body.deviceId, pub: body.pub, name: typeof body.name === "string" ? body.name : "" };
+		const body = parse<Partial<PairAck>>(
+			await openUpdate(this.sess.key, b64uDecode(msg.ct), "swal-pair/ack"),
+		);
+		const bad = await verifyPairAck(
+			this.hooks.verify,
+			this.transcript,
+			body ?? {},
+		);
+		if (
+			bad ||
+			typeof body.deviceId !== "string" ||
+			typeof body.pub !== "string"
+		)
+			throw new Error(bad ?? "malformed ack");
+		this.guestDevice = {
+			deviceId: body.deviceId,
+			pub: body.pub,
+			name: typeof body.name === "string" ? body.name : "",
+		};
 		await this.tryGrant();
 	}
 
 	private async tryGrant() {
-		if (!this.hostOk || !this.guestDevice || !this.sess || !this.send || this.done) return;
+		if (
+			!this.hostOk ||
+			!this.guestDevice ||
+			!this.sess ||
+			!this.send ||
+			this.done
+		)
+			return;
 		this.done = true;
 		let grant: GrantBody;
 		try {
@@ -328,10 +492,14 @@ export class HostPairing {
 			grant.hostProof = await this.hooks.prove(this.transcript as Uint8Array);
 		} catch (e) {
 			this.send({ t: "err", e: "refused" });
-			this.hooks.onFail(`grant refused: ${e instanceof Error ? e.message : String(e)}`);
+			this.hooks.onFail(
+				`grant refused: ${e instanceof Error ? e.message : String(e)}`,
+			);
 			return;
 		}
-		const ct = b64uEncode(await sealUpdate(this.sess.key, json(grant), "swal-pair/grant"));
+		const ct = b64uEncode(
+			await sealUpdate(this.sess.key, json(grant), "swal-pair/grant"),
+		);
 		this.send({ t: "grant", ct });
 		this.hooks.onPaired({ ...this.guestDevice, addedAt: this.hooks.now() });
 	}
@@ -373,15 +541,31 @@ export class GuestPairing {
 	): Promise<GuestPairing> {
 		if (hooks.now > payload.exp) throw new Error("pairing code expired");
 		const g = new GuestPairing(payload, vault, hooks);
-		const eph = (await crypto.subtle.generateKey(ECDH, false, ["deriveBits"])) as CryptoKeyPair;
-		g.ePub = b64uEncode(new Uint8Array(await crypto.subtle.exportKey("raw", eph.publicKey)));
+		const eph = (await crypto.subtle.generateKey(ECDH, false, [
+			"deriveBits",
+		])) as CryptoKeyPair;
+		g.ePub = b64uEncode(
+			new Uint8Array(await crypto.subtle.exportKey("raw", eph.publicKey)),
+		);
 		g.nonce = b64uEncode(randomBytes(16));
 		const kem = kemKeygen(); // ephemeral: one pairing only
 		g.kemPub = b64uEncode(kem.publicKey);
 		g.kemSecret = kem.secretKey;
 		const secret = b64uDecode(payload.pairSecret);
-		const hostPub = await crypto.subtle.importKey("raw", bs(b64uDecode(payload.hostPub)), ECDH, false, []);
-		g.ecdhSecret = new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: hostPub }, eph.privateKey, 256));
+		const hostPub = await crypto.subtle.importKey(
+			"raw",
+			bs(b64uDecode(payload.hostPub)),
+			ECDH,
+			false,
+			[],
+		);
+		g.ecdhSecret = new Uint8Array(
+			await crypto.subtle.deriveBits(
+				{ name: "ECDH", public: hostPub },
+				eph.privateKey,
+				256,
+			),
+		);
 		g.proof = b64uEncode(await helloProof(secret, g.ePub, g.nonce, g.kemPub));
 		return g;
 	}
@@ -389,7 +573,13 @@ export class GuestPairing {
 	/** Called for every new link in the pairing room; says hello over it. */
 	attach(send: PairSend) {
 		if (this.settled) return;
-		send({ t: "hello", e: this.ePub, n: this.nonce, k: this.kemPub, p: this.proof });
+		send({
+			t: "hello",
+			e: this.ePub,
+			n: this.nonce,
+			k: this.kemPub,
+			p: this.proof,
+		});
 		this.sent.add(send);
 	}
 
@@ -405,14 +595,23 @@ export class GuestPairing {
 		// can no longer end the pairing
 		if (this.active && send !== this.active) return;
 		try {
-			if (msg.t === "err") return this.fail(new Error(`host refused pairing: ${msg.e}`));
-			if (msg.t === "abort") return this.fail(new Error("host rejected the SAS"));
+			if (msg.t === "err")
+				return this.fail(new Error(`host refused pairing: ${msg.e}`));
+			if (msg.t === "abort")
+				return this.fail(new Error("host rejected the SAS"));
 			if (msg.t === "ready" && !this.active) {
-				if (typeof msg.c !== "string") throw new Error("pairing: the host sent no ML-KEM ciphertext");
+				if (typeof msg.c !== "string")
+					throw new Error("pairing: the host sent no ML-KEM ciphertext");
 				this.active = send;
 				// hybrid session: a substituted ciphertext (or ECDH key) yields another SAS, caught by the user
 				const kemSecret = kemDecapsulate(b64uDecode(msg.c), this.kemSecret);
-				this.transcript = await pairTranscript(this.payload, this.ePub, this.nonce, this.kemPub, msg.c);
+				this.transcript = await pairTranscript(
+					this.payload,
+					this.ePub,
+					this.nonce,
+					this.kemPub,
+					msg.c,
+				);
 				this.sess = await session(kemSecret, this.ecdhSecret, this.transcript);
 				const ok = await this.hooks.onSas(this.sess.sas);
 				if (!ok) {
@@ -422,16 +621,32 @@ export class GuestPairing {
 				const deviceId = this.vault.deviceId;
 				const pub = b64uEncode(this.vault.devicePublicKey);
 				const name = this.hooks.name;
-				const sig = b64uEncode(await this.vault.sign(ackSignedBytes(this.transcript, deviceId, pub, name)));
+				const sig = b64uEncode(
+					await this.vault.sign(
+						ackSignedBytes(this.transcript, deviceId, pub, name),
+					),
+				);
 				const ack: PairAck = { deviceId, pub, name, sig };
 				if (!this.sess) return;
-				const ct = b64uEncode(await sealUpdate(this.sess.key, json(ack), "swal-pair/ack"));
+				const ct = b64uEncode(
+					await sealUpdate(this.sess.key, json(ack), "swal-pair/ack"),
+				);
 				send({ t: "ack", ct });
 			} else if (msg.t === "grant" && this.active === send && this.sess) {
-				const g = parse<GrantBody>(await openUpdate(this.sess.key, b64uDecode(msg.ct), "swal-pair/grant"));
+				const g = parse<GrantBody>(
+					await openUpdate(
+						this.sess.key,
+						b64uDecode(msg.ct),
+						"swal-pair/grant",
+					),
+				);
 				// the host proves, inside the SAS-authenticated session, that it holds the identity the QR names
-				if (!(await verifyHostProof(this.payload, this.transcript, g.hostProof)))
-					throw new Error("pairing grant: the host did not prove the identity named by the pairing code");
+				if (
+					!(await verifyHostProof(this.payload, this.transcript, g.hostProof))
+				)
+					throw new Error(
+						"pairing grant: the host did not prove the identity named by the pairing code",
+					);
 				this.settled = true;
 				this.resolve(g);
 			}
@@ -440,4 +655,3 @@ export class GuestPairing {
 		}
 	}
 }
-

@@ -29,7 +29,11 @@ export interface DataChannelLinkOptions {
  * (a peer streaming "more follows" forever gets the link closed) and sends respect `bufferedAmount`, so a burst
  * of large messages never overflows the browser's send queue (which would close the channel).
  */
-export function dataChannelLink(id: string, dc: RTCDataChannel, o: DataChannelLinkOptions = {}): PeerLink {
+export function dataChannelLink(
+	id: string,
+	dc: RTCDataChannel,
+	o: DataChannelLinkOptions = {},
+): PeerLink {
 	const now = o.now ?? Date.now;
 	const stallMs = o.stallMs ?? STALL_MS;
 	let lastProgress = now();
@@ -49,7 +53,12 @@ export function dataChannelLink(id: string, dc: RTCDataChannel, o: DataChannelLi
 	const queue: Uint8Array[] = [];
 	let queued = 0;
 	const flush = () => {
-		while (queue.length > 0 && !closed && dc.readyState === "open" && dc.bufferedAmount < HIGH_WATER) {
+		while (
+			queue.length > 0 &&
+			!closed &&
+			dc.readyState === "open" &&
+			dc.bufferedAmount < HIGH_WATER
+		) {
 			const c = queue.shift() as Uint8Array;
 			queued -= c.length;
 			try {
@@ -127,7 +136,11 @@ export function dataChannelLink(id: string, dc: RTCDataChannel, o: DataChannelLi
 			if (closed) return;
 			if (closing) return; // draining before a graceful close: nothing new
 			// BL3: only a link that is over the cap AND not draining at all is cut off; a big legit message just queues
-			if (queued + data.length > MAX_SEND_QUEUE && now() - lastProgress > stallMs) return close(true);
+			if (
+				queued + data.length > MAX_SEND_QUEUE &&
+				now() - lastProgress > stallMs
+			)
+				return close(true);
 			for (let i = 0; i < data.length || i === 0; i += CHUNK) {
 				const chunk = data.subarray(i, i + CHUNK);
 				const framed = new Uint8Array(chunk.length + 1);
@@ -157,9 +170,15 @@ export function dataChannelLink(id: string, dc: RTCDataChannel, o: DataChannelLi
 	};
 }
 
-export function resolveRtc(o: RtcOptions | undefined): typeof RTCPeerConnection {
-	const Impl = o?.RTCPeerConnection ?? (globalThis as { RTCPeerConnection?: typeof RTCPeerConnection }).RTCPeerConnection;
-	if (!Impl) throw new Error("RTCPeerConnection is not available in this runtime");
+export function resolveRtc(
+	o: RtcOptions | undefined,
+): typeof RTCPeerConnection {
+	const Impl =
+		o?.RTCPeerConnection ??
+		(globalThis as { RTCPeerConnection?: typeof RTCPeerConnection })
+			.RTCPeerConnection;
+	if (!Impl)
+		throw new Error("RTCPeerConnection is not available in this runtime");
 	return Impl;
 }
 
@@ -185,13 +204,26 @@ export async function connectViaSignaling(
 	o: SignalingConnectOptions,
 ): Promise<() => void> {
 	const Rtc = resolveRtc(o.rtc);
-	const peers = new Map<string, { pc: RTCPeerConnection; queued: RTCIceCandidateInit[]; remoteSet: boolean }>();
+	const peers = new Map<
+		string,
+		{ pc: RTCPeerConnection; queued: RTCIceCandidateInit[]; remoteSet: boolean }
+	>();
 	const err = (e: unknown) => o.onError?.(e);
 	const aad = (from: string, to: string) => utf8(`${o.rid}|${from}|${to}`);
 
 	const sendSig = async (to: string, s: Sig) => {
-		const sealed = await sealUpdate(o.key, utf8(JSON.stringify(s)), aad(o.selfId, to));
-		channel.send({ type: "signal", rid: o.rid, from: o.selfId, to, payload: b64uEncode(sealed) });
+		const sealed = await sealUpdate(
+			o.key,
+			utf8(JSON.stringify(s)),
+			aad(o.selfId, to),
+		);
+		channel.send({
+			type: "signal",
+			rid: o.rid,
+			from: o.selfId,
+			to,
+			payload: b64uEncode(sealed),
+		});
 	};
 
 	// No trickle ICE: the pairing room allows only 10 signals in total, so each side sends
@@ -214,7 +246,8 @@ export async function connectViaSignaling(
 		peers.set(remote, st);
 		pc.ondatachannel = (ev) => wire(remote, ev.channel);
 		pc.onconnectionstatechange = () => {
-			if (pc.connectionState === "failed" || pc.connectionState === "closed") drop(remote);
+			if (pc.connectionState === "failed" || pc.connectionState === "closed")
+				drop(remote);
 		};
 		return st;
 	};
@@ -242,7 +275,11 @@ export async function connectViaSignaling(
 		await sendSig(remote, { k: "offer", sdp: st.pc.localDescription!.sdp });
 	};
 
-	const flush = async (st: { pc: RTCPeerConnection; queued: RTCIceCandidateInit[]; remoteSet: boolean }) => {
+	const flush = async (st: {
+		pc: RTCPeerConnection;
+		queued: RTCIceCandidateInit[];
+		remoteSet: boolean;
+	}) => {
 		st.remoteSet = true;
 	};
 
@@ -253,13 +290,25 @@ export async function connectViaSignaling(
 		if (msg.type === "join") {
 			if (peers.has(msg.from)) return;
 			// broadcast joins (loopback-style channels) get a direct reply; server-style channels set `to`
-			if (msg.to === undefined) channel.send({ type: "join", rid: o.rid, from: o.selfId, to: msg.from });
+			if (msg.to === undefined)
+				channel.send({
+					type: "join",
+					rid: o.rid,
+					from: o.selfId,
+					to: msg.from,
+				});
 			if (o.selfId < msg.from) await initiate(msg.from);
 			return;
 		}
 		if (msg.type === "signal" && msg.payload) {
 			const s = JSON.parse(
-				fromUtf8(await openUpdate(o.key, b64uDecode(msg.payload), aad(msg.from, o.selfId))),
+				fromUtf8(
+					await openUpdate(
+						o.key,
+						b64uDecode(msg.payload),
+						aad(msg.from, o.selfId),
+					),
+				),
 			) as Sig;
 			if (s.k === "offer") {
 				const st = peers.get(msg.from) ?? makePeer(msg.from);
@@ -267,7 +316,10 @@ export async function connectViaSignaling(
 				await flush(st);
 				await st.pc.setLocalDescription(await st.pc.createAnswer());
 				await gathered(st.pc);
-				await sendSig(msg.from, { k: "answer", sdp: st.pc.localDescription!.sdp });
+				await sendSig(msg.from, {
+					k: "answer",
+					sdp: st.pc.localDescription!.sdp,
+				});
 			} else if (s.k === "answer") {
 				const st = peers.get(msg.from);
 				if (!st) return;

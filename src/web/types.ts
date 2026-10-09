@@ -16,7 +16,11 @@ export interface VaultClient {
 	 * so a vault can no longer widen what is accepted. Kept optional for source compatibility.
 	 * @deprecated
 	 */
-	verify?(publicKey: Uint8Array, data: Uint8Array, signature: Uint8Array): Promise<boolean>;
+	verify?(
+		publicKey: Uint8Array,
+		data: Uint8Array,
+		signature: Uint8Array,
+	): Promise<boolean>;
 	/**
 	 * Optional: persistent static P-256 ECDH key of this device (non-extractable private key + raw public key),
 	 * used to wrap rotated mesh keys pairwise. Without it the mesh keeps an in-memory key for the session only,

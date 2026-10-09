@@ -17,10 +17,15 @@ export interface QrSdpTransport extends LinkTransport {
 	acceptAnswer(answerBlob: string): Promise<void>;
 }
 
-async function pipe(bytes: Uint8Array, stream: CompressionStream | DecompressionStream): Promise<Uint8Array> {
+async function pipe(
+	bytes: Uint8Array,
+	stream: CompressionStream | DecompressionStream,
+): Promise<Uint8Array> {
 	const w = stream.writable.getWriter();
 	w.closed.catch(() => {});
-	w.write(bytes as unknown as BufferSource).then(() => w.close()).catch(() => {});
+	w.write(bytes as unknown as BufferSource)
+		.then(() => w.close())
+		.catch(() => {});
 	const chunks: Uint8Array[] = [];
 	const r = stream.readable.getReader();
 	for (;;) {
@@ -33,21 +38,42 @@ async function pipe(bytes: Uint8Array, stream: CompressionStream | Decompression
 
 /** Keep only host candidates + drop noise; the result is what gets compressed into the QR. */
 export function compactSdp(sdp: string): string {
-	return sdp
-		.split(/\r?\n/)
-		.filter((l) => l && !l.startsWith("a=ice-options") && !(l.startsWith("a=candidate") && !/ typ host/.test(l)))
-		.join("\r\n") + "\r\n";
+	return (
+		sdp
+			.split(/\r?\n/)
+			.filter(
+				(l) =>
+					l &&
+					!l.startsWith("a=ice-options") &&
+					!(l.startsWith("a=candidate") && !/ typ host/.test(l)),
+			)
+			.join("\r\n") + "\r\n"
+	);
 }
 
-export async function encodeBlob(kind: "offer" | "answer", sdp: string): Promise<string> {
-	const raw = utf8(JSON.stringify({ t: kind === "offer" ? "o" : "a", s: compactSdp(sdp) }));
+export async function encodeBlob(
+	kind: "offer" | "answer",
+	sdp: string,
+): Promise<string> {
+	const raw = utf8(
+		JSON.stringify({ t: kind === "offer" ? "o" : "a", s: compactSdp(sdp) }),
+	);
 	return b64uEncode(await pipe(raw, new CompressionStream("deflate-raw")));
 }
 
-export async function decodeBlob(blob: string): Promise<{ kind: "offer" | "answer"; sdp: string }> {
-	const raw = await pipe(b64uDecode(blob.trim()), new DecompressionStream("deflate-raw"));
+export async function decodeBlob(
+	blob: string,
+): Promise<{ kind: "offer" | "answer"; sdp: string }> {
+	const raw = await pipe(
+		b64uDecode(blob.trim()),
+		new DecompressionStream("deflate-raw"),
+	);
 	const o = JSON.parse(fromUtf8(raw)) as { t: string; s: string };
-	if ((o.t !== "o" && o.t !== "a") || typeof o.s !== "string" || !o.s.startsWith("v=0")) {
+	if (
+		(o.t !== "o" && o.t !== "a") ||
+		typeof o.s !== "string" ||
+		!o.s.startsWith("v=0")
+	) {
 		throw new Error("invalid qr-sdp blob");
 	}
 	return { kind: o.t === "o" ? "offer" : "answer", sdp: o.s };

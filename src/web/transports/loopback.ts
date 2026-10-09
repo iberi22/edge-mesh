@@ -17,7 +17,10 @@ function makePair(idA: string, idB: string): [PeerLink, PeerLink] {
 	};
 	const a = mk(idB); // a is the link held by A; its id is the REMOTE id
 	const b = mk(idA);
-	const link = (me: ReturnType<typeof mk>, other: ReturnType<typeof mk>): PeerLink => ({
+	const link = (
+		me: ReturnType<typeof mk>,
+		other: ReturnType<typeof mk>,
+	): PeerLink => ({
 		id: me.id,
 		send(data) {
 			if (me.closed) return;
