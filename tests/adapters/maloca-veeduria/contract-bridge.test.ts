@@ -46,6 +46,49 @@ describe("ContractBridge", () => {
 		expect(mesh.transmitir).toHaveBeenCalled();
 	});
 
+	it("no deja un Uint8Array dentro del Y.Map y aun assim conserva la firma", async () => {
+		// `Y.Map.set` -> `ContentAny` -> `deepFreeze`, y `Object.freeze` no
+		// puede congelar un typed array con elementos. Solo se manifiesta con
+		// NODE_ENV=development, asi que este test afirma la PROPIEDAD (que la
+		// firma sobrevive el round-trip) en vez de confiar en que el entorno
+		// la dispare.
+		const contrato: Contrato = {
+			id: "2",
+			hash: "def",
+			contenido: "Segundo contrato",
+			firmas: [],
+			timestamp: Date.now(),
+			estado: "pendiente",
+		};
+		const firmaFalsa = new Uint8Array([9, 8, 7, 6]);
+		vi.spyOn(mesh.identity, "firmar").mockResolvedValue(firmaFalsa);
+
+		await bridge.submitContract(contrato);
+
+		// 1. Lo que hay en el mapa no puede contener bytes crudos.
+		const crudo = mesh.yjsAdapter.getMap("veeduria:contratos").get("def") as {
+			firmas: { firma: unknown }[];
+		};
+		expect(typeof crudo.firmas[0].firma).toBe("string");
+		expect(crudo.firmas[0].firma).not.toBeInstanceOf(Uint8Array);
+
+		// 2. Y al releer, los bytes vuelven EXACTOS: no se pierde la firma.
+		const releido = bridge.getContract("def");
+		expect(releido).not.toBeNull();
+		const firmas = releido?.firmas ?? [];
+		expect(firmas).toHaveLength(1);
+		expect(firmas[0].firma).toBeInstanceOf(Uint8Array);
+		expect(Array.from(firmas[0].firma)).toEqual([9, 8, 7, 6]);
+		expect(firmas[0].nodoId).toBe("test-node");
+
+		// 3. Lo que viaja por la red conserva los bytes, no el base64.
+		const enviado = vi.mocked(mesh.transmitir).mock.calls[0][0] as {
+			contrato: Contrato;
+		};
+		expect(enviado.contrato.firmas[0].firma).toBeInstanceOf(Uint8Array);
+		expect(Array.from(enviado.contrato.firmas[0].firma)).toEqual([9, 8, 7, 6]);
+	});
+
 	it("debe vincular un licitante", async () => {
 		const perfil: PerfilLicitante = {
 			id: "lic-1",

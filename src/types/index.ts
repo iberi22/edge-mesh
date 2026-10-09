@@ -4,7 +4,11 @@ export const TIPO_MENSAJE = {
 	SYNC: "sync",
 	ACK: "ack",
 	HEARTBEAT: "heartbeat",
-	HALLazGO: "hallazgo",
+	// La clave estaba mal escrita (`HALLazGO`); el valor de cable nunca lo estuvo,
+	// así que corregirla no rompe a ningún par. Se renombra porque una clave de enum
+	// mal escrita es la clase de defecto que sobrevive años y luego alguien
+	// empareja mal contra ella.
+	HALLAZGO: "hallazgo",
 	VOTACION: "votacion",
 	SNAPSHOT: "snapshot",
 	OP_LOG: "op_log",
@@ -13,6 +17,19 @@ export const TIPO_MENSAJE = {
 	GOVERNANCE: "governance",
 	IDENTITY: "identity",
 	ERROR: "error",
+	// ── CAPA MÉDICA (docs/medico/protocolo.md §7) ──
+	//
+	// El tráfico de credenciales NO pasa por AUTHZ a propósito: una concesión
+	// authz es estado de *capacidad local*, mientras que una credencial es una
+	// *afirmación replicada*. Confundirlas vuelve ambas inauditables — una
+	// concesión se puede revocar sin tocar el registro que la replicó, y un
+	// registro parece revocable cuando no lo es.
+	/** Presentación, solicitud y respuesta de una `CredencialMedica`. */
+	CREDENCIAL: "credencial",
+	/** Aval de un par (`Aval`) y su revocación. */
+	AVAL: "aval",
+	/** Instantánea de un registro nacional, direccionada por hash. */
+	REGISTRO: "registro",
 	PQC_HANDSHAKE: "pqc_handshake",
 	KEM_REPLY: "kem_reply",
 	PQC_ACK: "pqc_ack",

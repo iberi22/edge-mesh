@@ -84,9 +84,23 @@ export type { MalocaBackofficeOptions } from "./maloca/backoffice.js";
 export { MalocaBackoffice } from "./maloca/backoffice.js";
 export type { EventoMaloca, TipoEventoMaloca } from "./maloca/event-bus.js";
 export { EventBus, TIPO_EVENTO_MALOCA } from "./maloca/event-bus.js";
-export type { Evidentia } from "./maloca/evidentia.js";
-export { EvidentiaManager } from "./maloca/evidentia.js";
-export { KarmaManager } from "./maloca/karma.js";
+export type {
+	Evidentia,
+	EvidentiaFirmada,
+	Procedencia,
+	VerificacionEvidencia,
+} from "./maloca/evidentia.js";
+export {
+	canonicalEvidentiaBytes,
+	cuerpoFirmado,
+	EvidentiaManager,
+} from "./maloca/evidentia.js";
+export type { MotivoRechazo } from "./maloca/karma.js";
+export {
+	DELTA_MAX_ABS,
+	FACTOR_DECAY_MIN,
+	KarmaManager,
+} from "./maloca/karma.js";
 export { MalocaKernel } from "./maloca/kernel.js";
 export { MetadataManager } from "./maloca/metadata.js";
 export type { Perfil } from "./maloca/perfil.js";

@@ -30,7 +30,13 @@ describe("MalocaGatewayAPI", () => {
 	it("should return karma data", async () => {
 		const karma = await api.getKarma("node-1");
 		expect(karma.nodoId).toBe("node-1");
-		expect(karma.karma).toBeGreaterThan(0);
+		// Un nodo sin historial de avales validados vale CERO. Antes esto afirmaba
+		// `toBeGreaterThan(0)`, lo cual codificaba la antigua base-100 fija: el
+		// gateway repartia reputacion que ninguna transaccion respaldaba. Una
+		// reputacion que aparece de la nada es justo lo que una red de medicos
+		// verificados no puede tener.
+		expect(karma.karma).toBe(0);
+		expect(karma.reputacion).toBe("unrated");
 	});
 
 	it("should list active plugins", async () => {
