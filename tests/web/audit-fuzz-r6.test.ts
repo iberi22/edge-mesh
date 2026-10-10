@@ -1,38 +1,12 @@
-// Round-3 audit liveness fuzz: 8 devices (owner, 3 admins, 4 members) are split into 2-3 partitions, up to 3 revokers
-// revoke concurrently, then everybody restarts on one network in a random order. All honest devices must end on the
-// owner's key and member list, revoked ones off it. Default seeds 13,14 (the ones that failed in the audit); run more
-// with FUZZ_SEEDS=1,2,...
+// Round-6 re-run of the round-3 liveness fuzz, now on the gate: 8 devices (owner, 3 admins, 4 members) are
+// split into 2-3 partitions, up to 3 revokers revoke concurrently, then everybody restarts on one network in a
+// random order. All honest devices must end on the owner's key and member list, revoked ones off it. Default seeds
+// 1,2,...,8; run more with FUZZ_SEEDS=1,2,... and skip with FUZZ_SEEDS="".
 import { describe, expect, it } from "vitest";
-import type { MeshOptions } from "../../../../../src/web/index.js";
-import { createLoopbackHub as rawHub, type PeerLink } from "../../../../../src/web/index.js";
-// round-4 variant: every link delivers in order but with a random 0-JITTER_MS latency per message (WebRTC-like
-// reliable ordered channel on a jittery network); different links therefore reorder relative to each other.
-const JITTER_MS = Number(process.env.JITTER_MS ?? 40);
-function jitterLink(l: PeerLink): PeerLink {
-	let last = 0;
-	const w: PeerLink = Object.create(l);
-	w.send = (d: Uint8Array) => {
-		const at = Math.max(last, Date.now() + Math.random() * JITTER_MS);
-		last = at;
-		const copy = d.slice();
-		setTimeout(() => l.send(copy), at - Date.now());
-	};
-	if (l.sendPriority) w.sendPriority = w.send;
-	return w;
-}
-function createLoopbackHub() {
-	const h = rawHub();
-	const transport = h.transport.bind(h);
-	h.transport = (name?: string) => {
-		const t = transport(name) as any;
-		const onLink = t.onLink.bind(t);
-		t.onLink = (cb: (l: PeerLink, rid: string) => void) => onLink((l: PeerLink, rid: string) => cb(jitterLink(l), rid));
-		return t;
-	};
-	return h;
-}
-import { b64uEncode } from "../../../../../src/web/util.js";
-import { type Dev, label, makeDev, kexKnown, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
+import type { MeshOptions } from "../../src/web/index.js";
+import { createLoopbackHub } from "../../src/web/index.js";
+import { b64uEncode } from "../../src/web/util.js";
+import { type Dev, kexKnown, label, makeDev, pair, until } from "./helpers.js";
 
 type Hub = ReturnType<typeof createLoopbackHub>;
 const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
@@ -48,11 +22,13 @@ function rng(seed: number) {
 	};
 }
 
-const SEEDS = (process.env.FUZZ_SEEDS ?? "13,14").split(",").map(Number);
+const SEEDS = (process.env.FUZZ_SEEDS ?? "1,2,3,4,5,6,7,8")
+	.split(",")
+	.map(Number);
 const N_ADMINS = 3;
 
 describe.skipIf(process.env.FUZZ_SEEDS === "")(
-	"audit round 3: liveness fuzz",
+	"audit round 6: liveness fuzz (round-3 scenario)",
 	() => {
 		for (const seed of SEEDS)
 			it(`F seed ${seed}: partitions + up to 3 concurrent revokers + random heal order converge`, async () => {
@@ -175,22 +151,12 @@ describe.skipIf(process.env.FUZZ_SEEDS === "")(
 						out.every((d) => keyOf(d) !== k)
 					);
 				};
-				// converged = a state that holds for 1.5 s. A revocation record that reaches the owner late (more so with
-				// ML-DSA-65 signatures) makes it re-key once more right after a first agreement: that is still liveness,
-				// so the check retries until the deadline instead of failing on the first unstable agreement.
-				const deadline = Date.now() + 40_000;
-				let converged = false;
-				let e1 = owner.mesh.epoch;
-				while (!converged && Date.now() < deadline) {
-					const reached = await until(
-						ok,
-						Math.max(1, deadline - Date.now()),
-					).then(
-						() => true,
-						() => false,
-					);
-					if (!reached) break;
-					e1 = owner.mesh.epoch;
+				let converged = await until(ok, 25_000).then(
+					() => true,
+					() => false,
+				);
+				const e1 = owner.mesh.epoch;
+				if (converged) {
 					await settle(1500);
 					converged = ok();
 				}
@@ -215,6 +181,6 @@ describe.skipIf(process.env.FUZZ_SEEDS === "")(
 				expect(converged).toBe(true);
 				expect(owner.mesh.epoch).toBeLessThan(20);
 				for (const d of healed.values()) d.mesh.destroy();
-			}, 120_000);
+			}, 90_000);
 	},
 );

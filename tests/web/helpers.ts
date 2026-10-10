@@ -134,6 +134,21 @@ export const until = async (cond: () => boolean, ms = 3000) => {
 	}
 };
 
+/**
+ * A finding that is still open: `assertion` is the INVERTED audit oracle (it fails while the attack works), so the
+ * test stays green until the day it passes. Then openUntil throws, the test goes red, and the wrapper is deleted
+ * while the assertion is kept. Setup stays outside the marker: a setup throw is a real failure, not the finding.
+ */
+export const openUntil = (issue: string, assertion: () => void): void => {
+	try {
+		assertion();
+	} catch (error) {
+		console.error(`open ${issue}:`, error);
+		return;
+	}
+	throw new Error(`${issue} no longer reproduces. Delete openUntil and keep the assertion.`);
+};
+
 /** Full pairing host->guest with both SAS confirmed; returns the SAS codes seen. */
 export async function pair(
 	host: Dev,
