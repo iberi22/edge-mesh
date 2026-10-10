@@ -646,7 +646,9 @@ describe("R6-S3: catch-up beyond the first `want`", () => {
 
 		// the newest document of all was a revocation: while it is withheld the laggard still lists a revoked device
 		expect(dropped).toBe(true);
-		expect(docsB).toBe(total);
+		// x keeps accepting the admin's inventory while the laggard pages, so the snapshot of `total` drifts upward
+		// during the window: convergence means the laggard ends with at least that corpus, newest revocation included
+		expect(docsB).toBeGreaterThanOrEqual(total);
 	}, 300_000);
 });
 
