@@ -1,10 +1,14 @@
-// Round-3 audit liveness fuzz: 8 devices (owner, 3 admins, 4 members) are split into 2-3 partitions, up to 3 revokers
-// revoke concurrently, then everybody restarts on one network in a random order. All honest devices must end on the
-// owner's key and member list, revoked ones off it. Default seeds 13,14 (the ones that failed in the audit); run more
-// with FUZZ_SEEDS=1,2,...
+// Round-6 re-run of the round-4 liveness fuzz, now on the gate: the round-3 scenario with a jittery link (every
+// link delivers in order but with a random 0..JITTER_MS latency per message, WebRTC-like, so links reorder among
+// themselves). All honest devices must end on the owner's key and member list, revoked ones off it. Default seeds
+// 13,14 with JITTER_MS=40; tune with FUZZ_SEEDS / JITTER_MS and skip with FUZZ_SEEDS="".
 import { describe, expect, it } from "vitest";
-import type { MeshOptions } from "../../../../../src/web/index.js";
-import { createLoopbackHub as rawHub, type PeerLink } from "../../../../../src/web/index.js";
+import type { MeshOptions } from "../../src/web/index.js";
+import {
+	type PeerLink,
+	createLoopbackHub as rawHub,
+} from "../../src/web/index.js";
+
 // round-4 variant: every link delivers in order but with a random 0-JITTER_MS latency per message (WebRTC-like
 // reliable ordered channel on a jittery network); different links therefore reorder relative to each other.
 const JITTER_MS = Number(process.env.JITTER_MS ?? 40);
@@ -24,15 +28,18 @@ function createLoopbackHub() {
 	const h = rawHub();
 	const transport = h.transport.bind(h);
 	h.transport = (name?: string) => {
+		// biome-ignore lint/suspicious/noExplicitAny: patched transport handle
 		const t = transport(name) as any;
 		const onLink = t.onLink.bind(t);
-		t.onLink = (cb: (l: PeerLink, rid: string) => void) => onLink((l: PeerLink, rid: string) => cb(jitterLink(l), rid));
+		t.onLink = (cb: (l: PeerLink, rid: string) => void) =>
+			onLink((l: PeerLink, rid: string) => cb(jitterLink(l), rid));
 		return t;
 	};
 	return h;
 }
-import { b64uEncode } from "../../../../../src/web/util.js";
-import { type Dev, label, makeDev, kexKnown, metaOf, pair, until } from "../../../../../tests/web/helpers.js";
+
+import { b64uEncode } from "../../src/web/util.js";
+import { type Dev, kexKnown, label, makeDev, pair, until } from "./helpers.js";
 
 type Hub = ReturnType<typeof createLoopbackHub>;
 const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
