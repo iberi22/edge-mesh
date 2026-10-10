@@ -1,10 +1,10 @@
 import { defineConfig } from "vitest/config";
 import path from "node:path";
 
-// The auditor's round instruments under docs/security/audits keep their own convention ('PASSES while the attack
-// works'), so they are not part of the CI gate (`npm test`): a failing instrument records that an attack still works,
-// and most of the red ones are stale oracles or harness bitrot, not findings. The open witnesses that still pass are
-// gated in tests/web/audit-regressions-r6-open.test.ts. Run this archive on demand with:
+// docs/security/audits holds the auditor's round instruments: they PASS while the attack works, so a red
+// one is not a finding (most are stale oracles for fixed attacks, or harness bitrot from older rounds). The
+// open witnesses that still pass are gated in tests/web/audit-regressions-r6-open.test.ts; the archive itself
+// stays a manual command (`npm run test:audit`). Run this archive on demand with:
 //   npm run test:audit [-- <archivo|patrón>]
 export default defineConfig({
 	test: {

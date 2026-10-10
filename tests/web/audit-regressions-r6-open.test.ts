@@ -1,9 +1,11 @@
-// Round-6 OPEN witnesses: three auditor instruments whose attack STILL SUCCEEDS on main. Each oracle is inverted
+// Round-6 OPEN witnesses: an auditor instrument whose attack STILL SUCCEEDS on main is written as an inverted oracle
 // (it fails while the attack works) and wrapped in `openUntil`, so the gate stays green today and turns red the day
 // the inverted assertion starts passing — the signal to delete the wrapper and keep the assertion. Ids are neutral
-// on purpose: the two witnesses without a tracking issue (R6-P1, R6-RL1) are filed privately with the owner.
-// R6-P1 identity hijack on pairing (no issue), R6-RL1 relayed rotation wrap (no issue), R6-R1b verification
-// budget (#126).
+// on purpose: the witness without a tracking issue (R6-RL1) is filed privately with the owner.
+// Open: R6-RL1 relayed rotation wrap (no issue) and R6-R1b verification budget (#126). R6-P1 is not one of them: its
+// oracle compared C's view of `idOf("devB")` with the guest's own key, and `idOf` follows the last vault created with
+// a label, so after the guest's `makeVault("devB")` that id IS the guest — the witness measured nothing (round-3
+// review). What it left behind is the plain regression test below.
 import { describe, expect, it, vi } from "vitest";
 import { deriveDocMaterial } from "../../src/web/crypto.js";
 import type { LinkTransport, PeerLink } from "../../src/web/index.js";
@@ -14,7 +16,6 @@ import { b64uEncode, fromUtf8, randomBytes, utf8 } from "../../src/web/util.js";
 import { craft, openFrame, TOPIC } from "./audit-r3-lib.js";
 import {
 	type Dev,
-	idOf,
 	kexKnown,
 	makeDev,
 	makeVault,
@@ -42,29 +43,27 @@ async function admit(host: Dev, g: Hub, label: string, role?: "admin") {
 const restart = (d: Dev, g: Hub, label: string) =>
 	makeDev(label, g, undefined, { doc: d.doc, vault: d.vault });
 
-describe("R6-P1: a pairing guest that re-uses a member's deviceId", () => {
-	it("R6-P1 (open): the owner's confirmation of a re-used deviceId does not replace that member's key mesh-wide", async () => {
+describe("R6-P1: a second pairing under a member's name", () => {
+	// The oracle is bound to the member created by `trio`, NOT to `idOf("devB")`: `idOf` follows the last vault
+	// created with a label, so after the guest's `makeVault("devB")` it returns the guest itself (the old round-2
+	// witness compared the guest with the guest). What must hold is that the original member's device key survives a
+	// second pairing that arrives under the same label.
+	it("R6-P1: a device key stays bound to the original member", async () => {
 		const hub = createLoopbackHub();
 		const { a, b, c } = await trio(hub);
+		const memberId = b.id;
+		const memberPub = b64uEncode(b.vault.devicePublicKey);
 		const evilVault = await makeVault("devB"); // the guest's own key, announced under B's name
 		const evil = await makeDev("devB", hub, undefined, { vault: evilVault });
 		try {
 			await pair(a, evil); // the owner confirms the SAS of "a new tablet"
 			const evilPub = b64uEncode(evilVault.devicePublicKey);
-			await until(
-				() =>
-					c.mesh.devices().find((d) => d.deviceId === idOf("devB"))?.pub ===
-					evilPub,
-			).then(
-				() => {},
-				() => {},
-			);
-			const hijacked =
-				c.mesh.devices().find((d) => d.deviceId === idOf("devB"))?.pub ===
-				evilPub;
-			openUntil("R6-P1", () => {
-				expect(hijacked).toBe(false);
-			});
+			const entry = (id: string) =>
+				c.mesh.devices().find((d) => d.deviceId === id);
+			// wait until C has adopted the guest, so the check below cannot pass just because C has not caught up yet
+			await until(() => entry(evil.id)?.pub === evilPub, 5000);
+			const view = entry(memberId)?.pub;
+			expect(view).toBe(memberPub);
 		} finally {
 			for (const x of [a, b, c, evil]) x.mesh.destroy();
 		}
