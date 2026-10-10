@@ -596,7 +596,16 @@ describe("R6-S3: catch-up beyond the first `want`", () => {
 		await x.mesh.revoke(m.id);
 		await settle(1000);
 
-		const total = (await sec(x).docs()).length;
+		// the corpus is only bigger than a single `want` (TRUST_WANT_MAX = 2048) once the admin has ACCEPTED the
+		// whole inventory it was handed: a fixed settle is machine-speed dependent (slower runners sample mid-drain),
+		// so wait for the precondition instead of trusting a timeout
+		let total = 0;
+		const deadline = Date.now() + 120_000;
+		while (total <= 2048 && Date.now() < deadline) {
+			total = (await sec(x).docs()).length;
+			if (total > 2048) break;
+			await settle(500);
+		}
 		{
 			// biome-ignore lint/suspicious/noExplicitAny: temp diag
 			const s: any = (x.mesh as any).security;
@@ -615,7 +624,9 @@ describe("R6-S3: catch-up beyond the first `want`", () => {
 
 		// the laggard comes back on a quiet mesh: it must page through the whole gap, not stop at the first 2048 keys
 		const lag2 = await restart(lag, g, "lag");
-		const end = Date.now() + 30_000;
+		// 30 s of window was sized for a fast machine: give a slower runner the same room to converge (the
+		// assertions still demand FULL convergence with the newest revocation, never partial progress)
+		const end = Date.now() + 90_000;
 		let docsB = 0;
 		let dropped = false;
 		while (Date.now() < end) {
