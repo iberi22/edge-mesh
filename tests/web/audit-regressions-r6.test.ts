@@ -654,9 +654,9 @@ describe("R6-S3: catch-up beyond the first `want`", () => {
 		const finalLag = await corpus(lag2);
 		for (const d of [x, lag2]) d.mesh.destroy();
 
-		// #124 (open): the laggard must end with exactly the live inventory, newest revocation included. While the
-		// catch-up still falls short, the inverted expectation fails and openUntil keeps the gate green; the day it
-		// passes, delete the wrapper and keep the assertion.
+		// #124 is still open, so this is an INVERTED witness, not a convergence gate: the strict expectation below
+		// fails while the catch-up falls short (openUntil keeps the gate green) and the day it passes the test goes
+		// red — then delete the wrapper and keep the assertion.
 		openUntil("#124", () => {
 			expect(dropped).toBe(true);
 			expect(finalLag).toEqual(finalAdmin);
