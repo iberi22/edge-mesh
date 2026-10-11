@@ -4,7 +4,10 @@ import {
 	NamespaceAuthorizer,
 } from "../../src/authz/index.js";
 import { InMemoryStorage } from "../../src/storage/index.js";
-import type { NodoId } from "../../src/types/index.js";
+import type {
+	NamespaceCapabilityGrant,
+	NodoId,
+} from "../../src/types/index.js";
 
 describe("Authz Persistence", () => {
 	it("debería persistir grants y cargarlos tras un reinicio simulado", async () => {
@@ -39,14 +42,15 @@ describe("Authz Persistence", () => {
 		await authorizer.saveGrants();
 
 		// Verificar que el storage realmente contiene la llave 'authz:grants'
-		const entry = await storage.get<any>("authz:grants");
+		const entry =
+			await storage.get<[string, NamespaceCapabilityGrant][]>("authz:grants");
 		expect(entry).not.toBeNull();
 		expect(entry?.valor).toBeInstanceOf(Array);
 
 		const dataArray = entry?.valor;
-		expect(dataArray.length).toBeGreaterThan(0);
-		const found = dataArray.find(
-			([_k, v]: [string, any]) =>
+		expect(dataArray?.length).toBeGreaterThan(0);
+		const found = dataArray?.find(
+			([, v]) =>
 				v.sujeto === sujeto && v.capacidad === CAPACIDAD_ESTANDAR.ESCRIBIR,
 		);
 		expect(found).toBeDefined();
@@ -69,6 +73,49 @@ describe("Authz Persistence", () => {
 		const roles = authorizer2.obtenerRoles();
 		expect(roles.has(sujeto)).toBe(true);
 		expect(roles.get(sujeto)?.rol).toBe("admin");
+	});
+
+	it("loads grants seeded directly as a stored entry list (valor wrapper)", async () => {
+		const storage = new InMemoryStorage();
+		const espacio = "espacio-legacy";
+		const sujeto = "nodo-legacy" as NodoId;
+		const grant: NamespaceCapabilityGrant = {
+			id: "grant-legacy-1",
+			espacio,
+			sujeto,
+			capacidad: CAPACIDAD_ESTANDAR.LEER,
+			fechaEmision: Date.now(),
+			fechaExpiracion: Date.now() + 3_600_000,
+			firma: new Uint8Array(0),
+		};
+		// Simulate entries written by another version: the loader must read
+		// them through the `{ valor: [...] }` storage-entry branch.
+		await storage.put("authz:grants", [
+			[`${espacio}::${sujeto}::${CAPACIDAD_ESTANDAR.LEER}`, grant],
+		]);
+
+		const authorizer = new NamespaceAuthorizer(storage);
+		await authorizer.loadGrants();
+
+		expect(
+			authorizer.verificarCapacidad(espacio, sujeto, CAPACIDAD_ESTANDAR.LEER),
+		).toBe(true);
+	});
+
+	it("does not overwrite in-memory grants when loading stored entries", async () => {
+		const storage = new InMemoryStorage();
+		const espacio = "espacio-merge";
+		const sujeto = "nodo-merge" as NodoId;
+		await storage.put("authz:grants", []);
+
+		const authorizer = new NamespaceAuthorizer(storage);
+		authorizer.concederCapacidad(espacio, sujeto, CAPACIDAD_ESTANDAR.LEER);
+		await authorizer.loadGrants();
+
+		expect(
+			authorizer.verificarCapacidad(espacio, sujeto, CAPACIDAD_ESTANDAR.LEER),
+		).toBe(true);
+		expect(authorizer.obtenerTodosLosGrants().length).toBe(1);
 	});
 
 	it("debería persistir y cargar capacidades de espacios tras un reinicio", async () => {

@@ -2,7 +2,6 @@ import { hexABytes } from "../protocol/utils.js";
 import type {
 	GovernancePolicy,
 	NodoId,
-	ParPublico,
 	PayloadVotacion,
 	VerificadorVotos,
 } from "../types/index.js";
@@ -62,6 +61,11 @@ export interface GovernanceManagerOptions {
 	readonly requireSignedVotes?: boolean;
 }
 
+/**
+ * Time-boxed proposal voting with configurable policy, optional signed-vote
+ * enforcement and cryptographic verification. Closed proposals keep their
+ * final state; expiry closes them as rejected unless the threshold passed.
+ */
 export class GovernanceManager {
 	readonly eventTarget: EventTarget;
 	private politica: GovernancePolicy;
@@ -83,7 +87,7 @@ export class GovernanceManager {
 		this.requireSignedVotes = options?.requireSignedVotes ?? false;
 	}
 
-	// ─── PROPUESTAS ───────────────────────────────────────────────────────
+	// ─── PROPOSALS ───────────────────────────────────────────────────────
 
 	crearPropuesta(
 		id: string,
@@ -123,12 +127,12 @@ export class GovernanceManager {
 		if (propuesta.estado !== ESTADO_PROPUESTA.ABIERTA) return false;
 		if (Date.now() > propuesta.expiracion) return false;
 
-		// Requerir firma estricta si configurado
+		// Require a strict signature when configured
 		if (this.requireSignedVotes && !voto.firma) {
 			return false;
 		}
 
-		// Verificación criptográfica si hay verificador y firma
+		// Cryptographic verification when a verifier and a signature are present
 		if (this.verificador && voto.firma) {
 			const clavePublica = this.verificador.obtenerClavePublica(voto.nodoId);
 			if (!clavePublica) return false;
@@ -156,7 +160,7 @@ export class GovernanceManager {
 			if (!valido) return false;
 		}
 
-		// Evitar voto duplicado del mismo nodo
+		// Reject a duplicate vote from the same node
 		const yaVoto = propuesta.votos.some((v) => v.nodoId === voto.nodoId);
 		if (yaVoto) return false;
 
@@ -166,7 +170,7 @@ export class GovernanceManager {
 
 		this.emit("votoRecibido", { propuesta: id, voto });
 
-		// Verificar si ya se alcanzó el umbral
+		// Check whether the threshold has been reached
 		if (this.verificarUmbral(propuesta)) {
 			this.cerrarPropuesta(id, ESTADO_PROPUESTA.APROBADA);
 		}
@@ -212,7 +216,7 @@ export class GovernanceManager {
 		}, 0);
 	}
 
-	// ─── POLITICA ─────────────────────────────────────────────────────────
+	// ─── POLICY ─────────────────────────────────────────────────────────
 
 	actualizarPolitica(politica: Partial<GovernancePolicy>): void {
 		this.politica = { ...this.politica, ...politica };
@@ -260,7 +264,7 @@ export class GovernanceManager {
 		}
 	}
 
-	// ─── EVENTOS ──────────────────────────────────────────────────────────
+	// ─── EVENTS ──────────────────────────────────────────────────────────
 
 	on<K extends keyof GovernanceEventMap>(
 		tipo: K,
@@ -287,7 +291,7 @@ export class GovernanceManager {
 		this.eventTarget.dispatchEvent(evento);
 	}
 
-	// ─── LIMPIEZA ─────────────────────────────────────────────────────────
+	// ─── CLEANUP ─────────────────────────────────────────────────────────
 
 	limpiarPropuestasExpiradas(): void {
 		const ahora = Date.now();
@@ -309,6 +313,7 @@ export class GovernanceManager {
 
 // ─── FACTORY ───────────────────────────────────────────────────────────────
 
+/** Creates a {@link GovernanceManager} with an optional policy, vote verifier and options. */
 export function createGovernanceManager(
 	politica?: GovernancePolicy,
 	verificador?: VerificadorVotos,

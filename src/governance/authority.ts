@@ -15,6 +15,10 @@ export interface AuthorityEventMap {
 
 // ─── AUTHORITY MANAGER ─────────────────────────────────────────────────────
 
+/**
+ * Tracks the current mesh master and promotes a deterministic successor
+ * (alphabetically first active node) when the master disappears or fails.
+ */
 export class AuthorityManager {
 	readonly eventTarget: EventTarget;
 	private readonly localNodeId: NodoId;
@@ -36,7 +40,7 @@ export class AuthorityManager {
 		this.currentMaster = options?.initialMaster ?? null;
 	}
 
-	// ─── API DE AUTHORITY ───────────────────────────────────────────────────
+	// ─── AUTHORITY API ───────────────────────────────────────────────────
 
 	selectSuccessor(
 		nodosActivos: readonly NodoId[],
@@ -129,7 +133,9 @@ export class AuthorityManager {
 		return activos;
 	}
 
-	private handleNodoDesaparecio = (ev: any) => {
+	private handleNodoDesaparecio = (
+		ev: CustomEvent<{ readonly nodoId: NodoId }>,
+	) => {
 		const { nodoId } = ev.detail;
 		if (nodoId === this.currentMaster) {
 			this.handleMasterFailure("timeout");
@@ -184,6 +190,7 @@ export class AuthorityManager {
 
 // ─── FACTORY ───────────────────────────────────────────────────────────────
 
+/** Creates an {@link AuthorityManager} for `localNodeId` using `presence` for liveness. */
 export function createAuthorityManager(
 	localNodeId: NodoId,
 	presence: PresenceManager,
