@@ -7,13 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.1.0] - 2026-10-11
+
+First release under the `@swal` npm scope.
 
 ### Publish readiness (`@swal/edge-mesh`)
 - Package renamed from `@iberi22/edge-mesh` to `@swal/edge-mesh` (npm org `swal`).
-  Version stays at 1.0.0: the new name has no publish history, so this is the
-  initial release under the `@swal` scope; the API is unchanged, so no semver
-  bump (1.1.0 would falsely signal new features) is warranted.
+  Published as 0.1.0 (owner decision): the public API is not yet frozen, so the
+  package starts in the 0.x range under the new scope. The earlier `1.0.0`
+  entries below belong to the unpublished `@iberi22/edge-mesh` history.
 - License changed from FSL-1.1-ALv2 to Apache-2.0 per the 2026-10-05 owner rule
   (libraries are Apache-2.0): new `LICENSE` full text, `package.json`
   `"license"` field, new `NOTICE` with third-party attributions.
