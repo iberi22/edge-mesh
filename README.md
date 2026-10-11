@@ -1,15 +1,15 @@
 # Edge Mesh
 
 [![CI](https://github.com/iberi22/edge-mesh/actions/workflows/ci.yml/badge.svg)](https://github.com/iberi22/edge-mesh/actions)
-[![License: FSL-1.1-ALv2](https://img.shields.io/badge/License-FSL--1.1--ALv2-blue.svg)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Rust 2021](https://img.shields.io/badge/rust-2021-orange.svg)](tools/relay)
 
 > P2P mesh networking library with CRDT sync, post-quantum identity, and peer-to-peer transport.
 
-`@iberi22/edge-mesh` is the interconnection layer of the SWAL ecosystem: distributed browsers, Progressive Web Apps and
+`@swal/edge-mesh` is the interconnection layer of the SWAL ecosystem: distributed browsers, Progressive Web Apps and
 edge nodes that replicate state with no central server.
 
-Its browser entry point, **`@iberi22/edge-mesh/web`**, is an **owner-controlled P2P mesh for PWAs**. The first device
+Its browser entry point, **`@swal/edge-mesh/web`**, is an **owner-controlled P2P mesh for PWAs**. The first device
 that hosts a pairing owns the mesh; every other device joins with a QR pairing confirmed by a 6-digit code. Everything
 on the wire is encrypted and signed with **post-quantum ML-DSA-65** identities and **hybrid ML-KEM-768 + ECDH P-256**
 key exchange, and the security state (grants, revocations, key records, rotations) is a set of signed documents kept
@@ -22,11 +22,11 @@ The Node side of the package (relay client, governance, presence, agent memory) 
 ## Install
 
 ```bash
-npm install @iberi22/edge-mesh yjs
+npm install @swal/edge-mesh yjs
 ```
 
 `yjs` is the CRDT layer and a peer of this package; `@noble/post-quantum` comes with it. ESM only (`import`), no
-CommonJS build. License: [FSL-1.1-ALv2](LICENSE).
+CommonJS build. License: [Apache-2.0](LICENSE).
 
 ---
 
@@ -44,8 +44,8 @@ import {
 	identityKeygen,
 	identitySign,
 	memoryStore,
-} from "@iberi22/edge-mesh/web";
-import type { Mesh, VaultClient } from "@iberi22/edge-mesh/web";
+} from "@swal/edge-mesh/web";
+import type { Mesh, VaultClient } from "@swal/edge-mesh/web";
 
 export interface QuickStart {
 	/** The device that hosted the pairing: the owner of the mesh. */
@@ -125,10 +125,10 @@ await owner.revoke(guestId);                                 // signed revocatio
 
 | Subpath | What you get |
 | :--- | :--- |
-| `@iberi22/edge-mesh/web` | The mesh: `createMesh`, pairing (QR + SAS), encrypted `Y.Doc` sync, revocation, re-key, channels, signaling transports, ML-DSA-65 / ML-KEM-768 primitives and the stores |
-| `@iberi22/edge-mesh/web/trust` | Signed **grants** and **revocations** with a delegation budget, a root-anchored `TrustStore` and `can(device, module, level)` |
-| `@iberi22/edge-mesh/web/oplog` | One append-only, signed, hash-chained log per device, gated by the grants, with quarantine and a catch-up protocol |
-| `@iberi22/edge-mesh/web/merge` | Deterministic projections of accepted ops: `lwwField`, `eventLog`, `ledger` |
+| `@swal/edge-mesh/web` | The mesh: `createMesh`, pairing (QR + SAS), encrypted `Y.Doc` sync, revocation, re-key, channels, signaling transports, ML-DSA-65 / ML-KEM-768 primitives and the stores |
+| `@swal/edge-mesh/web/trust` | Signed **grants** and **revocations** with a delegation budget, a root-anchored `TrustStore` and `can(device, module, level)` |
+| `@swal/edge-mesh/web/oplog` | One append-only, signed, hash-chained log per device, gated by the grants, with quarantine and a catch-up protocol |
+| `@swal/edge-mesh/web/merge` | Deterministic projections of accepted ops: `lwwField`, `eventLog`, `ledger` |
 
 Details of each one, and how an app plugs them together: [Browser permissions](#browser-permissions-webtrust-weboplog-webmerge).
 
@@ -222,12 +222,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 }
 ```
 
-### TypeScript Node (`@iberi22/edge-mesh`)
+### TypeScript Node (`@swal/edge-mesh`)
 
 Install the package into your JavaScript or TypeScript project:
 
 ```bash
-npm install @iberi22/edge-mesh yjs
+npm install @swal/edge-mesh yjs
 ```
 
 Initialize an EdgeMesh node, establish post-quantum identity, and synchronize CRDT documents:
@@ -239,7 +239,7 @@ import {
   createPostQuantumIdentity,
   generateKeypair,
   swalNamespace,
-} from "@iberi22/edge-mesh";
+} from "@swal/edge-mesh";
 import * as Y from "yjs";
 
 // 1. Generate post-quantum ML-DSA-65 identity keypair
@@ -270,7 +270,7 @@ channel.on("mensaje", (event) => {
 channel.enviarMensaje("Hello from node alpha!");
 ```
 
-### Browser mesh (`@iberi22/edge-mesh/web`)
+### Browser mesh (`@swal/edge-mesh/web`)
 
 `createMesh({ appId, topic, doc, vault, signaling })` syncs a `Y.Doc` between paired devices over WebRTC, end-to-end
 encrypted: see the [quick start](#quick-start--the-browser-mesh) and the [security model](#security-model) above for the
@@ -297,9 +297,9 @@ with its own permissions". The core never hard-codes modules or roles: each app 
 
 | Entry point | What it does |
 | :--- | :--- |
-| `@iberi22/edge-mesh/web/trust` | Device keys (**ML-DSA-65**, post-quantum; fingerprint = SHA-256 of canonical `{alg, pub}`), signed **grants** (role + per-module `ver`/`editar`/`administrar` + delegation budget + validity + optional seq cut-off + issuer chain) and **revocations** (issued by the root or a strict ancestor of the target grant, cut by the revoker's last-seen `seq`, always cascading). `TrustStore` ingests documents from any source in any order, keeps only chains that reach the configured root, enforces delegation (depth, admins cannot mint admins, permissions ⊆ issuer's) and answers `can(deviceFp, module, level, { seq, time })` |
-| `@iberi22/edge-mesh/web/oplog` | One append-only, signed, hash-chained log per device (`seq`, `prev`, HLC). Receivers verify signature → chain (gap = pending, fork = equivocation evidence) → capability at the op's `seq`/HLC. Rejected ops go to quarantine with a reason; held ops are re-evaluated when grants/revocations arrive. Catch-up protocol (`have` version vector → `want` ranges → `ops` frames ≤ 64 KiB) and a channel adapter |
-| `@iberi22/edge-mesh/web/merge` | Deterministic projections of accepted ops: `lwwField` (per-field LWW by HLC, causal `base`, optional owner precedence, tombstones), `eventLog` (app reducer / state machine, invalid transitions become conflicts), `ledger` (signed movements summed, negative rejected/flagged/allowed) |
+| `@swal/edge-mesh/web/trust` | Device keys (**ML-DSA-65**, post-quantum; fingerprint = SHA-256 of canonical `{alg, pub}`), signed **grants** (role + per-module `ver`/`editar`/`administrar` + delegation budget + validity + optional seq cut-off + issuer chain) and **revocations** (issued by the root or a strict ancestor of the target grant, cut by the revoker's last-seen `seq`, always cascading). `TrustStore` ingests documents from any source in any order, keeps only chains that reach the configured root, enforces delegation (depth, admins cannot mint admins, permissions ⊆ issuer's) and answers `can(deviceFp, module, level, { seq, time })` |
+| `@swal/edge-mesh/web/oplog` | One append-only, signed, hash-chained log per device (`seq`, `prev`, HLC). Receivers verify signature → chain (gap = pending, fork = equivocation evidence) → capability at the op's `seq`/HLC. Rejected ops go to quarantine with a reason; held ops are re-evaluated when grants/revocations arrive. Catch-up protocol (`have` version vector → `want` ranges → `ops` frames ≤ 64 KiB) and a channel adapter |
+| `@swal/edge-mesh/web/merge` | Deterministic projections of accepted ops: `lwwField` (per-field LWW by HLC, causal `base`, optional owner precedence, tombstones), `eventLog` (app reducer / state machine, invalid transitions become conflicts), `ledger` (signed movements summed, negative rejected/flagged/allowed) |
 
 Signatures use the same canonical JSON as Fize's `publicMenuSignature.ts` (`canonicalJson` is byte-identical), signed
 with **ML-DSA-65** (base64url signature, base64url public key), as AGENTS.md requires for identity signatures. Apps
@@ -309,9 +309,9 @@ migrate with `signCanonical` / `verifyCanonical` / `keyFingerprint` from `web/tr
 Integration sketch (Fize as the example app; the module list lives in the app, not in the core):
 
 ```typescript
-import { createTrustStore, generateSigner, issueGrant, issueRevocation, rolePreset } from "@iberi22/edge-mesh/web/trust";
-import { attachOpLogSync, openOpLog } from "@iberi22/edge-mesh/web/oplog";
-import { createProjector, eventLog, ledger, lwwField } from "@iberi22/edge-mesh/web/merge";
+import { createTrustStore, generateSigner, issueGrant, issueRevocation, rolePreset } from "@swal/edge-mesh/web/trust";
+import { attachOpLogSync, openOpLog } from "@swal/edge-mesh/web/oplog";
+import { createProjector, eventLog, ledger, lwwField } from "@swal/edge-mesh/web/merge";
 
 const schema = {
   modules: ["carta", "pedidos", "cocina", "caja", "inventario", "recetas", "costos", "compras",
@@ -404,7 +404,7 @@ edge-mesh/
 │   ├── salones/                  # Virtual salon room orchestration
 │   ├── node-memory/              # Agent memory persistence & Xavier sync
 │   ├── mesh/                     # Gossip fan-out mesh manager
-│   └── web/                      # Browser P2P mesh (@iberi22/edge-mesh/web)
+│   └── web/                      # Browser P2P mesh (@swal/edge-mesh/web)
 │       ├── trust/                # Capability store, grants & revocations
 │       ├── oplog/                # Signed operation log and sync
 │       ├── merge/                # Deterministic merge strategies (LWW, ledger)
@@ -428,8 +428,8 @@ Both components operate seamlessly over the underlying network transport layer a
 ## Workspace Distribution & SSOT
 
 This repository is structured as a single unified monorepo workspace. Under the **Single Source of Truth (SSOT)** policy:
-- The core engine (`@iberi22/edge-mesh`) is maintained in `src/`.
-- Sibling packages (such as `@iberi22/edge-mesh-react` in `packages/edge-mesh-react`) consume the core build directly without code duplication.
+- The core engine (`@swal/edge-mesh`) is maintained in `src/`.
+- Sibling packages (such as `@swal/edge-mesh-react` in `packages/edge-mesh-react`) consume the core build directly without code duplication.
 
 To build all packages across the workspace:
 
@@ -468,8 +468,4 @@ npm run bench
 
 ## License
 
-[FSL-1.1-ALv2](LICENSE) — Functional Source License 1.1, ALv2 Future License.
-
-Source-available: internal use, non-commercial education and research, and professional services are permitted.
-Competing Use (shipping it as a substitute product or service) is not. On the second anniversary of each
-release the license for that version becomes **Apache-2.0** automatically.
+[Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for attributions.
