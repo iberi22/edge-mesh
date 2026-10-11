@@ -23,9 +23,13 @@ export interface GosBridgeConfig {
 	readonly onTelemetry?: (telemetry: NodeTelemetry) => void;
 }
 
+/**
+ * Telemetry bridge between a mesh node and GOS: samples bandwidth counters
+ * on an interval and emits `NodeTelemetry` via callback and `telemetry`
+ * events. Construct with either a node id or an {@link EdgeMesh} instance.
+ */
 export class GosBridge {
 	readonly nodeId: string;
-	private readonly mesh?: EdgeMesh;
 	private readonly presence?: PresenceManager;
 	private readonly config: GosBridgeConfig;
 	private readonly eventTarget: EventTarget;
@@ -52,7 +56,6 @@ export class GosBridge {
 			this.nodeId = meshOrNodeId;
 			this.presence = config.presence;
 		} else {
-			this.mesh = meshOrNodeId;
 			this.nodeId = meshOrNodeId.config.nodoId;
 			this.presence = config.presence ?? meshOrNodeId.presence;
 		}

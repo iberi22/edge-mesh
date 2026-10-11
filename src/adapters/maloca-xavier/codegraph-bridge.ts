@@ -1,5 +1,4 @@
 import type { EdgeMesh } from "../../edge-mesh.js";
-import type { NodoId } from "../../types/index.js";
 
 export interface CodeGraphEntry {
 	readonly id: string;
@@ -18,8 +17,8 @@ export class CodeGraphAdapter {
 	}
 
 	/**
-	 * Realiza una búsqueda distribuida en el code-graph.
-	 * Por ahora, consulta el índice compartido en el Y.Map.
+	 * Runs a distributed search over the code graph.
+	 * For now, it queries the shared index held in the Y.Map.
 	 */
 	searchGraph(query: string): readonly CodeGraphEntry[] {
 		const indexMap = this.edgeMesh.yjsAdapter.getMap(this.INDEX_MAP_NAME);
@@ -36,14 +35,14 @@ export class CodeGraphAdapter {
 	}
 
 	/**
-	 * Indexa un plugin en el code-graph compartido.
+	 * Indexes a plugin in the shared code graph.
 	 */
 	async indexPlugin(
 		pluginPath: string,
 		metadata: Record<string, unknown>,
 		dependencies: readonly string[],
 	): Promise<void> {
-		// 1. Asegurar que estamos en el namespace
+		// 1. Make sure we are in the namespace
 		const ns = this.edgeMesh.namespaces.obtenerEspacioPorNombre(
 			this.CODEGRAPH_NAMESPACE,
 		);
@@ -58,7 +57,7 @@ export class CodeGraphAdapter {
 		}
 		this.edgeMesh.namespaces.unirNodo(nsId, this.edgeMesh.config.nodoId);
 
-		// 2. Actualizar el índice compartido
+		// 2. Update the shared index
 		const indexMap = this.edgeMesh.yjsAdapter.getMap(this.INDEX_MAP_NAME);
 		const id = `plugin:${pluginPath}`;
 		const entry: CodeGraphEntry = {
@@ -71,7 +70,7 @@ export class CodeGraphAdapter {
 	}
 
 	/**
-	 * Obtiene las dependencias de un módulo a través del mesh.
+	 * Returns the dependencies of a module through the mesh.
 	 */
 	getDependencies(moduleId: string): readonly string[] {
 		const indexMap = this.edgeMesh.yjsAdapter.getMap(this.INDEX_MAP_NAME);

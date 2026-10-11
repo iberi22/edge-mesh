@@ -49,6 +49,11 @@ export interface AuthzEventMap {
 	}>;
 }
 
+/**
+ * In-memory capability authorizer for mesh namespaces, with optional
+ * {@link IStorage} persistence. An `admin` grant implies every capability
+ * in its namespace; expired grants fail closed on next verification.
+ */
 export class NamespaceAuthorizer {
 	readonly eventTarget: EventTarget;
 	private grants: Map<string, NamespaceCapabilityGrant>;
@@ -84,7 +89,12 @@ export class NamespaceAuthorizer {
 			if (Array.isArray(data)) {
 				loadedMap = new Map(data);
 			} else if (typeof data === "object" && data !== null && "valor" in data) {
-				loadedMap = new Map((data as any).valor);
+				loadedMap = new Map(
+					data.valor as readonly (readonly [
+						string,
+						NamespaceCapabilityGrant,
+					])[],
+				);
 			} else {
 				return;
 			}
@@ -110,7 +120,9 @@ export class NamespaceAuthorizer {
 			if (Array.isArray(data)) {
 				loadedMap = new Map(data);
 			} else if (typeof data === "object" && data !== null && "valor" in data) {
-				loadedMap = new Map((data as any).valor);
+				loadedMap = new Map(
+					data.valor as readonly (readonly [string, RoleAssignment])[],
+				);
 			} else {
 				return;
 			}
@@ -136,7 +148,9 @@ export class NamespaceAuthorizer {
 			if (Array.isArray(data)) {
 				loadedMap = new Map(data);
 			} else if (typeof data === "object" && data !== null && "valor" in data) {
-				loadedMap = new Map((data as any).valor);
+				loadedMap = new Map(
+					data.valor as readonly (readonly [string, Capability[]])[],
+				);
 			} else {
 				return;
 			}
@@ -220,7 +234,7 @@ export class NamespaceAuthorizer {
 		sujeto: NodoId,
 		capacidad: string,
 	): boolean {
-		// Siempre verificar admin
+		// Admin grant always implies every capability
 		if (this.verificarGrant(espacio, sujeto, "admin")) return true;
 
 		return this.verificarGrant(espacio, sujeto, capacidad);
@@ -259,7 +273,7 @@ export class NamespaceAuthorizer {
 		return true;
 	}
 
-	// ─── REGLAS LOCALES ──────────────────────────────────────────────────
+	// ─── LOCAL RULES ──────────────────────────────────────────────────
 
 	agregarReglaLocal(espacio: string, regla: string): void {
 		const reglas = this.reglasLocales.get(espacio) ?? new Set();
@@ -281,7 +295,7 @@ export class NamespaceAuthorizer {
 		return this.reglasLocales.get(espacio)?.has(regla) ?? false;
 	}
 
-	// ─── CONSULTAS ───────────────────────────────────────────────────────
+	// ─── QUERIES ───────────────────────────────────────────────────────
 
 	obtenerGrantsDeNodo(sujeto: NodoId): readonly NamespaceCapabilityGrant[] {
 		return Array.from(this.grants.values()).filter((g) => g.sujeto === sujeto);
@@ -360,7 +374,7 @@ export class NamespaceAuthorizer {
 		void this.saveRoleAssignments();
 	}
 
-	// ─── EVENTOS ─────────────────────────────────────────────────────────
+	// ─── EVENTS ─────────────────────────────────────────────────────────
 
 	on<K extends keyof AuthzEventMap>(
 		tipo: K,
@@ -387,7 +401,7 @@ export class NamespaceAuthorizer {
 		this.eventTarget.dispatchEvent(evento);
 	}
 
-	// ─── UTILIDADES ──────────────────────────────────────────────────────
+	// ─── UTILITIES ──────────────────────────────────────────────────────
 
 	private crearClave(
 		espacio: string,
@@ -400,6 +414,7 @@ export class NamespaceAuthorizer {
 
 // ─── FACTORY ───────────────────────────────────────────────────────────────
 
+/** Creates a {@link NamespaceAuthorizer} backed by `storage` (in-memory by default). */
 export function createNamespaceAuthorizer(
 	storage?: IStorage,
 ): NamespaceAuthorizer {
