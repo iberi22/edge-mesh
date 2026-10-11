@@ -379,3 +379,106 @@ Synchronizes bidding contracts, candidate lists, and public trust scores over Yj
 
 ### `CitasDistribuidas` (Maloca Salud)
 Schedules medical consultations offline, resolving reservation double-booking conflicts deterministically.
+
+---
+
+# Part II: Browser Mesh Subpaths
+
+The `./web*` subpaths are browser-pure (relying exclusively on standard WebCrypto and WebRTC APIs), tree-shakeable, and suitable for Progressive Web Apps, browsers, and edge runtimes (e.g., Cloudflare Workers / workerd).
+
+---
+
+## 19. Browser Mesh Core (`@iberi22/edge-mesh/web`)
+
+### `createMesh(options: MeshOptions): Promise<Mesh>`
+Initializes and starts an encrypted, owner-controlled P2P mesh for the browser.
+- **`options`**:
+  - `appId: string` - Application namespace identifier.
+  - `topic: string` - Room or document synchronization topic.
+  - `doc?: Y.Doc` - The shared Yjs document to keep synchronized across peers.
+  - `vault: VaultClient` - Security identity provider supplying device signing and key storage.
+  - `signaling?: SigTransport` - Signaling channel (e.g. `wsTransport("wss://mesh.example.com")`).
+  - `store?: MeshStore` - Local persistent or in-memory backing store (`idbStore()` or `memoryStore()`).
+  - `signFrames?: boolean` - Whether all data frames carry individual ML-DSA-65 signatures (default: `true`).
+
+### `Mesh` (Interface)
+- `channel(kind: string): MeshChannel` - Obtains a dedicated, encrypted sub-channel for raw binary or JSON messages.
+- `security: MeshSecurity` - Interface for managing mesh capability documents, trust state, and device pairing.
+- `status: MeshStatus` - Returns connection state (`"disconnected" | "connecting" | "connected"`), peer counts, and active epoch.
+- `on(event: MeshEvent, handler: Function): () => void` - Subscribes to lifecycle events (`peer-joined`, `peer-left`, `status`, `rekey`).
+- `close(): Promise<void>` - Gracefully disconnects from signaling and terminates active WebRTC data connections.
+
+### Pairing Utilities
+- `decodePairPayload(payload: string): PairPayload`: Parses and validates a QR or text pairing offer.
+- `derivePairRoomId(secret: Uint8Array): string`: Derives deterministic pairing room identifier.
+- `deriveRoomId(appId: string, topic: string): string`: Computes room identifier bound to application and topic.
+
+### Cryptographic Helpers
+- `identityKeygen(): Promise<{ publicKey: Uint8Array; secretKey: Uint8Array }>`: Generates an ML-DSA-65 keypair.
+- `identitySign(secretKey: Uint8Array, data: Uint8Array): Promise<Uint8Array>`: Signs message bytes with ML-DSA-65.
+- `identityVerify(publicKey: Uint8Array, data: Uint8Array, sig: Uint8Array): Promise<boolean>`: Verifies ML-DSA-65 signature.
+- `kemKeygen(): Promise<{ publicKey: Uint8Array; secretKey: Uint8Array }>`: Generates an ML-KEM-768 keypair.
+- `deviceIdOf(publicKey: Uint8Array): string`: Computes canonical device ID from an ML-DSA-65 public key.
+
+---
+
+## 20. Capability Trust Store (`@iberi22/edge-mesh/web/trust`)
+
+Provides signed delegation chains (grants and revocations) rooted at an owner authority key.
+
+### `createTrustStore(options: TrustStoreOptions): Promise<TrustStore>`
+- **`options`**:
+  - `inst: string` - Instance identifier.
+  - `root: JsonWebKey | Uint8Array` - Public key of the root owner authority.
+  - `schema: TrustSchema` - Application permission schema defining modules, roles, and allowed actions.
+
+### Key Management & Document Issuance
+- `generateSigner(): Promise<Signer>`: Generates a non-extractable device signing keypair.
+- `issueGrant(signer: Signer, input: GrantInput, ctx: IssueContext): Promise<Grant>`: Signs and issues a capability grant for a subject device.
+- `issueRevocation(signer: Signer, input: RevocationInput, ctx: IssueContext): Promise<Revocation>`: Signs a cascading revocation for a compromised or removed device.
+
+### `TrustStore` (Class)
+- `add(doc: TrustDoc): Promise<AddResult>`: Ingests a signed grant or revocation document into the store.
+- `addMany(docs: Iterable<TrustDoc>): Promise<AddResult[]>`: Ingests multiple capability documents.
+- `can(deviceFp: string, module: string, level: Level, opts?: { seq?: number; time?: number }): boolean`: Evaluates whether a device holds permission for a given action.
+- `isMember(deviceFp: string): boolean`: Checks if a device has an active, unrevoked grant chain reaching the root.
+- `docs(): TrustDoc[]`: Returns all valid capability documents held in the store.
+
+---
+
+## 21. Operation Log (`@iberi22/edge-mesh/web/oplog`)
+
+Signed, hash-chained append-only logs per device, gated by `@iberi22/edge-mesh/web/trust`.
+
+### `openOpLog(options: OpLogOptions): Promise<OpLog>`
+- **`options`**:
+  - `trust: TrustStore` - The trust store validating author permissions and cutoffs.
+  - `signer: Signer` - The local device private key used to sign appended operations.
+  - `store?: OpStore` - Storage backend for persistent operations.
+
+### `OpLog` (Class)
+- `append(input: OpInput): Promise<StoredOp>`: Appends and signs a new operation.
+- `accepted(module?: string): Promise<StoredOp[]>`: Retrieves accepted operations in causal total order.
+- `headIds(): Promise<string[]>`: Returns hash identifiers of current log heads.
+- `on(event: "change", handler: (info: { modules: string[] }) => void): () => void`: Registers change listener.
+
+### `attachOpLogSync(log: OpLog, channel: OpLogChannel, options?: ServeOptions): OpLogSync`
+Binds an operation log to a network channel to automatically synchronize operations across peers.
+
+---
+
+## 22. Deterministic Merge Strategies (`@iberi22/edge-mesh/web/merge`)
+
+Pure, deterministic projection strategies for folding operation logs into reactive application state.
+
+### `lwwField(options?: LwwOptions): MergeStrategy<Map<string, LwwEntity>>`
+Projects entity operations using field-level Last-Write-Wins with causal ancestor resolution and optional author ranking.
+
+### `eventLog<S>(reducer: EventReducer<S>): MergeStrategy<Map<string, EventEntity<S>>>`
+Folds events per entity using an application state reducer, tracking accepted transitions and conflicting attempts.
+
+### `ledger(options?: LedgerOptions): MergeStrategy<Map<string, LedgerAccount>>`
+Sum-based balance tracking for accounts with deterministic negative balance guards (`"reject" | "flag" | "allow"`).
+
+### `createProjector(modules: Record<string, MergeStrategy<unknown>>)`
+Creates a unified multi-module projector folding accepted log entries per registered strategy.

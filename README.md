@@ -403,7 +403,12 @@ edge-mesh/
 │   ├── chat/                     # Generic P2P chat channels & offline queueing
 │   ├── salones/                  # Virtual salon room orchestration
 │   ├── node-memory/              # Agent memory persistence & Xavier sync
-│   └── mesh/                     # Gossip fan-out mesh manager
+│   ├── mesh/                     # Gossip fan-out mesh manager
+│   └── web/                      # Browser P2P mesh (@iberi22/edge-mesh/web)
+│       ├── trust/                # Capability store, grants & revocations
+│       ├── oplog/                # Signed operation log and sync
+│       ├── merge/                # Deterministic merge strategies (LWW, ledger)
+│       └── transports/           # WebRTC, loopback & WebSocket transports
 ├── tools/
 │   └── relay/                    # Rust WebSocket relay server (swal-relay)
 ├── packages/                     # Monorepo workspace packages (e.g. edge-mesh-react)
@@ -431,6 +436,17 @@ To build all packages across the workspace:
 ```bash
 npm run build
 ```
+
+---
+
+## Documentation
+
+- [Documentation Index](docs/README.md) — Comprehensive guide and module listing.
+- [Architecture Overview](docs/architecture.md) — System layers, browser mesh pairing, and CRDT sync flow.
+- [API Reference](docs/api.md) — Complete API documentation for all package exports.
+- [Cookbook](docs/cookbook.md) — Common recipes for browser and Node.js environments.
+- [Signaling Protocol](docs/SIGNALING-PROTOCOL.md) — WebSocket signaling relay specification.
+- [Web Mesh Cryptography](docs/WEB-MESH-CRYPTO.md) — Post-quantum key exchange, frame format, and forward secrecy.
 
 ---
 
