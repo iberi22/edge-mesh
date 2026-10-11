@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.1] - 2026-10-11
+
+### Fixed
+- Root entry (`@swal/edge-mesh`) is now importable with only the hard
+  dependencies installed. The optional peer dependencies (`idb`, `ws`,
+  `cbor-x`, `peerjs`, `@bokuweb/zstd-wasm`) are no longer imported
+  statically from any module reachable from the root export; each is loaded
+  lazily via dynamic `await import()` inside the function that needs it,
+  with a clear error message naming the peer to install:
+  - `src/storage/index.ts` (`StorageManager` loads `idb` lazily)
+  - `src/storage/optimizer.ts` (`PayloadOptimizer` loads
+    `@bokuweb/zstd-wasm` and `cbor-x` lazily)
+  - `src/node-memory/idb-store.ts` (`IdbStore` loads `idb` lazily,
+    keeping the in-memory fallback)
+  - `src/transport/peerjs.ts` (`PeerJSTransport` loads `peerjs` lazily)
+  - `src/transport/relay-server.ts` (`RelayServer.start()` loads `ws`
+    lazily)
+- New `scripts/check-clean-install.mjs` regression check (run as
+  `npm run test:pack` and in CI): packs the tarball, installs it with only
+  `yjs` in an isolated temp dir without optional peers, and imports all
+  five export paths (`.`, `./web`, `./web/trust`, `./web/oplog`,
+  `./web/merge`).
+
 ## [0.1.0] - 2026-10-11
 
 First release under the `@swal` npm scope.

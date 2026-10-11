@@ -4,8 +4,26 @@ import {
 	type Server as HttpServer,
 	type IncomingMessage,
 } from "node:http";
-import { type WebSocket, WebSocketServer } from "ws";
+import type { WebSocket, WebSocketServer } from "ws";
 import { TokenBucketRateLimiter } from "../security/rate-limiter.js";
+
+/*
+ * Lazily loads the optional `ws` peer dependency.
+ *
+ * `ws` is optional: importing `@swal/edge-mesh` must work without it.
+ * Only `RelayServer.start()` needs it, so the import happens there —
+ * inside the function that needs it — instead of at module top level.
+ */
+async function loadWebSocketServer(): Promise<typeof WebSocketServer> {
+	try {
+		const { WebSocketServer } = await import("ws");
+		return WebSocketServer;
+	} catch {
+		throw new Error(
+			"[edge-mesh] RelayServer requires the optional peer dependency 'ws'. Install it with: npm i ws",
+		);
+	}
+}
 
 export interface IceServerConfig {
 	urls: string | string[];
@@ -66,6 +84,8 @@ export class RelayServer extends EventEmitter {
 		if (this.running) {
 			return this.actualPort;
 		}
+
+		const WebSocketServer = await loadWebSocketServer();
 
 		return new Promise<number>((resolve, reject) => {
 			this.httpServer = createServer((req, res) => {

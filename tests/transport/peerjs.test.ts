@@ -62,6 +62,14 @@ describe("PeerJSTransport", () => {
 		port: 9000,
 	};
 
+	// The transport loads the optional `peerjs` peer lazily, so peer creation
+	// is asynchronous: wait for it before touching the mocked peer instance.
+	async function newTransport(): Promise<PeerJSTransport> {
+		const transport = new PeerJSTransport(mockNodoId, mockOptions);
+		await transport.whenReady();
+		return transport;
+	}
+
 	beforeEach(() => {
 		vi.clearAllMocks();
 		peerInstances = [];
@@ -72,13 +80,13 @@ describe("PeerJSTransport", () => {
 		vi.useRealTimers();
 	});
 
-	it("should initialize with correct parameters", () => {
-		const transport = new PeerJSTransport(mockNodoId, mockOptions);
+	it("should initialize with correct parameters", async () => {
+		const transport = await newTransport();
 		expect(transport.nodoId).toBe(mockNodoId);
 	});
 
-	it("should forward PeerJS events", () => {
-		const transport = new PeerJSTransport(mockNodoId, mockOptions);
+	it("should forward PeerJS events", async () => {
+		const transport = await newTransport();
 		// @ts-expect-error
 		const peerInstance = transport.peer;
 
@@ -111,8 +119,8 @@ describe("PeerJSTransport", () => {
 		);
 	});
 
-	it("should handle incoming connections", () => {
-		const transport = new PeerJSTransport(mockNodoId, mockOptions);
+	it("should handle incoming connections", async () => {
+		const transport = await newTransport();
 		// @ts-expect-error
 		const peerInstance = transport.peer;
 
@@ -142,7 +150,7 @@ describe("PeerJSTransport", () => {
 	});
 
 	it("should attempt to reconnect using backoff when disconnected", async () => {
-		const transport = new PeerJSTransport(mockNodoId, mockOptions);
+		const transport = await newTransport();
 		expect(peerInstances).toHaveLength(1);
 		const peer = peerInstances[0];
 
@@ -164,7 +172,7 @@ describe("PeerJSTransport", () => {
 	});
 
 	it("should re-initialize with the same ID on unavailable-id error", async () => {
-		const transport = new PeerJSTransport(mockNodoId, mockOptions);
+		const transport = await newTransport();
 		expect(peerInstances).toHaveLength(1);
 		const peer = peerInstances[0];
 
@@ -185,7 +193,7 @@ describe("PeerJSTransport", () => {
 	});
 
 	it("should queue pending connection requests when offline and flush them on open", async () => {
-		const transport = new PeerJSTransport(mockNodoId, mockOptions);
+		const transport = await newTransport();
 		const peer = peerInstances[0];
 
 		// We are offline initially (before open)
@@ -206,7 +214,7 @@ describe("PeerJSTransport", () => {
 	});
 
 	it("should broadcast PEER_LIST_UPDATE when a new connection opens and when closed", async () => {
-		const transport = new PeerJSTransport(mockNodoId, mockOptions);
+		const transport = await newTransport();
 		const peer = peerInstances[0];
 
 		// Open transport
@@ -242,7 +250,7 @@ describe("PeerJSTransport", () => {
 	});
 
 	it("should automatically connect to discovered peers from PEER_LIST_UPDATE", async () => {
-		const transport = new PeerJSTransport(mockNodoId, mockOptions);
+		const transport = await newTransport();
 		const peer = peerInstances[0];
 
 		peer.listeners["open"]("peer-1");

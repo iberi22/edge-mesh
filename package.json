@@ -1,6 +1,6 @@
 {
   "name": "@swal/edge-mesh",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "workspaces": [
     ".",
     "packages/*"
@@ -60,7 +60,8 @@
     "format": "biome format --write src/",
     "check": "npx tsc --noEmit",
     "bench": "npm run build && node scripts/bench.js",
-    "pack:smoke": "node scripts/pack-smoke.mjs"
+    "pack:smoke": "node scripts/pack-smoke.mjs",
+    "test:pack": "node scripts/check-clean-install.mjs"
   },
   "dependencies": {
     "@noble/ciphers": "2.4.0",
