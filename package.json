@@ -1,6 +1,6 @@
 {
-  "name": "@iberi22/edge-mesh",
-  "version": "1.0.0",
+  "name": "@swal/edge-mesh",
+  "version": "0.1.0",
   "workspaces": [
     ".",
     "packages/*"
@@ -11,7 +11,7 @@
     "registry": "https://registry.npmjs.org/",
     "provenance": true
   },
-  "license": "FSL-1.1-ALv2",
+  "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
   "exports": {
@@ -44,13 +44,14 @@
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
-    "src",
     "LICENSE",
+    "NOTICE",
     "README.md"
   ],
   "sideEffects": false,
   "scripts": {
     "build": "tsc",
+    "prepublishOnly": "npm run build && npm test",
     "dev": "tsc -w",
     "test": "node tests/run-tests.js",
     "test:audit": "node tests/run-tests.js --config vitest.audit.config.ts",
@@ -62,20 +63,20 @@
     "pack:smoke": "node scripts/pack-smoke.mjs"
   },
   "dependencies": {
-    "@noble/ciphers": "2.2.0",
-    "@noble/hashes": "2.2.0",
-    "@noble/post-quantum": "^0.6.1",
+    "@noble/ciphers": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "@noble/post-quantum": "^0.7.1",
     "y-indexeddb": "9.0.12",
     "y-protocols": "^1.0.7",
-    "yjs": "^13.6.32"
+    "yjs": "^13.6.33"
   },
   "peerDependencies": {
     "@bokuweb/zstd-wasm": "0.0.27",
     "cbor-x": "1.6.6",
     "ethers": "^6.17.0",
-    "idb": "^8.0.3",
+    "idb": "^8.0.4",
     "peerjs": "^1.5.5",
-    "ws": "^8.21.3"
+    "ws": "^8.22.0"
   },
   "peerDependenciesMeta": {
     "@bokuweb/zstd-wasm": {
@@ -98,21 +99,21 @@
     }
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.3",
+    "@biomejs/biome": "^2.5.15",
     "@bokuweb/zstd-wasm": "0.0.27",
-    "@types/node": "^26.1.1",
-    "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.5",
-    "@types/ws": "^8.18.1",
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/ws": "^8.18.2",
     "cbor-x": "1.6.6",
     "ethers": "^6.17.0",
-    "idb": "^8.0.3",
+    "idb": "^8.0.4",
     "peerjs": "^1.5.5",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
     "typescript": "^7.0.2",
     "vitest": "^5.0.3",
-    "ws": "^8.21.3"
+    "ws": "^8.22.0"
   },
   "keywords": [
     "p2p",
