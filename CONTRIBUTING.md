@@ -1,72 +1,56 @@
-# Contributing to Edge Mesh & SWAL Network
+# Contributing to Edge Mesh
 
-Thank you for your interest in contributing to `@iberi22/edge-mesh` and the SouthWest AI Labs (SWAL) ecosystem! We welcome contributions from developers, researchers, and open-source enthusiasts.
-
-For details on the overarching vision, strategic pillars, and architectural guidelines of the SWAL network, please refer to [docs/SWAL/GOAL.md](./docs/SWAL/GOAL.md).
+Thank you for contributing to Edge Mesh! We welcome contributions to help build a robust, secure, and decentralized peer-to-peer mesh.
 
 ---
 
-## SWAL Ecosystem & Backlog Location
+## Code of Conduct
 
-The overall SWAL ecosystem backlog and issue tracking across all modules are centrally coordinated via the **Maloca** hub:
-- Global Ecosystem Backlog & Coordination: **Maloca** (`src/maloca/` / Maloca Backoffice)
-- Single Source of Truth (SSOT) Core Library: `@iberi22/edge-mesh`
-
-Before embarking on significant feature work, check the global backlog in Maloca and open an issue or proposal to discuss the scope with the team.
+All contributors and participants are expected to adhere to our [Code of Conduct](./CODE_OF_CONDUCT.md).
 
 ---
 
-## Collaboration Workflow: Issue → PR → Merge (GitCore)
+## Development Setup
 
-All contributions follow the standard SWAL GitCore workflow to ensure quality, security, and traceability:
-
-1. **Issue Creation & Assignment:**
-   - Create or select an issue tracking the desired feature or bug fix.
-   - Align feature proposals with `.gitcore/features.json` schema v2 standards.
-
-2. **Branching Strategy:**
-   - Create a feature or bugfix branch off `main` with a clear prefix (e.g., `feat/...`, `fix/...`, `docs/...`, `hygiene/...`).
-
-3. **Development & Testing:**
-   - Write tests for new functionality using Vitest.
-   - Run `npm run build` and `npm test` locally to confirm all tests pass.
-
-4. **Pull Request & Code Review:**
-   - Submit a Pull Request targeting `main`.
-   - Ensure commit messages follow Conventional Commits standard (e.g., `docs: update CONTRIBUTING with SWAL guidelines`).
-
-5. **Merge Policy:**
-   - PRs must pass automated CI checks (linting, tests, security audit, and benchmark gates) before being merged into `main`.
-
----
-
-## Code of Conduct & Core Directives
-
-1. **Monorepo SSOT Policy:** `@iberi22/edge-mesh` is the Single Source of Truth for core mesh logic. Never copy-paste core files into consumer repos; import `@iberi22/edge-mesh` or work within this monorepo workspace.
-2. **Post-Quantum Cryptography:** Do not weaken post-quantum cryptographic primitives (ML-DSA-65 / ML-KEM-768).
-3. **No Commercial Paywalls / SaaS Lock-in:** Code and documentation must remain open and free without centralized SaaS dependencies or paywall requirements.
-
----
-
-## Contributor License Agreement (CLA) & Licensing
-
-All contributions are subject to the [Contributor License Agreement (CLA)](./CLA.md) and distributed under the [FSL-1.1-ALv2 License](./LICENSE). By submitting a Pull Request, you agree to license your code under these terms.
-
----
-
-## Prerequisites & Local Setup
+Prerequisites: Node.js >= 22.0.0 and npm.
 
 ```bash
-# Clone repository
+# Clone the repository
 git clone https://github.com/iberi22/edge-mesh.git
 cd edge-mesh
 
-# Install workspace dependencies
+# Install dependencies
 npm install
 
-# Build core library
+# Build the TypeScript project
 npm run build
 
-# Run unit and integration tests
+# Run type checking
+npm run check
+
+# Run tests
 npm test
+
+# Run linter
+npm run lint
 ```
+
+---
+
+## Architectural Principles
+
+1. **Single Source of Truth:** `@iberi22/edge-mesh` is the authoritative core library for mesh networking and P2P CRDT sync across the ecosystem.
+2. **Post-Quantum Cryptography Preservation:** Do not weaken cryptographic primitives (ML-DSA-65 signatures, ML-KEM-768 hybrid encapsulation, AES-256-GCM).
+3. **Local-First & Zero Vendor Lock-in:** Code and protocols must remain open and operational without mandatory centralized servers or SaaS dependencies.
+4. **UI Agnostic:** Core mesh capabilities remain completely detached from specific frontend frameworks.
+
+---
+
+## Contribution Workflow
+
+1. **Issues:** Open an issue or join an existing discussion before starting major architectural changes.
+2. **Branching:** Create a feature branch off `main` (e.g., `feat/topic`, `fix/issue-description`, `docs/topic`).
+3. **Testing:** Every change must include unit or integration tests verifying the behavior.
+4. **Formatting & Linting:** Ensure code passes `npm run check` and `npm run lint`.
+5. **Conventional Commits:** Use clear commit messages following Conventional Commits (e.g., `feat(web): add loopback latency simulation`, `fix(sync): prevent off-by-one boundary drop`).
+6. **Pull Requests:** Open a pull request against `main`. Ensure all CI checks pass and complete the pull request template.
