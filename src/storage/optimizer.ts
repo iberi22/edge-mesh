@@ -1,5 +1,27 @@
-import { compress, decompress, init } from "@bokuweb/zstd-wasm";
-import { decode, encode } from "cbor-x";
+type ZstdModule = typeof import("@bokuweb/zstd-wasm");
+type CborModule = typeof import("cbor-x");
+
+/**
+ * Lazily loads the optional `@bokuweb/zstd-wasm` and `cbor-x` peer
+ * dependencies.
+ *
+ * Both are optional: importing `@swal/edge-mesh` must work without them.
+ * Only `PayloadOptimizer` needs them, so the imports happen here — inside
+ * the functions that need them — instead of at module top level.
+ */
+async function loadCodec(): Promise<{ zstd: ZstdModule; cbor: CborModule }> {
+	try {
+		const [zstd, cbor] = await Promise.all([
+			import("@bokuweb/zstd-wasm"),
+			import("cbor-x"),
+		]);
+		return { zstd, cbor };
+	} catch {
+		throw new Error(
+			"[edge-mesh] PayloadOptimizer requires the optional peer dependencies '@bokuweb/zstd-wasm' and 'cbor-x'. Install them with: npm i @bokuweb/zstd-wasm cbor-x",
+		);
+	}
+}
 
 let isZstdInitialized = false;
 
@@ -9,7 +31,8 @@ let isZstdInitialized = false;
  */
 export async function initializeOptimizer(): Promise<void> {
 	if (!isZstdInitialized) {
-		await init();
+		const { zstd } = await loadCodec();
+		await zstd.init();
 		isZstdInitialized = true;
 	}
 }
@@ -33,12 +56,13 @@ export class PayloadOptimizer {
 		level: number = 10,
 	): Promise<Uint8Array> {
 		await initializeOptimizer();
+		const { zstd, cbor } = await loadCodec();
 
 		// 1. Serialize to CBOR
-		const cborBuffer = encode(payload);
+		const cborBuffer = cbor.encode(payload);
 
 		// 2. Compress with Zstd
-		const compressed = compress(new Uint8Array(cborBuffer), level);
+		const compressed = zstd.compress(new Uint8Array(cborBuffer), level);
 
 		return compressed;
 	}
@@ -50,12 +74,13 @@ export class PayloadOptimizer {
 	 */
 	static async decompressPayload<T>(buffer: Uint8Array): Promise<T> {
 		await initializeOptimizer();
+		const { zstd, cbor } = await loadCodec();
 
 		// 1. Decompress from Zstd
-		const decompressed = decompress(buffer);
+		const decompressed = zstd.decompress(buffer);
 
 		// 2. Deserialize from CBOR
-		const payload = decode(decompressed) as T;
+		const payload = cbor.decode(decompressed) as T;
 
 		return payload;
 	}

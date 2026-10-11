@@ -1,5 +1,23 @@
-import { type IDBPDatabase, openDB } from "idb";
+import type { IDBPDatabase } from "idb";
 import type { StorageEntry, StorageFilter } from "../types/index.js";
+
+/**
+ * Lazily loads the optional `idb` peer dependency.
+ *
+ * `idb` is optional: importing `@swal/edge-mesh` must work without it.
+ * Only `StorageManager` needs it, so the import happens here — inside the
+ * function that needs it — instead of at module top level.
+ */
+async function loadOpenDB(): Promise<typeof import("idb").openDB> {
+	try {
+		const { openDB } = await import("idb");
+		return openDB;
+	} catch {
+		throw new Error(
+			"[edge-mesh] StorageManager requires the optional peer dependency 'idb'. Install it with: npm i idb",
+		);
+	}
+}
 
 // ─── STORAGE INTERFACE ─────────────────────────────────────────────────────
 
@@ -124,6 +142,7 @@ export class StorageManager implements IStorage {
 
 	private async inicializar(): Promise<IDBPDatabase> {
 		const storeName = this.config.storeName;
+		const openDB = await loadOpenDB();
 		const db = await openDB(this.config.dbName, this.config.version, {
 			upgrade(db) {
 				if (!db.objectStoreNames.contains(storeName)) {

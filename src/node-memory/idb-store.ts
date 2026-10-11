@@ -1,4 +1,4 @@
-import { type IDBPDatabase, openDB } from "idb";
+import type { IDBPDatabase } from "idb";
 import type { MemoryRecord } from "./types.js";
 
 export class IdbStore {
@@ -22,6 +22,10 @@ export class IdbStore {
 
 		const storeName = this.storeName;
 		try {
+			// `idb` is an optional peer dependency: load it lazily so that
+			// importing `@swal/edge-mesh` works without it. A missing `idb`
+			// (or a missing IndexedDB) falls back to the in-memory store below.
+			const { openDB } = await import("idb");
 			this.initPromise = openDB(this.dbName, 1, {
 				upgrade(db) {
 					if (!db.objectStoreNames.contains(storeName)) {

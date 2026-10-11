@@ -1,4 +1,5 @@
-import Peer, { type DataConnection } from "peerjs";
+import type Peer from "peerjs";
+import type { DataConnection } from "peerjs";
 import { getReconnectDelay } from "../presence/peer-health.js";
 import { createEnvelope, MessageDeduplicator } from "../protocol/index.js";
 import type {
@@ -27,6 +28,28 @@ export interface PeerJSTransportOptions {
 
 export type { TransportEventMap };
 
+type PeerConstructor = new (
+	id: string,
+	options?: Record<string, unknown>,
+) => Peer;
+
+/*
+ * Lazily loads the optional peerjs peer dependency. Importing
+ * @swal/edge-mesh must work without it; only PeerJSTransport needs it.
+ */
+async function loadPeerConstructor(): Promise<PeerConstructor> {
+	try {
+		const mod = await import("peerjs");
+		const ctor = (mod as { default?: PeerConstructor }).default;
+		if (ctor) return ctor;
+		return mod as unknown as PeerConstructor;
+	} catch {
+		throw new Error(
+			"[edge-mesh] PeerJSTransport requires the optional peer dependency 'peerjs'. Install it with: npm i peerjs",
+		);
+	}
+}
+
 // ─── PEERJS TRANSPORT ──────────────────────────────────────────────────────
 
 export class PeerJSTransport implements ITransport {
@@ -34,6 +57,8 @@ export class PeerJSTransport implements ITransport {
 	readonly eventTarget: EventTarget;
 	readonly nodoId: NodoId;
 	private peer!: Peer;
+	/** Resolves when the underlying PeerJS peer exists (peerjs loads lazily). */
+	private readonly peerReady: Promise<void>;
 	private readonly opciones: PeerJSTransportOptions;
 	private readonly conexiones: Map<string, DataConnection>;
 	private readonly deduplicator: MessageDeduplicator;
@@ -51,16 +76,27 @@ export class PeerJSTransport implements ITransport {
 		this.deduplicator = new MessageDeduplicator();
 		this.opciones = options;
 
-		this.iniciarPeer();
+		this.peerReady = this.iniciarPeer();
 	}
 
-	private iniciarPeer(): void {
+	private async iniciarPeer(): Promise<void> {
 		if (this.peer) {
 			try {
 				this.peer.destroy();
 			} catch {
 				// Ignorar
 			}
+		}
+
+		let PeerCtor: PeerConstructor;
+		try {
+			PeerCtor = await loadPeerConstructor();
+		} catch (error) {
+			this.emit("error", {
+				mensaje: error instanceof Error ? error.message : String(error),
+				error: error instanceof Error ? error : undefined,
+			});
+			return;
 		}
 
 		let host = this.opciones.host;
@@ -81,7 +117,7 @@ export class PeerJSTransport implements ITransport {
 			if (secure === undefined) secure = parsed.secure;
 		}
 
-		this.peer = new Peer(this.opciones.peerId, {
+		this.peer = new PeerCtor(this.opciones.peerId, {
 			host,
 			port,
 			path,
@@ -139,10 +175,10 @@ export class PeerJSTransport implements ITransport {
 				try {
 					this.peer.reconnect();
 				} catch {
-					this.iniciarPeer();
+					void this.iniciarPeer();
 				}
 			} else {
-				this.iniciarPeer();
+				void this.iniciarPeer();
 			}
 		}, delay);
 	}
@@ -158,7 +194,7 @@ export class PeerJSTransport implements ITransport {
 
 		this.reconnectTimer = setTimeout(() => {
 			this.reconnectTimer = undefined;
-			this.iniciarPeer();
+			void this.iniciarPeer();
 		}, delay);
 	}
 
@@ -182,6 +218,14 @@ export class PeerJSTransport implements ITransport {
 				error,
 			});
 		});
+	}
+
+	/**
+	 * Resolves when the lazily-loaded PeerJS peer has been created.
+	 * Useful to wait for effective connectivity after construction.
+	 */
+	async whenReady(): Promise<void> {
+		await this.peerReady;
 	}
 
 	// ─── EVENTOS ───────────────────────────────────────────────────────────
@@ -329,7 +373,7 @@ export class PeerJSTransport implements ITransport {
 	}
 
 	async conectarRemoto(remotoId: string): Promise<void> {
-		if (!this.conectado || this.peer.destroyed) {
+		if (!this.conectado || !this.peer || this.peer.destroyed) {
 			this.pendingConnectionRequests.add(remotoId);
 			return;
 		}

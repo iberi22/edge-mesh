@@ -322,6 +322,9 @@ describe("Storage Module", () => {
 		});
 
 		it("should handle error when db open fails", async () => {
+			// Settle the shared storage init first: `idb` loads lazily, so
+			// both inits would otherwise race for the one-shot rejection below.
+			await storage.get("init");
 			(openDB as any).mockRejectedValueOnce(new Error("IndexedDB error"));
 			const faultyStorage = new StorageManager({
 				dbName: "faulty-db",
