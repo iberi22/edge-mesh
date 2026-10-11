@@ -53,6 +53,7 @@
     "build": "tsc",
     "dev": "tsc -w",
     "test": "node tests/run-tests.js",
+    "test:audit": "node tests/run-tests.js --config vitest.audit.config.ts",
     "test:watch": "vitest",
     "lint": "biome check src/",
     "format": "biome format --write src/",
@@ -110,7 +111,7 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.9",
+    "vitest": "^5.0.3",
     "ws": "^8.21.3"
   },
   "keywords": [
