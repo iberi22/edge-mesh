@@ -1,0 +1,51 @@
+name: Bug Report
+description: File a bug report to help improve Edge Mesh.
+title: "fix: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting an issue!
+        **Security notice:** If you discovered a security vulnerability, please report it privately via [GitHub Security Advisories](https://github.com/iberi22/edge-mesh/security/advisories/new) instead of filing a public issue.
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is.
+      placeholder: Describe the defect or unexpected behavior...
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to Reproduce
+      description: Clear steps or minimal reproduction code.
+      placeholder: |
+        1. Initialize Edge Mesh node with config...
+        2. Attempt WebRTC pairing...
+        3. Observe error...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What you expected to happen.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually occurred, including relevant error messages or console logs.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Node version, browser version, OS, and edge-mesh package version.
+      placeholder: Node.js 22.4.0 / Chromium 128 / macOS 15.0 / @iberi22/edge-mesh@1.0.0
+    validations:
+      required: true
