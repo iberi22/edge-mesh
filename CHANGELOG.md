@@ -9,6 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Publish readiness (`@swal/edge-mesh`)
+- Package renamed from `@iberi22/edge-mesh` to `@swal/edge-mesh` (npm org `swal`).
+  Version stays at 1.0.0: the new name has no publish history, so this is the
+  initial release under the `@swal` scope; the API is unchanged, so no semver
+  bump (1.1.0 would falsely signal new features) is warranted.
+- License changed from FSL-1.1-ALv2 to Apache-2.0 per the 2026-10-05 owner rule
+  (libraries are Apache-2.0): new `LICENSE` full text, `package.json`
+  `"license"` field, new `NOTICE` with third-party attributions.
+- Tarball is minimal: `files` is now `dist` + `LICENSE` + `NOTICE` + `README.md`
+  (`src/` no longer shipped; sourcemap `sources` entries are best-effort).
+  New defensive `.npmignore`; `prepublishOnly` runs `build` + `test`.
+- Dependencies updated to latest compatible (no surviving major bumps):
+  `@noble/ciphers` 2.2.0 -> 2.4.0, `@noble/hashes` 2.2.0 -> 2.4.0 (exact pins kept),
+  `@noble/post-quantum` ^0.6.1 -> ^0.7.1, `yjs` ^13.6.32 -> ^13.6.33,
+  `ws` ^8.21.3 -> ^8.22.0 (dev + peer), `idb` ^8.0.3 -> ^8.0.4 (dev + peer),
+  `react`/`react-dom` ^19.2.8 -> ^19.3.0, `@biomejs/biome` ^2.5.3 -> ^2.5.15,
+  `@types/node` ^26.1.1 -> ^26.6.5, `@types/react` ^19.2.18 -> ^19.3.0,
+  `@types/react-dom` ^19.2.5 -> ^19.3.0, `@types/ws` ^8.18.1 -> ^8.18.2.
+  `npm audit` reports 0 vulnerabilities.
+- New `.github/workflows/release.yml`: on `v*` tags, publishes to npm with
+  provenance (uses the `NPM_TOKEN` secret) after `npm ci`, `build`, `npm test`
+  (975 tests), `npm pack --dry-run` and `npm audit` gates.
+
 ### Security (`@iberi22/edge-mesh/web`, see `docs/WEB-MESH-CRYPTO.md`)
 - **H1**: only devices with a signed admission chain up to the locally pinned owner are trusted. Rotation wraps,
   ECDH keys and `devices()` ignore self-registered `dev/<id>` entries; a member can no longer obtain the rotated

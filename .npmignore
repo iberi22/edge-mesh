@@ -1,0 +1,21 @@
+# Defensive publish exclusion list. The `files` whitelist in package.json is the
+# primary gate; everything below must never leak into the tarball even if the
+# whitelist is widened later.
+src
+tests
+test
+docs
+specs
+examples
+tools
+scripts
+workers
+data
+packages
+*.db
+*.db-shm
+*.db-wal
+*.log
+.env
+vitest*.config.ts
+tsconfig.json

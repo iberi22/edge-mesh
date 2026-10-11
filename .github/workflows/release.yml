@@ -1,0 +1,33 @@
+# Release @swal/edge-mesh to npmjs with provenance. Runs on version tags (v*).
+# Requires the NPM_TOKEN repository secret (trusted publishing via OIDC is the
+# fallback; the secret itself is never created by automation).
+name: Release to npm
+
+on:
+  workflow_dispatch: {}
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - run: npm pack --dry-run
+      - run: npm audit
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
