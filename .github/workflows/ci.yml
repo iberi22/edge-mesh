@@ -112,7 +112,9 @@ jobs:
 
   publish:
     needs: [benchmark-gate]
-    if: github.ref == 'refs/heads/main'
+    # Disabled 2026-10-11: the package is @swal/edge-mesh on npmjs (released by release.yml on v* tags);
+    # GitHub Packages only accepts the @iberi22 scope, so this beta job can no longer publish.
+    if: false
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

@@ -1,9 +1,10 @@
 {
-	"name": "@iberi22/edge-mesh-react",
+	"name": "@swal/edge-mesh-react",
 	"version": "1.0.0",
 	"description": "React bindings for Edge Mesh (Provider + useEdgeMesh + useCollection)",
+	"private": true,
 	"type": "module",
-	"license": "FSL-1.1-ALv2",
+	"license": "Apache-2.0",
 	"main": "./dist/index.js",
 	"exports": {
 		".": {
@@ -15,7 +16,9 @@
 	"types": "./dist/index.d.ts",
 	"files": [
 		"dist",
-		"src"
+		"src",
+		"LICENSE",
+		"README.md"
 	],
 	"scripts": {
 		"build": "tsc",
@@ -26,11 +29,11 @@
 		"yjs": "^13.6.31"
 	},
 	"peerDependencies": {
-		"@iberi22/edge-mesh": "*",
+		"@swal/edge-mesh": "^0.1.1",
 		"react": ">=18.0.0"
 	},
 	"devDependencies": {
-		"@iberi22/edge-mesh": "*",
+		"@swal/edge-mesh": "^0.1.1",
 		"@types/react": "^18.3.1",
 		"@types/react-dom": "^18.3.7",
 		"react": "^18.3.1",
