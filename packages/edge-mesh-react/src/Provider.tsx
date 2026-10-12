@@ -1,6 +1,6 @@
 import React, { type ReactNode } from "react";
 import { EdgeMeshContext } from "./useEdgeMesh";
-import type { EdgeMesh } from "@iberi22/edge-mesh";
+import type { EdgeMesh } from "@swal/edge-mesh";
 
 export interface EdgeMeshProviderProps {
 	edgeMesh: EdgeMesh;

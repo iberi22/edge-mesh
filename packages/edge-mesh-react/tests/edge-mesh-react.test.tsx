@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
-import { EdgeMesh, MemoryTransport, type NodoId } from "@iberi22/edge-mesh";
+import { EdgeMesh, MemoryTransport, type NodoId } from "@swal/edge-mesh";
 import { EdgeMeshProvider, useEdgeMesh, useCollection } from "../src/index.js";
 
 // Mock IndexedDB to prevent storage access issues during tests
