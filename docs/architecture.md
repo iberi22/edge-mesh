@@ -1,10 +1,10 @@
 # Architecture Overview
 
-`@iberi22/edge-mesh` is a peer-to-peer (P2P) mesh networking and local-first data synchronization library. It integrates Conflict-Free Replicated Data Types (CRDTs), post-quantum cryptographic primitives, WebRTC peer data channels, and capability-based access control.
+`@swal/edge-mesh` is a peer-to-peer (P2P) mesh networking and local-first data synchronization library. It integrates Conflict-Free Replicated Data Types (CRDTs), post-quantum cryptographic primitives, WebRTC peer data channels, and capability-based access control.
 
 The library provides two primary deployment models:
-1. **Browser Mesh (`@iberi22/edge-mesh/web`)**: A browser-pure, owner-controlled P2P mesh designed for Progressive Web Apps (PWAs).
-2. **Node/Classic Mesh (`@iberi22/edge-mesh`)**: A full-featured edge networking runtime supporting server relays, gossip protocols, presence tracking, and multi-peer orchestration.
+1. **Browser Mesh (`@swal/edge-mesh/web`)**: A browser-pure, owner-controlled P2P mesh designed for Progressive Web Apps (PWAs).
+2. **Node/Classic Mesh (`@swal/edge-mesh`)**: A full-featured edge networking runtime supporting server relays, gossip protocols, presence tracking, and multi-peer orchestration.
 
 ---
 
@@ -49,7 +49,7 @@ The library provides two primary deployment models:
 
 ---
 
-## 2. Browser Mesh Architecture (`@iberi22/edge-mesh/web`)
+## 2. Browser Mesh Architecture (`@swal/edge-mesh/web`)
 
 The browser entry point (`./web`) is designed for client-side web applications with zero required server infrastructure beyond a minimal signaling relay.
 

@@ -1,4 +1,4 @@
-// @iberi22/edge-mesh/web/trust — signed capabilities (grants/revocations) chained to a root key.
+// @swal/edge-mesh/web/trust — signed capabilities (grants/revocations) chained to a root key.
 export {
 	canonicalBytes,
 	canonicalJson,

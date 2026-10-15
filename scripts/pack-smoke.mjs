@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const PROBE = [
-  "const m = await import('@iberi22/edge-mesh/web');",
-  "const t = await import('@iberi22/edge-mesh/web/trust');",
+  "const m = await import('@swal/edge-mesh/web');",
+  "const t = await import('@swal/edge-mesh/web/trust');",
   "console.log(Object.keys(m).length, Object.keys(t).length)",
 ].join(" ");
 const OPTIONAL_PEERS = ["ethers", "peerjs", "ws"];
