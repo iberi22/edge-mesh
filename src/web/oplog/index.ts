@@ -1,4 +1,4 @@
-// @iberi22/edge-mesh/web/oplog — signed, hash-chained per-device operation logs gated by web/trust.
+// @swal/edge-mesh/web/oplog — signed, hash-chained per-device operation logs gated by web/trust.
 
 export type { HlcClock, HlcParts } from "./hlc.js";
 export {

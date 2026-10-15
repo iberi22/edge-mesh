@@ -1,4 +1,4 @@
-// @iberi22/edge-mesh/web/merge — deterministic per-module projections of accepted ops.
+// @swal/edge-mesh/web/merge — deterministic per-module projections of accepted ops.
 //
 // Every strategy is a pure function of the SET of ops it receives: ops are de-duplicated by id and folded in the
 // total order (hlc, author, seq), so any delivery order gives the same state. Feed it `OpLog.accepted(module)` and

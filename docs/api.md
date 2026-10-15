@@ -1,4 +1,4 @@
-# API Reference - @iberi22/edge-mesh
+# API Reference - @swal/edge-mesh
 
 This document provides a comprehensive API reference for **`edge-mesh`**, covering all public exports from `src/index.ts` and detailing modules like `core`, `identity`, `yjsAdapter`, `presence`, `authz`, `maloca`, `adapters`, and more.
 
@@ -388,7 +388,7 @@ The `./web*` subpaths are browser-pure (relying exclusively on standard WebCrypt
 
 ---
 
-## 19. Browser Mesh Core (`@iberi22/edge-mesh/web`)
+## 19. Browser Mesh Core (`@swal/edge-mesh/web`)
 
 ### `createMesh(options: MeshOptions): Promise<Mesh>`
 Initializes and starts an encrypted, owner-controlled P2P mesh for the browser.
@@ -422,7 +422,7 @@ Initializes and starts an encrypted, owner-controlled P2P mesh for the browser.
 
 ---
 
-## 20. Capability Trust Store (`@iberi22/edge-mesh/web/trust`)
+## 20. Capability Trust Store (`@swal/edge-mesh/web/trust`)
 
 Provides signed delegation chains (grants and revocations) rooted at an owner authority key.
 
@@ -446,9 +446,9 @@ Provides signed delegation chains (grants and revocations) rooted at an owner au
 
 ---
 
-## 21. Operation Log (`@iberi22/edge-mesh/web/oplog`)
+## 21. Operation Log (`@swal/edge-mesh/web/oplog`)
 
-Signed, hash-chained append-only logs per device, gated by `@iberi22/edge-mesh/web/trust`.
+Signed, hash-chained append-only logs per device, gated by `@swal/edge-mesh/web/trust`.
 
 ### `openOpLog(options: OpLogOptions): Promise<OpLog>`
 - **`options`**:
@@ -467,7 +467,7 @@ Binds an operation log to a network channel to automatically synchronize operati
 
 ---
 
-## 22. Deterministic Merge Strategies (`@iberi22/edge-mesh/web/merge`)
+## 22. Deterministic Merge Strategies (`@swal/edge-mesh/web/merge`)
 
 Pure, deterministic projection strategies for folding operation logs into reactive application state.
 

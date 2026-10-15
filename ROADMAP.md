@@ -1,7 +1,7 @@
 # Edge Mesh Roadmap
 
 ## 1. Vision & Architecture
-Edge Mesh (`@iberi22/edge-mesh`, migrating to `@swal/edge-mesh`) is an owner-controlled, decentralized peer-to-peer (P2P) synchronization engine designed for local-first web applications.
+Edge Mesh (`@swal/edge-mesh`, renamed from `@iberi22/edge-mesh` on 2026-10-05) is an owner-controlled, decentralized peer-to-peer (P2P) synchronization engine designed for local-first web applications.
 
 It marries Conflict-Free Replicated Data Types (CRDTs via Yjs) with high-assurance post-quantum cryptography (ML-DSA-65 signatures, ML-KEM-768 key encapsulation, AES-256-GCM AEAD authenticated encryption, and hybrid logical clocks). By pairing directly between browser nodes over WebRTC data channels with optional fallback transports, Edge Mesh provides zero-trust data synchronization without vendor lock-in or centralized cloud bottlenecks.
 

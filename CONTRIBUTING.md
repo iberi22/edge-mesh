@@ -39,7 +39,7 @@ npm run lint
 
 ## Architectural Principles
 
-1. **Single Source of Truth:** `@iberi22/edge-mesh` is the authoritative core library for mesh networking and P2P CRDT sync across the ecosystem.
+1. **Single Source of Truth:** `@swal/edge-mesh` is the authoritative core library for mesh networking and P2P CRDT sync across the ecosystem.
 2. **Post-Quantum Cryptography Preservation:** Do not weaken cryptographic primitives (ML-DSA-65 signatures, ML-KEM-768 hybrid encapsulation, AES-256-GCM).
 3. **Local-First & Zero Vendor Lock-in:** Code and protocols must remain open and operational without mandatory centralized servers or SaaS dependencies.
 4. **UI Agnostic:** Core mesh capabilities remain completely detached from specific frontend frameworks.

@@ -21,11 +21,11 @@ The SWAL architecture empowers individuals and organizations to collaborate, pro
    - Self-healing state synchronization upon peer reconnection.
 
 3. **Ecosystem Unification & Single Source of Truth (SSOT):**
-   - Seamless integration across SWAL applications (Xavier, Maloca, Shelf) using shared canonical libraries (`@iberi22/edge-mesh`).
+   - Seamless integration across SWAL applications (Xavier, Maloca, Shelf) using shared canonical libraries (`@swal/edge-mesh`).
    - Standardized SWAL namespace routing (`swal/{appId}/{instanceId}`).
    - Monorepo workspace distribution eliminating manual code duplication.
 
 4. **Decentralized Governance & Autonomy:**
    - On-chain and P2P proposal voting mechanisms.
    - Deterministic authority selection and failover.
-   - Transparent, source-available FSL-1.1-ALv2 licensing (Apache-2.0 automatically after two years).
+   - Transparent, source-available Apache-2.0 licensing.

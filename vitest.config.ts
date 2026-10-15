@@ -18,7 +18,7 @@ export default defineConfig({
 		// when the whole suite runs in parallel: the default 5 s per test is too tight for them.
 		testTimeout: 20_000,
 		alias: {
-			"@iberi22/edge-mesh": path.resolve(import.meta.dirname ?? ".", "./src/index.ts"),
+			"@swal/edge-mesh": path.resolve(import.meta.dirname ?? ".", "./src/index.ts"),
 		},
 	},
 });
