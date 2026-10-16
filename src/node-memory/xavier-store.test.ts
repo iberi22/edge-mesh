@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { XavierStore } from "./xavier-store.js";
 import type { MemoryRecord } from "./types.js";
+import { XavierStore } from "./xavier-store.js";
 
 describe("XavierStore", () => {
 	const appId = "test-app";
@@ -42,38 +42,58 @@ describe("XavierStore", () => {
 			const url = fetchMock.mock.calls[0][0];
 			const opts = fetchMock.mock.calls[0][1];
 
-			expect(url).toBe("http://127.0.0.1:8006/app/test-app/instance/test-instance");
+			expect(url).toBe(
+				"http://127.0.0.1:8006/app/test-app/instance/test-instance",
+			);
 			expect(opts.method).toBe("POST");
 			expect(opts.headers["Content-Type"]).toBe("application/json");
 			expect(opts.body).toBe(JSON.stringify(mockRecord));
 		});
 
 		it("sends X-Xavier-Token only when xavierToken is set", async () => {
-			const storeWithToken = new XavierStore({ appId, instanceId, xavierToken: "token-123" });
+			const storeWithToken = new XavierStore({
+				appId,
+				instanceId,
+				xavierToken: "token-123",
+			});
 			await storeWithToken.postRecord(mockRecord);
 
-			expect(fetchMock.mock.calls[0][1].headers["X-Xavier-Token"]).toBe("token-123");
+			expect(fetchMock.mock.calls[0][1].headers["X-Xavier-Token"]).toBe(
+				"token-123",
+			);
 
 			fetchMock.mockClear();
 
 			const storeWithoutToken = new XavierStore({ appId, instanceId });
 			await storeWithoutToken.postRecord(mockRecord);
 
-			expect(fetchMock.mock.calls[0][1].headers["X-Xavier-Token"]).toBeUndefined();
+			expect(
+				fetchMock.mock.calls[0][1].headers["X-Xavier-Token"],
+			).toBeUndefined();
 		});
 
 		it("produces the same URL with and without a trailing slash on xavierUrl", async () => {
-			const storeWithoutSlash = new XavierStore({ appId, instanceId, xavierUrl: "http://example.com" });
+			const storeWithoutSlash = new XavierStore({
+				appId,
+				instanceId,
+				xavierUrl: "http://example.com",
+			});
 			await storeWithoutSlash.postRecord(mockRecord);
 			const url1 = fetchMock.mock.calls[0][0];
 
 			fetchMock.mockClear();
 
-			const storeWithSlash = new XavierStore({ appId, instanceId, xavierUrl: "http://example.com/" });
+			const storeWithSlash = new XavierStore({
+				appId,
+				instanceId,
+				xavierUrl: "http://example.com/",
+			});
 			await storeWithSlash.postRecord(mockRecord);
 			const url2 = fetchMock.mock.calls[0][0];
 
-			expect(url1).toBe("http://example.com/app/test-app/instance/test-instance");
+			expect(url1).toBe(
+				"http://example.com/app/test-app/instance/test-instance",
+			);
 			expect(url1).toBe(url2);
 		});
 
@@ -130,7 +150,10 @@ describe("XavierStore", () => {
 		});
 
 		it("returns [] on a non-array body", async () => {
-			fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ not: "array" }) });
+			fetchMock.mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({ not: "array" }),
+			});
 			const store = new XavierStore({ appId, instanceId });
 			const result = await store.loadRecords("test-path", "search query");
 
