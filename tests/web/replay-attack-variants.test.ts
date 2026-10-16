@@ -68,7 +68,8 @@ describe("S1 replay attack variants", () => {
 		await a.mesh
 			.channel("orders")
 			.send(new TextEncoder().encode("pay table 7"));
-		await until(() => got.length === 1);
+		// The full suite runs CPU-bound (ML-DSA handshakes) in parallel: the 3 s default is too tight here.
+		await until(() => got.length === 1, 10_000);
 		const rejected: string[] = [];
 		b.mesh.on("rejected", (e) => rejected.push(e.reason));
 		a.mesh.destroy();
@@ -146,7 +147,8 @@ describe("S1 replay attack variants", () => {
 		await a.mesh
 			.channel("orders")
 			.send(new TextEncoder().encode("pay table 7"));
-		await until(() => got.length === 1);
+		// The full suite runs CPU-bound (ML-DSA handshakes) in parallel: the 3 s default is too tight here.
+		await until(() => got.length === 1, 10_000);
 		const rejected: string[] = [];
 		b.mesh.on("rejected", (e) => rejected.push(e.reason));
 		a.mesh.destroy();
