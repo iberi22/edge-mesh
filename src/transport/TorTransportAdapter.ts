@@ -5,7 +5,9 @@ import type {
 	TipoMensaje,
 	TipoTransporte,
 } from "../types/index.js";
+import net from "node:net";
 import { TIPO_MENSAJE, TIPO_TRANSPORTE } from "../types/index.js";
+import { TorUnavailableError } from "./tor-errors.js";
 import type { ITransport, TransportEventMap } from "./types.js";
 
 export interface TorTransportAdapterOptions {
@@ -26,6 +28,12 @@ export interface TorTransportAdapterOptions {
 	) => Promise<unknown>;
 	/** Automatically connect proxy tunnel upon creation (default: false) */
 	readonly autoConnect?: boolean;
+	/** Opt-in check to verify the SOCKS proxy is listening via TCP probe before connecting (default: false) */
+	readonly verifySocks?: boolean;
+	/** SOCKS host address for TCP probe (default: "127.0.0.1") */
+	readonly socksHost?: string;
+	/** Timeout in milliseconds for the SOCKS TCP probe (default: 2000) */
+	readonly socksConnectTimeoutMs?: number;
 }
 
 /**
@@ -60,7 +68,12 @@ export class TorTransportAdapter implements ITransport {
 				.slice(0, 16)}.onion`;
 
 		if (options.autoConnect) {
-			void this.conectar();
+			void this.conectar().catch((err: any) =>
+				this.emit("error", {
+					mensaje: err?.message ?? String(err),
+					error: err,
+				}),
+			);
 		}
 	}
 
@@ -95,6 +108,31 @@ export class TorTransportAdapter implements ITransport {
 	 */
 	async conectar(): Promise<void> {
 		if (this.conectado) return;
+
+		if (this.options.verifySocks ?? false) {
+			const host = this.options.socksHost ?? "127.0.0.1";
+			const port = this.options.socksPort ?? 9050;
+			const timeout = this.options.socksConnectTimeoutMs ?? 2000;
+
+			await new Promise<void>((resolve, reject) => {
+				const socket = net.createConnection({ host, port }, () => {
+					socket.destroy();
+					resolve();
+				});
+
+				socket.setTimeout(timeout);
+
+				socket.on("timeout", () => {
+					socket.destroy();
+					reject(new TorUnavailableError(host, port));
+				});
+
+				socket.on("error", (err) => {
+					socket.destroy();
+					reject(new TorUnavailableError(host, port, err));
+				});
+			});
+		}
 
 		this.conectado = true;
 		this.tunnelActive = true;
@@ -153,6 +191,11 @@ export class TorTransportAdapter implements ITransport {
 		tipoMensaje: string = TIPO_MENSAJE.SYNC,
 	): Promise<void> {
 		if (!this.conectado) {
+			if (this.options.verifySocks ?? false) {
+				const host = this.options.socksHost ?? "127.0.0.1";
+				const port = this.options.socksPort ?? 9050;
+				throw new TorUnavailableError(host, port);
+			}
 			throw new Error("TorTransportAdapter no conectado");
 		}
 
