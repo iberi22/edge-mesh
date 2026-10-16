@@ -1,3 +1,4 @@
+import net from "node:net";
 import { createEnvelope, MessageDeduplicator } from "../protocol/index.js";
 import type {
 	Envolvente,
@@ -5,7 +6,6 @@ import type {
 	TipoMensaje,
 	TipoTransporte,
 } from "../types/index.js";
-import net from "node:net";
 import { TIPO_MENSAJE, TIPO_TRANSPORTE } from "../types/index.js";
 import { TorUnavailableError } from "./tor-errors.js";
 import type { ITransport, TransportEventMap } from "./types.js";
