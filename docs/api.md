@@ -162,6 +162,16 @@ Filters duplicates within a sliding time window.
 
 ## 5. Transport Engines
 
+### Tor SOCKS proxy
+The Tor transport requires a Tor SOCKS proxy on `127.0.0.1:9050` to function.
+
+New options available for `TorTransportAdapterOptions` to verify SOCKS proxy availability:
+- `verifySocks?: boolean` (default `false`) - Whether to proactively check the SOCKS proxy connection on startup.
+- `socksHost?: string` (default `"127.0.0.1"`) - SOCKS proxy host.
+- `socksConnectTimeoutMs?: number` (default `2000`) - Timeout for the proxy check probe in ms.
+
+If `verifySocks` is enabled and the proxy cannot be reached, a `TorUnavailableError` is thrown.
+
 ### `ITransport` (Interface)
 - `enviar(destino, payload, tipoMensaje)`
 - `transmitir(payload, tipoMensaje)`

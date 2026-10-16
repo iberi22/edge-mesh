@@ -260,6 +260,7 @@ export {
 	getTorDataDir,
 	TorOnionTransport,
 } from "./transport/tor.js";
+export { TorUnavailableError } from "./transport/tor-errors.js";
 export type { ITransport } from "./transport/types.js";
 // ─── TYPES ────────────────────────────────────────────────────────────────
 export * from "./types/index.js";
