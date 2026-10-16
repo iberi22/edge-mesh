@@ -441,6 +441,7 @@ npm run build
 
 ## Documentation
 
+- Interoperability status with the Xavier mesh: `docs/architecture.md#interoperability-status`
 - [Documentation Index](docs/README.md) — Comprehensive guide and module listing.
 - [Architecture Overview](docs/architecture.md) — System layers, browser mesh pairing, and CRDT sync flow.
 - [API Reference](docs/api.md) — Complete API documentation for all package exports.

@@ -102,3 +102,17 @@ When a member device is revoked or compromised:
 3. **Transport**: Frames traverse direct WebRTC data channels or are forwarded via gossip fan-out overlays.
 4. **Verification**: Receiving nodes verify sender membership in the trust store, check anti-replay sliding windows, and validate cryptographic signatures.
 5. **Convergence**: Valid updates are ingested into the local CRDT or operation log, triggering reactive UI hooks and projections.
+
+## 4. Interoperability status
+
+Currently, interoperability between `@swal/edge-mesh` and the Xavier mesh is limited.
+
+**What is shared today:**
+- The HTTP memory client (`src/node-memory/xavier-store.ts`) is the only shared component.
+
+**What is not shared:**
+- **Identity:** `edge-mesh` uses ML-DSA-65 (`src/identity/index.ts`), whereas Xavier uses Ed25519 (Xavier-side fact: `iberi22/xavier` path `src/mesh/node.rs`).
+- **Wire format:** A shared wire format does not exist.
+- **Sync model:** `edge-mesh` uses Yjs with a signed oplog (`src/sync/engine.ts`), whereas Xavier uses HTTP delta sync (Xavier-side fact: `iberi22/xavier` path `src/mesh/namespace.rs`).
+
+A shared protocol is an open design decision.
