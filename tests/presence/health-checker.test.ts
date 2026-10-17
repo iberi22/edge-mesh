@@ -42,6 +42,19 @@ describe("HealthChecker - Additional Coverage", () => {
 		expect(entry2?.estado).toBe(ESTADO_SALUD.SALUDABLE);
 	});
 
+	it("should report LENTO in obtenerTodasLasSaludes when latency exceeds latenciaAltaMs (default 500)", () => {
+		healthChecker.recibirHeartbeat(peerId, Date.now() - 100);
+		healthChecker.recibirHeartbeat(peerId2, Date.now() - 600);
+
+		const saludes = healthChecker.obtenerTodasLasSaludes();
+		expect(saludes.find((s) => s.nodoId === peerId)?.estado).toBe(
+			ESTADO_SALUD.SALUDABLE,
+		);
+		expect(saludes.find((s) => s.nodoId === peerId2)?.estado).toBe(
+			ESTADO_SALUD.LENTO,
+		);
+	});
+
 	it("should return the last measured latency from obtenerLatencia, and null for an unknown node", () => {
 		const now = Date.now();
 		const timestamp = now - 150;
@@ -97,6 +110,15 @@ describe("HealthChecker - Additional Coverage", () => {
 
 		const hb = healthChecker.generarHeartbeat(peerId);
 		expect(hb.secuencia).toBe(1);
+	});
+
+	it("should clear active nodes via reiniciar(), so obtenerNodosActivos is empty afterwards", () => {
+		healthChecker.recibirHeartbeat(peerId, Date.now());
+		expect(healthChecker.obtenerNodosActivos()).toHaveLength(1);
+
+		healthChecker.reiniciar();
+
+		expect(healthChecker.obtenerNodosActivos()).toHaveLength(0);
 	});
 
 	it("should emit nodoCaido on repeated calls to verificarTimeouts while a node is silent", () => {
