@@ -506,18 +506,22 @@ describe("audit round 3 regressions: owner-only re-keying", () => {
 			signaling: [partial(() => [], tamper)],
 		});
 		mref.dev = m2;
+		// M must be linked to V for the corrupted copy to reach V at all; H's intact copy can converge V first
 		await until(
 			() =>
 				a2.mesh.peers.includes(vm.deviceId) &&
 				h2.mesh.peers.includes(vm.deviceId) &&
-				v2.mesh.peers.includes(vh.deviceId),
-			5000,
+				v2.mesh.peers.includes(vh.deviceId) &&
+				v2.mesh.peers.includes(vm.deviceId),
+			8000,
 		);
 		await a2.mesh.revoke(vx.deviceId);
+		// wait for the relayer's corruption too: convergence alone can be reached before M has forwarded anything
 		await until(
 			() =>
+				tampered > 0 &&
 				[h2, v2, m2].every((d) => d.mesh.epoch === 1 && keyOf(d) === keyOf(a2)),
-			8000,
+			12_000,
 		);
 		expect(tampered).toBeGreaterThan(0);
 		for (const d of [a2, h2, v2, m2]) d.mesh.destroy();
