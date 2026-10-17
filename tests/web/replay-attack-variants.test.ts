@@ -146,7 +146,8 @@ describe("S1 replay attack variants", () => {
 		await a.mesh
 			.channel("orders")
 			.send(new TextEncoder().encode("pay table 7"));
-		await until(() => got.length === 1);
+		// ML-DSA handshakes are CPU-bound: under a loaded parallel run the default 3 s wait is too tight.
+		await until(() => got.length === 1, 15_000);
 		const rejected: string[] = [];
 		b.mesh.on("rejected", (e) => rejected.push(e.reason));
 		a.mesh.destroy();

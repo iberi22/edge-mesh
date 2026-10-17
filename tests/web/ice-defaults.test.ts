@@ -1,73 +1,194 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_ICE_SERVERS } from "../../src/web/ice.js";
 import { qrSdpTransport } from "../../src/web/transports/qr-sdp.js";
+import type { SignalingChannel } from "../../src/web/types.js";
 import { connectViaSignaling } from "../../src/web/webrtc.js";
-import { b64uEncode, utf8 } from "../../src/web/util.js";
-import { importAesKey, sealUpdate } from "../../src/web/crypto.js";
-
-let capturedIceServers: RTCIceServer[] | undefined;
 
 class FakeRTCPeerConnection {
-	constructor(config?: RTCConfiguration) {
-		capturedIceServers = config?.iceServers as RTCIceServer[] | undefined;
+	iceServers?: RTCIceServer[];
+	ondatachannel: any;
+	onconnectionstatechange: any;
+	localDescription: any = { sdp: "dummy sdp" };
+	constructor(config: RTCConfiguration = {}) {
+		this.iceServers = config.iceServers;
 	}
-	createDataChannel() { return { addEventListener: () => {} }; }
-	setLocalDescription() { return Promise.resolve(); }
-	createOffer() { return Promise.resolve({}); }
-	setRemoteDescription() { return Promise.resolve(); }
-	createAnswer() { return Promise.resolve({}); }
-	addEventListener() {}
+	createDataChannel() {
+		return {
+			readyState: "open",
+			addEventListener: (e: any, cb: any) => {
+				if (e === "open") cb();
+			},
+		};
+	}
+	createOffer() {
+		return Promise.resolve({});
+	}
+	createAnswer() {
+		return Promise.resolve({});
+	}
+	setLocalDescription() {
+		return Promise.resolve();
+	}
+	setRemoteDescription() {
+		return Promise.resolve();
+	}
 	close() {}
-	get localDescription() { return { sdp: "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\ns=-\r\nt=0 0\r\na=ice-options:trickle\r\na=candidate:1 1 udp 2113937151 192.168.1.5 5000 typ host\r\na=fingerprint:sha-256 AA:BB" }; }
+	addEventListener(e: string, cb: any) {
+		if (e === "icegatheringstatechange") {
+			cb();
+		}
+	}
+	get iceGatheringState() {
+		return "complete";
+	}
 }
 
-const mockRTC = FakeRTCPeerConnection as any as typeof RTCPeerConnection;
-const mockSig = { join: () => Promise.resolve(), onMessage: () => () => {}, send: () => Promise.resolve(), addEventListener: () => {}, removeEventListener: () => {}, readyState: "open" } as any;
+const fakeKey = {} as CryptoKey;
+const makeSignaling = (triggerJoin: (cb: any) => void) => ({
+	send: () => {},
+	onMessage: (cb: any) => {
+		triggerJoin(cb);
+		return () => {};
+	},
+	join: () => Promise.resolve(),
+	leave: () => {},
+});
 
 describe("ICE Defaults", () => {
-	it("webrtc default gives DEFAULT_ICE_SERVERS", async () => {
-		capturedIceServers = undefined;
-		let cb: any;
-		mockSig.onMessage = (fn: any) => { cb = fn; return () => {}; };
-		const key = await importAesKey(new Uint8Array(32));
-		await connectViaSignaling(mockSig, { selfId: "a", rid: "b", key, onPeer: () => {}, rtc: { RTCPeerConnection: mockRTC } });
-		try { await cb({ type: "join", rid: "b", from: "c", to: "a", payload: "" }); } catch (e) {}
-		expect(capturedIceServers).toEqual(DEFAULT_ICE_SERVERS);
+	describe("webrtc", () => {
+		it("webrtc default gives DEFAULT_ICE_SERVERS", async () => {
+			let createdPc: FakeRTCPeerConnection | undefined;
+			class TestPc extends FakeRTCPeerConnection {
+				constructor(config: RTCConfiguration = {}) {
+					super(config);
+					createdPc = this;
+				}
+			}
+
+			const close = await connectViaSignaling(
+				makeSignaling((cb) => {
+					setTimeout(() => {
+						cb({ type: "join", rid: "test", from: "other" }); // me < other, so "me" initiates
+					}, 0);
+				}),
+				{
+					rid: "test",
+					selfId: "me",
+					key: fakeKey,
+					rtc: { RTCPeerConnection: TestPc as any },
+					onLink: () => {},
+				},
+			);
+
+			await new Promise((r) => setTimeout(r, 10)); // wait for join to trigger initiate
+
+			expect(createdPc).toBeDefined();
+			expect(createdPc?.iceServers).toEqual(DEFAULT_ICE_SERVERS);
+			close();
+		});
+
+		it("webrtc explicit [] gives []", async () => {
+			let createdPc: FakeRTCPeerConnection | undefined;
+			class TestPc extends FakeRTCPeerConnection {
+				constructor(config: RTCConfiguration = {}) {
+					super(config);
+					createdPc = this;
+				}
+			}
+
+			const close = await connectViaSignaling(
+				makeSignaling((cb) => {
+					setTimeout(() => {
+						cb({ type: "join", rid: "test", from: "other" });
+					}, 0);
+				}),
+				{
+					rid: "test",
+					selfId: "me",
+					key: fakeKey,
+					rtc: { iceServers: [], RTCPeerConnection: TestPc as any },
+					onLink: () => {},
+				},
+			);
+
+			await new Promise((r) => setTimeout(r, 10));
+
+			expect(createdPc).toBeDefined();
+			expect(createdPc?.iceServers).toEqual([]);
+			close();
+		});
+
+		it("webrtc custom list passes through", async () => {
+			let createdPc: FakeRTCPeerConnection | undefined;
+			class TestPc extends FakeRTCPeerConnection {
+				constructor(config: RTCConfiguration = {}) {
+					super(config);
+					createdPc = this;
+				}
+			}
+
+			const close = await connectViaSignaling(
+				makeSignaling((cb) => {
+					setTimeout(() => {
+						cb({ type: "join", rid: "test", from: "other" });
+					}, 0);
+				}),
+				{
+					rid: "test",
+					selfId: "me",
+					key: fakeKey,
+					rtc: {
+						iceServers: [{ urls: "stun:custom" }],
+						RTCPeerConnection: TestPc as any,
+					},
+					onLink: () => {},
+				},
+			);
+
+			await new Promise((r) => setTimeout(r, 10));
+
+			expect(createdPc).toBeDefined();
+			expect(createdPc?.iceServers).toEqual([{ urls: "stun:custom" }]);
+			close();
+		});
 	});
 
-	it("webrtc explicit [] gives []", async () => {
-		capturedIceServers = undefined;
-		let cb: any;
-		mockSig.onMessage = (fn: any) => { cb = fn; return () => {}; };
-		const key = await importAesKey(new Uint8Array(32));
-		await connectViaSignaling(mockSig, { selfId: "a", rid: "b", key, onPeer: () => {}, rtc: { iceServers: [], RTCPeerConnection: mockRTC } });
-		try { await cb({ type: "join", rid: "b", from: "c", to: "a", payload: "" }); } catch (e) {}
-		expect(capturedIceServers).toEqual([]);
-	});
+	describe("qr-sdp", () => {
+		it("qr-sdp default gives []", async () => {
+			let createdPc: FakeRTCPeerConnection | undefined;
+			class TestPc extends FakeRTCPeerConnection {
+				constructor(config: RTCConfiguration = {}) {
+					super(config);
+					createdPc = this;
+				}
+			}
 
-	it("webrtc custom list passes through", async () => {
-		capturedIceServers = undefined;
-		const custom = [{ urls: "stun:custom.stun" }];
-		let cb: any;
-		mockSig.onMessage = (fn: any) => { cb = fn; return () => {}; };
-		const key = await importAesKey(new Uint8Array(32));
-		await connectViaSignaling(mockSig, { selfId: "a", rid: "b", key, onPeer: () => {}, rtc: { iceServers: custom, RTCPeerConnection: mockRTC } });
-		try { await cb({ type: "join", rid: "b", from: "c", to: "a", payload: "" }); } catch (e) {}
-		expect(capturedIceServers).toEqual(custom);
-	});
+			const tr = qrSdpTransport({ rtc: { RTCPeerConnection: TestPc as any } });
+			await tr.createOffer();
 
-	it("qr-sdp default gives []", async () => {
-		capturedIceServers = undefined;
-		const tp = qrSdpTransport({ rtc: { RTCPeerConnection: mockRTC } });
-		await tp.createOffer();
-		expect(capturedIceServers).toEqual([]);
-	});
+			expect(createdPc).toBeDefined();
+			expect(createdPc?.iceServers).toEqual([]);
+		});
 
-	it("qr-sdp custom list passes through", async () => {
-		capturedIceServers = undefined;
-		const custom = [{ urls: "stun:custom.stun" }];
-		const tp = qrSdpTransport({ rtc: { iceServers: custom, RTCPeerConnection: mockRTC } });
-		await tp.createOffer();
-		expect(capturedIceServers).toEqual(custom);
+		it("qr-sdp custom list passes through", async () => {
+			let createdPc: FakeRTCPeerConnection | undefined;
+			class TestPc extends FakeRTCPeerConnection {
+				constructor(config: RTCConfiguration = {}) {
+					super(config);
+					createdPc = this;
+				}
+			}
+
+			const tr = qrSdpTransport({
+				rtc: {
+					iceServers: [{ urls: "stun:custom" }],
+					RTCPeerConnection: TestPc as any,
+				},
+			});
+			await tr.createOffer();
+
+			expect(createdPc).toBeDefined();
+			expect(createdPc?.iceServers).toEqual([{ urls: "stun:custom" }]);
+		});
 	});
 });

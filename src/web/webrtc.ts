@@ -243,7 +243,7 @@ export async function connectViaSignaling(
 
 	const makePeer = (remote: string) => {
 		const pc = new Rtc({
-			iceServers: (o.rtc?.iceServers ?? DEFAULT_ICE_SERVERS) as RTCIceServer[],
+			iceServers: o.rtc?.iceServers ?? DEFAULT_ICE_SERVERS,
 		});
 		const st = { pc, queued: [] as RTCIceCandidateInit[], remoteSet: false };
 		peers.set(remote, st);

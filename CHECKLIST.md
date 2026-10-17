@@ -1,6 +1,6 @@
 # Release Readiness — Impeccable Library Checklist
 
-This checklist documents the quality, security, packaging, and governance criteria required for `@iberi22/edge-mesh` (and future `@swal/edge-mesh`) to maintain tier-1 npm library status.
+This checklist documents the quality, security, packaging, and governance criteria required for `@swal/edge-mesh` to maintain tier-1 npm library status.
 
 Every item includes its exact verifying command and its real measured status as of v1.0.0.
 
@@ -13,7 +13,7 @@ Every item includes its exact verifying command and its real measured status as 
     ```bash
     head -n 5 LICENSE && node -p "require('./package.json').license"
     ```
-  - **Measured Result:** Both declare `FSL-1.1-ALv2` (Apache-2.0 transition planned per ecosystem governance rule).
+  - **Measured Result:** Both `LICENSE` and `package.json` declare `Apache-2.0` (measured on `main` at `7517009`).
 
 ## 2. Exports, Types & Bundle Integrity
 - [x] **Clean Type Compilation (`tsc --noEmit`)**
