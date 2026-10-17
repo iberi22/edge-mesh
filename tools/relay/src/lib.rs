@@ -220,8 +220,7 @@ async fn handle_connection(
                             let guard = channels.read().await;
                             if let Some(channel) = guard.get(&channel_name) {
                                 if let Some(sender) = channel.peers.get(&peer_id) {
-                                    let _ = sender
-                                        .send(Message::Text(pong.to_string().into()));
+                                    let _ = sender.send(Message::Text(pong.to_string().into()));
                                 }
                             }
                         }
@@ -405,14 +404,12 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Connect to different channels.
-        let (mut ws1, _) =
-            tokio_tungstenite::connect_async(format!("ws://{server_addr}/ws/ch-a"))
-                .await
-                .unwrap();
-        let (mut ws2, _) =
-            tokio_tungstenite::connect_async(format!("ws://{server_addr}/ws/ch-b"))
-                .await
-                .unwrap();
+        let (mut ws1, _) = tokio_tungstenite::connect_async(format!("ws://{server_addr}/ws/ch-a"))
+            .await
+            .unwrap();
+        let (mut ws2, _) = tokio_tungstenite::connect_async(format!("ws://{server_addr}/ws/ch-b"))
+            .await
+            .unwrap();
 
         // Send on channel A.
         let auth_req = serde_json::json!({
@@ -455,12 +452,11 @@ mod tests {
         // Third connection should be rejected.
         let result = tokio_tungstenite::connect_async(&uri).await;
         if let Ok((mut ws3, _)) = result {
-                let msg = tokio::time::timeout(Duration::from_secs(2), ws3.next()).await;
-                if let Ok(Some(Ok(Message::Text(text)))) = msg {
-                    let parsed: serde_json::Value =
-                        serde_json::from_slice(text.as_bytes()).unwrap();
-                    assert_eq!(parsed["type"], "error");
-                }
+            let msg = tokio::time::timeout(Duration::from_secs(2), ws3.next()).await;
+            if let Ok(Some(Ok(Message::Text(text)))) = msg {
+                let parsed: serde_json::Value = serde_json::from_slice(text.as_bytes()).unwrap();
+                assert_eq!(parsed["type"], "error");
             }
+        }
     }
 }

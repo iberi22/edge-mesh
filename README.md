@@ -443,6 +443,7 @@ npm run build
 
 - [Documentation Index](docs/README.md) — Comprehensive guide and module listing.
 - [Architecture Overview](docs/architecture.md) — System layers, browser mesh pairing, and CRDT sync flow.
+- Interoperability status with the Xavier mesh: `docs/architecture.md#interoperability-status`
 - [API Reference](docs/api.md) — Complete API documentation for all package exports.
 - [Cookbook](docs/cookbook.md) — Common recipes for browser and Node.js environments.
 - [Signaling Protocol](docs/SIGNALING-PROTOCOL.md) — WebSocket signaling relay specification.
