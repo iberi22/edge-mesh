@@ -1,6 +1,6 @@
 # Auditorías de seguridad del núcleo
 
-Este directorio guarda las auditorías de seguridad de `@iberi22/edge-mesh` (por ahora de la malla del navegador,
+Este directorio guarda las auditorías de seguridad de `@swal/edge-mesh` (formerly `@iberi22/edge-mesh`, see `CHANGELOG.md`) (por ahora de la malla del navegador,
 `src/web/`). Cada ronda tiene su propio documento con los hallazgos, su estado, el commit que los corrige y la
 prueba de regresión que impide que vuelvan.
 
