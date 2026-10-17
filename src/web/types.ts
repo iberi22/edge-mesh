@@ -113,7 +113,7 @@ export interface Device {
 }
 
 export interface RtcOptions {
-	/** Default [] = host candidates only (no public STUN). */
+	/** Default `DEFAULT_ICE_SERVERS` (one public STUN). Provide `[]` for host candidates only (no public STUN). */
 	iceServers?: RTCIceServer[];
 	/** Injectable for tests / non-browser runtimes. */
 	RTCPeerConnection?: typeof RTCPeerConnection;

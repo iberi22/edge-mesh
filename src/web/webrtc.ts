@@ -1,4 +1,5 @@
 import { openUpdate, sealUpdate } from "./crypto.js";
+import { DEFAULT_ICE_SERVERS } from "./ice.js";
 import type { PeerLink, RtcOptions, SignalingChannel } from "./types.js";
 import { b64uDecode, b64uEncode, fromUtf8, utf8 } from "./util.js";
 
@@ -241,7 +242,9 @@ export async function connectViaSignaling(
 		});
 
 	const makePeer = (remote: string) => {
-		const pc = new Rtc({ iceServers: o.rtc?.iceServers ?? [] });
+		const pc = new Rtc({
+			iceServers: (o.rtc?.iceServers ?? DEFAULT_ICE_SERVERS) as RTCIceServer[],
+		});
 		const st = { pc, queued: [] as RTCIceCandidateInit[], remoteSet: false };
 		peers.set(remote, st);
 		pc.ondatachannel = (ev) => wire(remote, ev.channel);
