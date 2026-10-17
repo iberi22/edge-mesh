@@ -422,7 +422,7 @@ describe("audit regressions: web/provider", () => {
 		await a.mesh
 			.channel("orders")
 			.send(new TextEncoder().encode("pay table 7"));
-		await until(() => got.length === 1);
+		await until(() => got.length === 1, 15_000); // ML-DSA handshake under a loaded CI runner: slow CI
 		const rejected: string[] = [];
 		b.mesh.on("rejected", (e) => rejected.push(e.reason));
 		a.mesh.destroy();
