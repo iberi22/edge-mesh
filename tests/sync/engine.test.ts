@@ -15,6 +15,32 @@ describe("SyncEngine Module", () => {
 	});
 
 	describe("sincronizar", () => {
+		it("should clear sincronizando flag even if an error is thrown in sync", async () => {
+			const errorHandler = vi.fn();
+			engine.on("syncError", errorHandler);
+
+			let flagWhileSyncing = false;
+			const error = new Error("Network disconnect in enviar");
+
+			const enviar = vi.fn().mockImplementation(async () => {
+				flagWhileSyncing = engine.estaSincronizando();
+				throw error;
+			});
+
+			await oplog.append("local", { val: 1 }, "local" as NodoId);
+
+			const result = await engine.sincronizar(
+				peerId,
+				enviar,
+				async () => [],
+			);
+
+			expect(flagWhileSyncing).toBe(true);
+			expect(result.exito).toBe(false);
+			expect(errorHandler).toHaveBeenCalled();
+			expect(engine.estaSincronizando()).toBe(false);
+		});
+
 		it("should perform bidirectional sync successfully", async () => {
 			// Local operations
 			await oplog.append("t1", { val: 1 }, "local" as NodoId);

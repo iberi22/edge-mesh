@@ -158,13 +158,13 @@ export class SyncEngine {
 		// ya ocurrio y no debe desaparecer del informe.
 		let operacionesRechazadas = 0;
 
-		this.emit("syncIniciado", {
-			docId: this.docId,
-			peerId,
-			direction: this._direction,
-		});
-
 		try {
+			this.emit("syncIniciado", {
+				docId: this.docId,
+				peerId,
+				direction: this._direction,
+			});
+
 			let operacionesEnviadas = 0;
 			let operacionesRecibidas = 0;
 			let conflictos = 0;
@@ -233,7 +233,6 @@ export class SyncEngine {
 			}
 
 			const duracionMs = Date.now() - inicio;
-			this.sincronizando = false;
 
 			const resultado: SyncResult = {
 				docId: this.docId,
@@ -248,7 +247,6 @@ export class SyncEngine {
 			this.emit("syncCompletado", { resultado, peerId });
 			return resultado;
 		} catch (error) {
-			this.sincronizando = false;
 			const mensaje =
 				error instanceof Error ? error.message : "Error de sincronizacion";
 
@@ -267,6 +265,8 @@ export class SyncEngine {
 				duracionMs: Date.now() - inicio,
 				exito: false,
 			};
+		} finally {
+			this.sincronizando = false;
 		}
 	}
 
