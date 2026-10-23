@@ -136,7 +136,24 @@ describe("audit round 5 regressions", () => {
 		await meshReady(all, 30_000);
 		a.mesh.destroy(); // owner offline
 		await x.mesh.revoke(m3.id);
+		// one delivery deadline for both observations: m2 drops m3, then m1 holds the signed revoke of m3's grant
+		const deadline = Date.now() + 10_000;
 		await until(() => !has(m2, m3), 10_000);
+		const s1 = sec(m1);
+		expect(s1).toBeTruthy();
+		const targets = new Set(
+			(sec(x).trust.grantsOf(m3.id) as Array<{ id: string }>).map((g) => g.id),
+		);
+		expect(targets.size).toBeGreaterThan(0);
+		const isM3Revoke = (d: { t?: string; target?: string }) =>
+			d.t === "revoke" && targets.has(d.target ?? "");
+		await vi.waitFor(
+			async () => {
+				if (!(await s1.docs()).some(isM3Revoke))
+					throw new Error("m3's signed revoke not yet at m1");
+			},
+			{ timeout: Math.max(deadline - Date.now(), 1), interval: 20 },
+		);
 		// the attacker re-encodes the admin's request wherever it can reach it: in the shared doc (pre-round-5 slot)...
 		const k = `rev/${m3.id}:1`;
 		const r = metaOf(m1).get(k);
@@ -146,15 +163,10 @@ describe("audit round 5 regressions", () => {
 				await settle(20);
 			}
 		// ...and as security documents (round 5): every copy is refused (canonical signature) or a duplicate of the body
-		const s1 = sec(m1);
-		if (s1) {
-			const req = (await s1.docs()).find(
-				(d: { t?: string; target?: string }) => d.t === "revoke",
-			);
-			expect(req).toBeTruthy();
-			for (const v of variants(req.sig, 70))
-				expect((await s1.add({ ...req, sig: v })).status).not.toBe("accepted");
-		}
+		const req = (await s1.docs()).find(isM3Revoke);
+		expect(req).toBeTruthy();
+		for (const v of variants(req.sig, 70))
+			expect((await s1.add({ ...req, sig: v })).status).not.toBe("accepted");
 		await settle(1500);
 		await x.mesh.revoke(m1.id);
 		expect(
