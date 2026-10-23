@@ -1,6 +1,6 @@
 # SRC.md — Codebase Structure & Navigation Guide
 
-This document describes 100% of the repository structure for `@iberi22/edge-mesh`, detailing the layout, responsibility of each module, and key file locations.
+This document describes 100% of the repository structure for `@swal/edge-mesh`, detailing the layout, responsibility of each module, and key file locations.
 
 ---
 
@@ -11,7 +11,7 @@ edge-mesh/
 ├── AGENTS.md                  # Developer & AI agent guidelines (SWAL standard)
 ├── CLA.md                     # Contributor License Agreement
 ├── CONTRIBUTING.md            # Contribution guidelines & code standards (SWAL network)
-├── LICENSE                    # FSL-1.1-ALv2 License
+├── LICENSE                    # Apache-2.0 License
 ├── README.md                  # Project overview, quickstart, and features
 ├── SECURITY.md                # Vulnerability reporting & post-quantum security policy
 ├── SRC.md                     # Repository structure map (this document)
@@ -36,7 +36,7 @@ edge-mesh/
 │       ├── GOAL.md            # SWAL Mission & Canonical Goal document
 │       └── NODE_MEMORY.md     # Node memory persistence specification
 ├── packages/                  # Workspace sub-packages
-│   └── edge-mesh-react/       # Official React hooks & provider library (@iberi22/edge-mesh-react)
+│   └── edge-mesh-react/       # Official React hooks & provider library (@swal/edge-mesh-react)
 │       ├── package.json
 │       ├── tsconfig.json
 │       └── src/

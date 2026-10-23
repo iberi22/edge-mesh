@@ -132,7 +132,7 @@ const ENTRY_POINTS = [
 	},
 ] as const;
 
-describe("public API of @iberi22/edge-mesh/web", () => {
+describe("public API of @swal/edge-mesh/web", () => {
 	for (const { entry, file, mod, declared, values } of ENTRY_POINTS)
 		it(`${entry} exports exactly the snapshot names`, () => {
 			// runtime names: a value that silently became type-only (or vice versa) breaks consumers here
@@ -166,7 +166,7 @@ describe("public API of @iberi22/edge-mesh/web", () => {
 		const readme = read("../../README.md");
 		// same code, only the module specifier differs (the example imports the source, the README the package)
 		const fromReadme = fencedTsAfter(readme, "## Quick start").replaceAll(
-			"@iberi22/edge-mesh/web",
+			"@swal/edge-mesh/web",
 			"../src/web/index.js",
 		);
 		expect(codeLines(fromReadme)).toEqual(codeLines(read("../../examples/web-basic.ts")));

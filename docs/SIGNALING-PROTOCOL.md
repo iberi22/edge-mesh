@@ -1,6 +1,6 @@
 # SWAL mesh signaling protocol (v1)
 
-Shared contract between the browser client (`@iberi22/edge-mesh/web`) and the self-hosted
+Shared contract between the browser client (`@swal/edge-mesh/web`) and the self-hosted
 signaling Worker (`workers/signaling`, `wss://mesh.swal.network`). The server is a pure relay:
 it never inspects, stores or logs payloads.
 

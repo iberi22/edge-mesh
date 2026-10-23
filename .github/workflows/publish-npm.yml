@@ -1,4 +1,4 @@
-# Publica @iberi22/edge-mesh en npmjs con provenance. Requiere el secreto NPM_TOKEN del repo. Solo corre con un tag web-v* o a mano.
+# Publica @swal/edge-mesh en npmjs con provenance. Requiere el secreto NPM_TOKEN del repo. Solo corre con un tag web-v* o a mano.
 name: Publish to npm
 
 on:
