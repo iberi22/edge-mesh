@@ -1,5 +1,5 @@
 import { createContext, useContext } from "react";
-import type { EdgeMesh } from "@iberi22/edge-mesh";
+import type { EdgeMesh } from "@swal/edge-mesh";
 
 export const EdgeMeshContext = createContext<EdgeMesh | null>(null);
 

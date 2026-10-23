@@ -46,6 +46,6 @@ body:
     attributes:
       label: Environment
       description: Node version, browser version, OS, and edge-mesh package version.
-      placeholder: Node.js 22.4.0 / Chromium 128 / macOS 15.0 / @iberi22/edge-mesh@1.0.0
+      placeholder: Node.js 22.4.0 / Chromium 128 / macOS 15.0 / @swal/edge-mesh@1.0.0
     validations:
       required: true

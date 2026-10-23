@@ -13,7 +13,7 @@ export default defineConfig({
 		// ML-DSA-65 makes the multi-device mesh tests CPU-bound: same budget as the regression config
 		testTimeout: 20_000,
 		alias: {
-			"@iberi22/edge-mesh": path.resolve(import.meta.dirname ?? ".", "./src/index.ts"),
+			"@swal/edge-mesh": path.resolve(import.meta.dirname ?? ".", "./src/index.ts"),
 		},
 	},
 });

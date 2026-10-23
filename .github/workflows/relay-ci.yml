@@ -1,0 +1,35 @@
+name: relay-ci
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  relay-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/relay
+
+      - name: Run rustfmt
+        working-directory: tools/relay
+        run: cargo fmt --check
+
+      - name: Run clippy
+        working-directory: tools/relay
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run tests
+        working-directory: tools/relay
+        run: cargo test --locked

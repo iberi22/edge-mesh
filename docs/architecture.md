@@ -1,10 +1,10 @@
 # Architecture Overview
 
-`@iberi22/edge-mesh` is a peer-to-peer (P2P) mesh networking and local-first data synchronization library. It integrates Conflict-Free Replicated Data Types (CRDTs), post-quantum cryptographic primitives, WebRTC peer data channels, and capability-based access control.
+`@swal/edge-mesh` is a peer-to-peer (P2P) mesh networking and local-first data synchronization library. It integrates Conflict-Free Replicated Data Types (CRDTs), post-quantum cryptographic primitives, WebRTC peer data channels, and capability-based access control.
 
 The library provides two primary deployment models:
-1. **Browser Mesh (`@iberi22/edge-mesh/web`)**: A browser-pure, owner-controlled P2P mesh designed for Progressive Web Apps (PWAs).
-2. **Node/Classic Mesh (`@iberi22/edge-mesh`)**: A full-featured edge networking runtime supporting server relays, gossip protocols, presence tracking, and multi-peer orchestration.
+1. **Browser Mesh (`@swal/edge-mesh/web`)**: A browser-pure, owner-controlled P2P mesh designed for Progressive Web Apps (PWAs).
+2. **Node/Classic Mesh (`@swal/edge-mesh`)**: A full-featured edge networking runtime supporting server relays, gossip protocols, presence tracking, and multi-peer orchestration.
 
 ---
 
@@ -49,7 +49,7 @@ The library provides two primary deployment models:
 
 ---
 
-## 2. Browser Mesh Architecture (`@iberi22/edge-mesh/web`)
+## 2. Browser Mesh Architecture (`@swal/edge-mesh/web`)
 
 The browser entry point (`./web`) is designed for client-side web applications with zero required server infrastructure beyond a minimal signaling relay.
 
@@ -102,3 +102,17 @@ When a member device is revoked or compromised:
 3. **Transport**: Frames traverse direct WebRTC data channels or are forwarded via gossip fan-out overlays.
 4. **Verification**: Receiving nodes verify sender membership in the trust store, check anti-replay sliding windows, and validate cryptographic signatures.
 5. **Convergence**: Valid updates are ingested into the local CRDT or operation log, triggering reactive UI hooks and projections.
+
+## 4. Interoperability status
+
+Today, `@swal/edge-mesh` and the Xavier mesh (`iberi22/xavier`) are mostly distinct.
+
+What is shared today:
+- The HTTP memory client (`src/node-memory/xavier-store.ts`) is the only shared link.
+
+What is NOT shared:
+- **Identity**: Edge-mesh uses post-quantum ML-DSA-65 (`src/identity/index.ts`); Xavier uses Ed25519 (`iberi22/xavier` in `src/mesh/node.rs`).
+- **Wire format**: The data framing is entirely different.
+- **Sync model**: Edge-mesh uses Yjs with a signed oplog (`src/web/oplog/log.ts`) and a peer clock engine (`src/sync/engine.ts`); Xavier uses HTTP delta sync.
+
+Whether a shared protocol will be designed in the future is an open design decision.

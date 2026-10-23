@@ -1,6 +1,6 @@
 # AGENTS.md — SWAL Agent Instructions for Edge Mesh
 
-This document specifies developer and AI agent instructions for the `@iberi22/edge-mesh` repository within the SouthWest AI Labs (SWAL) ecosystem.
+This document specifies developer and AI agent instructions for the `@swal/edge-mesh` repository within the SouthWest AI Labs (SWAL) ecosystem.
 
 ---
 
@@ -13,7 +13,7 @@ This document specifies developer and AI agent instructions for the `@iberi22/ed
 ## SWAL Project Map
 
 ```
-@iberi22/edge-mesh
+@swal/edge-mesh
 ├── src/
 │   ├── index.ts               # Canonical public entry point (re-exports core modules)
 │   ├── edge-mesh.ts           # Primary EdgeMesh orchestrator class & YjsAdapter
@@ -48,7 +48,7 @@ This document specifies developer and AI agent instructions for the `@iberi22/ed
 
 ## GitCore & Development Rules
 
-1. **Monorepo Architecture:** `@iberi22/edge-mesh` is the Single Source of Truth (SSOT). Do not create duplicate files in consumer projects.
+1. **Monorepo Architecture:** `@swal/edge-mesh` is the Single Source of Truth (SSOT). Do not create duplicate files in consumer projects.
 2. **Post-Quantum Cryptography:** All identity signatures use ML-DSA-65 (`@noble/post-quantum`). Key exchanges use ML-KEM-768. Do not replace or fall back to legacy RSA or unhashed signatures for security payloads.
 3. **Storage & Persistence:** Always use the `IStorage` interface (`StorageManager`, `IndexedDBStorage`, `InMemoryStorage`). Remember `put(key, val)` is an alias for `set(key, val)`.
 4. **Testing Policy:** Run `npm test` before committing. Ensure new features are accompanied by corresponding unit/integration tests in `tests/`.

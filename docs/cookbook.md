@@ -1,10 +1,10 @@
 # Cookbook
 
-Practical patterns and recipes for working with `@iberi22/edge-mesh`.
+Practical patterns and recipes for working with `@swal/edge-mesh`.
 
 ---
 
-# Part I: Browser Mesh Patterns (`@iberi22/edge-mesh/web`)
+# Part I: Browser Mesh Patterns (`@swal/edge-mesh/web`)
 
 ## 1. Browser P2P Mesh Quickstart
 Synchronize a shared `Y.Doc` between browser tabs or PWA instances over an encrypted WebRTC mesh.
@@ -18,8 +18,8 @@ import {
   identityKeygen,
   identitySign,
   deviceIdOf,
-} from "@iberi22/edge-mesh/web";
-import type { VaultClient } from "@iberi22/edge-mesh/web";
+} from "@swal/edge-mesh/web";
+import type { VaultClient } from "@swal/edge-mesh/web";
 
 // 1. Prepare local cryptographic identity
 const keypair = await identityKeygen();
@@ -79,8 +79,8 @@ import {
   generateSigner,
   issueGrant,
   rolePreset,
-} from "@iberi22/edge-mesh/web/trust";
-import type { TrustSchema } from "@iberi22/edge-mesh/web/trust";
+} from "@swal/edge-mesh/web/trust";
+import type { TrustSchema } from "@swal/edge-mesh/web/trust";
 
 const schema: TrustSchema = {
   roles: {
@@ -127,12 +127,12 @@ console.log("Alice can edit orders:", allowed); // true
 Append operations and project state deterministically across peers.
 
 ```typescript
-import { openOpLog } from "@iberi22/edge-mesh/web/oplog";
+import { openOpLog } from "@swal/edge-mesh/web/oplog";
 import {
   createProjector,
   lwwField,
   ledger,
-} from "@iberi22/edge-mesh/web/merge";
+} from "@swal/edge-mesh/web/merge";
 
 // 1. Open signed operation log
 const log = await openOpLog({
@@ -165,14 +165,14 @@ console.log("Current stock:", inventoryState.get("item-101")?.balance);
 
 ---
 
-# Part II: Node & Classic Mesh Patterns (`@iberi22/edge-mesh`)
+# Part II: Node & Classic Mesh Patterns (`@swal/edge-mesh`)
 
 ## 5. Initializing an EdgeMesh Node
 Create an `EdgeMesh` coordinator node.
 
 ```typescript
-import { EdgeMesh } from "@iberi22/edge-mesh";
-import type { NodoId } from "@iberi22/edge-mesh";
+import { EdgeMesh } from "@swal/edge-mesh";
+import type { NodoId } from "@swal/edge-mesh";
 
 const mesh = new EdgeMesh({
   nodoId: "node-alpha" as NodoId,
@@ -186,7 +186,7 @@ await mesh.iniciar();
 Manage peer-to-peer chat streams within a namespace.
 
 ```typescript
-import { ChatChannel, TIPO_CANAL } from "@iberi22/edge-mesh";
+import { ChatChannel, TIPO_CANAL } from "@swal/edge-mesh";
 
 const chat = new ChatChannel(
   mesh.nodo.nodoId,
@@ -209,7 +209,7 @@ await chat.enviarMensaje("Hello from Node!");
 Orchestrate meeting rooms with participant tracking and shared document maps.
 
 ```typescript
-import { SalonesManager, TIPO_SALON } from "@iberi22/edge-mesh";
+import { SalonesManager, TIPO_SALON } from "@swal/edge-mesh";
 
 const salonesManager = new SalonesManager(mesh);
 
@@ -246,7 +246,7 @@ console.log("Active peers:", activePeers);
 Generate and sign data using quantum-safe ML-DSA-65 algorithms.
 
 ```typescript
-import { generateKeypair, createPostQuantumIdentity } from "@iberi22/edge-mesh";
+import { generateKeypair, createPostQuantumIdentity } from "@swal/edge-mesh";
 
 const keypair = await generateKeypair();
 const identity = createPostQuantumIdentity("node-secure", keypair);

@@ -1,4 +1,4 @@
-# Browser mesh (`@iberi22/edge-mesh/web`): data encryption and key rotation
+# Browser mesh (`@swal/edge-mesh/web`): data encryption and key rotation
 
 ## Data frames: per-sender subkeys
 
