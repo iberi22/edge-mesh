@@ -12,7 +12,7 @@ per-connection token bucket, `p_` pairing rooms (2 peers, 5 min, 10 signals, no 
 
 ```sh
 pnpm install --ignore-workspace
-pnpm test            # vitest + @cloudflare/vitest-pool-workers
+pnpm test            # vitest + @cloudflare/vitest-plugin
 pnpm typecheck
 pnpm deploy:dry      # wrangler deploy --dry-run, deploys nothing
 ```
