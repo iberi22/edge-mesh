@@ -1,6 +1,6 @@
 # Edge Mesh
 
-[![CI](https://github.com/iberi22/edge-mesh/actions/workflows/ci.yml/badge.svg)](https://github.com/iberi22/edge-mesh/actions)
+[![CI](https://github.com/southwest-ai-labs/edge-mesh/actions/workflows/ci.yml/badge.svg)](https://github.com/southwest-ai-labs/edge-mesh/actions)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 [![Rust 2021](https://img.shields.io/badge/rust-2021-orange.svg)](tools/relay)
 
